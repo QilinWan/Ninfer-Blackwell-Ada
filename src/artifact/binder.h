@@ -3,6 +3,7 @@
 #include "artifact/materializer.h"
 #include "artifact/reader.h"
 
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,7 +33,14 @@ struct HostValues {
 // determine parameter shapes or native operation support.
 class Binder {
 public:
-    explicit Binder(const Reader& reader);
+    // Chooses the placement of one device-resident parent. The object stays opaque here: the
+    // model binder that installs a resolver derives it from the logical parameters it bound.
+    using ShardResolver =
+        std::function<ShardPlacement(ObjectHandle object, const WeightGeometry& geometry)>;
+
+    // Plans backing for `device_count` devices (1 or 2). Without a resolver every parent is
+    // Replicated, which with one device is the complete parent on that device.
+    explicit Binder(const Reader& reader, int device_count = 1);
 
     [[nodiscard]] ParameterReference parameter(std::string_view name, Shape shape,
                                                Residency residency = Residency::Device,
@@ -44,6 +52,11 @@ public:
     [[nodiscard]] bool contains(std::string_view parameter) const;
 
     [[nodiscard]] const Reader& reader() const noexcept { return reader_; }
+
+    [[nodiscard]] int device_count() const noexcept { return device_count_; }
+
+    // Consulted once per device-resident parent by finish().
+    void set_shard_resolver(ShardResolver resolver);
 
     void require_device(ObjectHandle object, std::uint64_t alignment = 256);
     [[nodiscard]] std::span<const std::byte> host_object(ObjectHandle object);
@@ -59,7 +72,12 @@ private:
         std::vector<std::byte> host_data;
     };
 
+    void place_device(MaterializationPlan& plan, ObjectHandle object,
+                      std::uint64_t alignment) const;
+
     const Reader& reader_;
+    int device_count_ = 1;
+    ShardResolver shard_resolver_;
     std::vector<Demand> demands_;
     std::uint64_t read_bytes_        = 0;
     std::uint64_t owned_value_bytes_ = 0;

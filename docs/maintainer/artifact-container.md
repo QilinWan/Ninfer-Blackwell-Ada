@@ -294,7 +294,8 @@ Tensor bytes 等于对应 `(format,layout,shape)` 的 encoded size。
 没有被本次用途引用的对象保持未驻留。对象 ID、排列和文件位置只参与加载与诊断，执行中的
 权重引用由 binder 一次性解析。
 
-完整 parent 是物化与驻留单位。Converter 必须将主干参数、各可独立启用组件的私有参数及
+完整 parent 是物化与驻留单位。多设备放置可以把一个 parent 按行或列切成各设备自己的 shard
+（见 11.2），编码格式不变。Converter 必须将主干参数、各可独立启用组件的私有参数及
 可独立选择的 proposal 表示的私有数据分别组织为对象，使关闭功能的私有数据保持未驻留。
 真正共享的数据可以由不同功能引用同一对象，例如 Text 与 MTP 使用同一 embedding/head，
 或 proposal 引用 Text head 的已有表示。
@@ -544,6 +545,29 @@ I/O 层可将这些段继续切成传输块，按原偏移写入同一个目标�
 Materializer 按实际使用的 parent 去重，安排 device/host backing，再取得 typed view。
 辅助 scalar、索引等需要 owning Host 值的用途可以按 Binding 读取对应元素区间，保持其数值类型。
 Reader 的 JSON 与符号索引用于冷加载，运行时使用解析后的引用与直接调用。
+
+一次加载最多为两个设备规划 device backing（`Binder(reader, device_count)`）。放置按 parent 决定：
+`finish()` 为每个需要驻留 device 的 parent 调用一次 shard resolver，对象 ID 在这里仍然不透明，
+resolver 由架构 binder 根据它绑定的逻辑参数给出。未安装 resolver 时每个 parent 都是
+`Replicated`，因此单设备计划与完整 parent 布局逐字节一致。
+
+| 放置 | 设备持有的内容 |
+|---|---|
+| `Replicated` | 每个设备一份完整 parent |
+| `PrimaryOnly` / `SingleDevice` | 只有设备 0 / 指定设备持有完整 parent |
+| `Rows` / `Columns` | 每个设备持有该轴上若干范围的拼接：同 format/layout、窄化 shape 的独立 parent |
+
+Shard 不重新打包：其几何就是窄化 shape 的 `weight_geometry`，内容是父编码的若干字节区间
+（`PlaneCopy`），放在 shard 自己的 plane 偏移处；plane 对齐间隙为零（device arena 创建时清零）。
+各 layout 的切分条件：`contiguous_le_v1` 的行、列都可取多个范围；`row_split_k128_v1` 行任意，
+列为单个 128 倍数范围；`block_scale_k16_m128x4_v1` 行为 128 的倍数（scale 以 128 行 tile 交织），
+列为 64 的倍数，weight divisor 复制到每个 shard；`row_scale_v1` 行任意，列切分时每行 scale 整份保留。
+
+Materializer 为每个设备建立独立 arena、传输 stream 与完成事件；文件块只读一次，分发给需要它的
+设备。同一设备内的目标区间互不重叠；不同设备的源区间可以重叠：复制的 parent 从文件只读一次，再分别上传到
+每个持有它的设备。
+`bind_view(reference, materialized, device)` 把 Part 映射到该设备持有的元素：`Rows` 截取行范围并
+缩小首个逻辑轴，`Columns` 只接受整行 Part 并把行宽换成 shard 宽度；完整 parent 的视图不变。
 
 ### 11.3 语义与支持检查
 

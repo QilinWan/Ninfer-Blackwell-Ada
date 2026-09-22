@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <string>
 
 namespace ninfer::artifact {
 
@@ -29,8 +30,14 @@ std::vector<std::int32_t> HostValues::integers() const {
     return out;
 }
 
-Binder::Binder(const Reader& reader)
-    : reader_(reader), demands_(reader.directory().objects.size()) {}
+Binder::Binder(const Reader& reader, int device_count)
+    : reader_(reader), device_count_(device_count), demands_(reader.directory().objects.size()) {
+    if (device_count < 1 || device_count > static_cast<int>(kMaximumDevices)) {
+        throw ArtifactError("materialization device count must be 1 or 2");
+    }
+}
+
+void Binder::set_shard_resolver(ShardResolver resolver) { shard_resolver_ = std::move(resolver); }
 
 ParameterReference Binder::parameter(std::string_view name, Shape shape, Residency residency,
                                      std::optional<QType> exact_format) {
@@ -154,25 +161,70 @@ HostValues Binder::values(const Binding& binding, std::optional<QType> format) {
     return out;
 }
 
+void Binder::place_device(MaterializationPlan& plan, ObjectHandle object,
+                          std::uint64_t alignment) const {
+    const auto& geometry  = reader_.geometry(object);
+    const auto placement  = shard_resolver_ ? shard_resolver_(object, geometry) : ShardPlacement{};
+    const auto& id        = reader_.directory().tensor(object).id;
+    const bool sharded    = is_sharded(placement.axis);
+    const auto first_idle = static_cast<std::size_t>(device_count_);
+    for (std::size_t device = 0; device < kMaximumDevices; ++device) {
+        const auto& ranges = placement.device_ranges[device];
+        if (!sharded && !ranges.empty()) {
+            throw ArtifactError(id + ": a complete-parent placement carries shard ranges");
+        }
+        if (device >= first_idle && !ranges.empty()) {
+            throw ArtifactError(id + ": shard ranges name a device outside the plan");
+        }
+        if (sharded && device < first_idle && ranges.empty()) {
+            throw ArtifactError(id + ": shard placement names no range for device " +
+                                std::to_string(device));
+        }
+    }
+    if (placement.axis == ShardAxis::SingleDevice &&
+        (placement.device < 0 || placement.device >= device_count_)) {
+        throw ArtifactError(id + ": single-device placement names a device outside the plan");
+    }
+    for (int device = 0; device < device_count_; ++device) {
+        if ((placement.axis == ShardAxis::PrimaryOnly && device != 0) ||
+            (placement.axis == ShardAxis::SingleDevice && device != placement.device)) {
+            continue;
+        }
+        DevicePlacement out{.object    = object,
+                            .bytes     = geometry.bytes,
+                            .alignment = alignment,
+                            .device    = device,
+                            .axis      = placement.axis};
+        if (sharded) {
+            out.ranges = placement.device_ranges[static_cast<std::size_t>(device)];
+            auto slice = tensor_slice(geometry, placement.axis, out.ranges);
+            out.bytes  = slice.geometry.bytes;
+            out.copies = std::move(slice.copies);
+        }
+        auto& capacity = plan.per_device_capacity_bytes[static_cast<std::size_t>(device)];
+        out.offset     = align_up(capacity, alignment, "device offset");
+        capacity       = checked_add(out.offset, out.bytes, "device capacity");
+        plan.device_objects.push_back(std::move(out));
+    }
+}
+
 MaterializationPlan Binder::finish() && {
     MaterializationPlan plan;
     plan.source            = &reader_;
     plan.object_count      = demands_.size();
+    plan.device_count      = device_count_;
     plan.prior_read_bytes  = read_bytes_;
     plan.owned_value_bytes = owned_value_bytes_;
     for (std::size_t i = 0; i < demands_.size(); ++i) {
         auto& demand = demands_[i];
-        if (demand.device) {
-            const ObjectHandle handle{i};
-            const auto& geometry = reader_.geometry(handle);
-            const auto offset =
-                align_up(plan.device_capacity_bytes, demand.alignment, "device offset");
-            plan.device_objects.push_back({handle, offset, geometry.bytes, demand.alignment});
-            plan.device_capacity_bytes = checked_add(offset, geometry.bytes, "device capacity");
-        }
+        if (demand.device) { place_device(plan, ObjectHandle{i}, demand.alignment); }
         if (demand.host) {
             plan.host_objects.push_back({ObjectHandle{i}, std::move(demand.host_data)});
         }
+    }
+    for (const auto capacity : plan.per_device_capacity_bytes) {
+        plan.device_capacity_bytes =
+            checked_add(plan.device_capacity_bytes, capacity, "device capacity");
     }
     return plan;
 }
