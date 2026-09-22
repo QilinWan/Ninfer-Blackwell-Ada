@@ -63,9 +63,11 @@ void execute_grouped(const Tensor& q, const Tensor& positions, float scale,
                                                   plan.partition.capacity, plan.batch);
     const auto p = make_causal_operands(q, positions, out, scale, plan.envelope.max_visible_keys);
     if (plan.query_heads == 24)
-        grouped_instance<CausalD256H24Kv4>(p, view, input, plan.partition, partial.view(), stream);
-    else
-        grouped_instance<CausalD256H16Kv2>(p, view, input, plan.partition, partial.view(), stream);
+            grouped_instance<CausalD256H24Kv4>(p, view, input, plan.partition, partial.view(), stream);
+        else if (plan.query_heads == 12)   // tensor-parallel half of 24/4
+            grouped_instance<CausalD256H12Kv2>(p, view, input, plan.partition, partial.view(), stream);
+        else
+            grouped_instance<CausalD256H16Kv2>(p, view, input, plan.partition, partial.view(), stream);
 }
 
 template <class G, int Tokens>
@@ -101,14 +103,21 @@ void execute_parallel(const CausalAttentionOperands& p, Int8KvReadView cache,
     if (plan.query_heads == 24)
         parallel_grouped<CausalD256H24Kv4, Int8KvCausalPlan::kTokenTile>(p, cache, plan.partition,
                                                                          partial.view(), stream);
+    else if (plan.query_heads == 12)   // tensor-parallel half of 24/4
+        parallel_grouped<CausalD256H12Kv2, Int8KvCausalPlan::kTokenTile>(p, cache, plan.partition,
+                                                                         partial.view(), stream);
     else
         parallel_grouped<CausalD256H16Kv2, Int8KvCausalPlan::kTokenTile>(p, cache, plan.partition,
                                                                          partial.view(), stream);
 }
 
 void tiled(const CausalAttentionOperands& p, Int8KvReadView cache, cudaStream_t stream) {
+    // The 12/2 half has no tiled instance: it is a small-window rank shape, and falling through to
+    // the 16/2 kernels would rotate a 6-group mapping as a 8-group one.
     if (p.query_heads == 24)
         launch_int8_kv_tiled_mma<CausalD256H24Kv4, Int8KvTiledInstance>(p, cache, stream);
+    else if (p.query_heads == 12)
+        throw std::logic_error("int8 causal tiled route has no 12/2 instantiation");
     else
         launch_int8_kv_tiled_mma<CausalD256H16Kv2, Int8KvTiledInstance>(p, cache, stream);
 }

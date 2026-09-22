@@ -1,6 +1,8 @@
 #include "core/weight.h"
 #include "ninfer/ops/linear.h"
 
+#include "ops/common/split_launch.h"
+#include "ops/linear/linear_dispatch.h"
 #include "ops/linear/bf16/bf16_dispatch.h"
 #include "ops/linear/fp8/fp8_dispatch.h"
 #include "ops/linear/nvfp4/nvfp4_dispatch.h"
@@ -9,6 +11,8 @@
 #include "ops/linear/q6/q6_dispatch.h"
 #include "ops/linear/q8/q8_dispatch.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -45,6 +49,10 @@ void validate_linear_policy(LinearPolicy policy) {
     }
     throw std::invalid_argument("linear: invalid compute policy");
 }
+
+} // namespace
+
+namespace detail {
 
 void validate_linear_semantics(const Tensor& x, const Weight& w, const Tensor& out,
                                LinearPolicy policy) {
@@ -105,7 +113,7 @@ void dispatch_linear(const Tensor& x, const Weight& w, Tensor& out, LinearPolicy
     throw std::invalid_argument("linear: unsupported weight qtype");
 }
 
-} // namespace
+} // namespace detail
 
 std::size_t linear_workspace_capacity_bytes(QType qtype, std::int32_t output_rows,
                                             std::int32_t input_rows, LinearPolicy policy,
@@ -151,13 +159,87 @@ std::size_t linear_workspace_capacity_bytes(QType qtype, std::int32_t output_row
 
 void linear(const Tensor& x, const Weight& w, Tensor& out, LinearPolicy policy,
             WorkspaceArena& workspace, cudaStream_t stream) {
-    validate_linear_semantics(x, w, out, policy);
-    dispatch_linear(x, w, out, policy, &workspace, stream);
+    detail::validate_linear_semantics(x, w, out, policy);
+    detail::dispatch_linear(x, w, out, policy, &workspace, stream);
 }
 
 void linear(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
-    validate_linear_semantics(x, w, out, LinearPolicy::A16Only);
-    dispatch_linear(x, w, out, LinearPolicy::A16Only, nullptr, stream);
+    detail::validate_linear_semantics(x, w, out, LinearPolicy::A16Only);
+    detail::dispatch_linear(x, w, out, LinearPolicy::A16Only, nullptr, stream);
+}
+
+namespace {
+
+// Validates both ranks before either is issued, so a rejected pair enqueues nothing, and returns
+// the mutable output views the dispatch takes. Only the pair can check the cross-rank agreement;
+// the split axis itself may be uneven.
+std::array<Tensor, 2> validate_split(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                                     const std::array<Tensor, 2>& out, LinearPolicy policy,
+                                     const ExecutionContext& ec, bool column_parallel) {
+    detail::require_split_context(ec, "linear split: requires two distinct devices");
+    if (x[0].ne[1] != x[1].ne[1]) {
+        throw std::invalid_argument("linear split: ranks must agree on the token count");
+    }
+    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
+        throw std::invalid_argument("linear split: ranks must agree on the weight format");
+    }
+    if (column_parallel && w[0].k != w[1].k) {
+        throw std::invalid_argument("linear column-parallel: ranks must agree on K");
+    }
+    if (!column_parallel && w[0].n != w[1].n) {
+        throw std::invalid_argument("linear row-parallel: ranks must agree on N");
+    }
+    std::array<Tensor, 2> destination{out[0], out[1]};
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        detail::validate_linear_semantics(x[rank], w[rank], destination[rank], policy);
+        detail::require_rank_residency(ec, static_cast<int>(rank), x[rank].data, w[rank].payload,
+                                       out[rank].data,
+                                       "linear split: rank arguments must reside on its device");
+    }
+    return destination;
+}
+
+void issue_ranks(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                 std::array<Tensor, 2>& out, LinearPolicy policy,
+                 const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& ec) {
+    detail::for_each_rank(ec, [&](int rank) {
+        const auto slot = static_cast<std::size_t>(rank);
+        detail::dispatch_linear(x[slot], w[slot], out[slot], policy, workspace[slot],
+                                ec.dev[slot]->stream);
+    });
+}
+
+} // namespace
+
+void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                            const std::array<Tensor, 2>& out, LinearPolicy policy,
+                            const std::array<WorkspaceArena*, 2>& workspace,
+                            const ExecutionContext& ec) {
+    std::array<Tensor, 2> destination = validate_split(x, w, out, policy, ec, true);
+    issue_ranks(x, w, destination, policy, workspace, ec);
+}
+
+void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                            const std::array<Tensor, 2>& out, const ExecutionContext& ec) {
+    linear_column_parallel(x, w, out, LinearPolicy::A16Only, {nullptr, nullptr}, ec);
+}
+
+void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                         const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
+                         LinearPolicy policy, const std::array<WorkspaceArena*, 2>& workspace,
+                         const ExecutionContext& ec, const PeerEvents& events) {
+    std::array<Tensor, 2> destination = validate_split(x, w, out, policy, ec, false);
+    if (!events.live()) { throw std::invalid_argument("linear row-parallel: events must be live"); }
+    // Each partial lands in out[r] on rank r's stream; allreduce_sum records its inputs_ready event
+    // on that same stream, which orders the peer's read after the partial, and checks staging.
+    issue_ranks(x, w, destination, policy, workspace, ec);
+    allreduce_sum(out, staging, ec, events);
+}
+
+void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                         const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
+                         const ExecutionContext& ec, const PeerEvents& events) {
+    linear_row_parallel(x, w, out, staging, LinearPolicy::A16Only, {nullptr, nullptr}, ec, events);
 }
 
 } // namespace ninfer::ops

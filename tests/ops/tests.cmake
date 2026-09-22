@@ -26,7 +26,10 @@ set(ninfer_op_tests
   scatter_bf16_batch
   target_logprobs
   position
-  allreduce)
+  allreduce
+  linear_split
+  output_head_split
+  attention_headlocal)
 foreach(op IN LISTS ninfer_op_tests)
   ninfer_add_op_test(ninfer_${op}_test
     SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_${op}.cpp"

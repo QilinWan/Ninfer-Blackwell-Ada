@@ -107,10 +107,12 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 /**
  * Append K/V for B independent rows and compute causal grouped-query attention.
  *
- * The registered profiles are [D,Hq,Hkv]=[256,24,4] (group 6) and [256,16,2] (group 8), with
+ * The registered profiles are [D,Hq,Hkv]=[256,24,4] (group 6), [256,16,2] (group 8), and
+ * [256,12,2] (group 6, one device's half of [256,24,4] under two-device tensor parallelism), with
  * scale=1/sqrt(256). q/out are contiguous BF16 [D,Hq,W,B], k/v are contiguous BF16
  * [D,Hkv,W,B], positions are contiguous device I32 [W,B], kv_table_rows is contiguous device I32
- * [B], and the cache is BF16, INT8-G64, row-scaled FP8-E4M3FN, NVFP4-G16, or K8V4. valid_columns is
+ * [B], and the cache is BF16, INT8-G64, row-scaled FP8-E4M3FN, NVFP4-G16, or K8V4. The [256,12,2]
+ * profile accepts only the BF16 and INT8-G64 caches. valid_columns is
  * either contiguous device I32 [B] or an empty Tensor meaning every row has W live columns. This
  * dense/masked topology is chosen by the caller and never inferred by copying device metadata to
  * the host. B=1 accepts every positive W in the current prompt/decode domain; B=2..8 accepts
@@ -148,7 +150,7 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 /**
  * Read-only single-sequence causal attention over an already populated cache.
  *
- * q/out are contiguous BF16 [256,24|16,T], positions is contiguous sequential device I32 [T],
+ * q/out are contiguous BF16 [256,24|16|12,T], positions is contiguous sequential device I32 [T],
  * and cache geometry, visible rows, scale, numerical oracle, envelope, alias, and workspace rules
  * are the same as causal_softmax_attention. The Op accepts no new K/V and leaves every cache byte
  * unchanged; out is completely overwritten.

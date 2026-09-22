@@ -143,6 +143,10 @@ constexpr Geometry kGeometries[] = {
     {"d256-h16-kv2", 16, 2},
 };
 
+// One device's half of d256-h24-kv4 under two-device tensor parallelism. Only the BF16 and INT8
+// caches register it.
+constexpr Geometry kTensorParallelGeometry{"d256-h12-kv2", 12, 2};
+
 ops::AttentionHeadGeometry op_geometry(const Geometry& geometry) {
     return {kHeadDim, geometry.q_heads, geometry.kv_heads};
 }

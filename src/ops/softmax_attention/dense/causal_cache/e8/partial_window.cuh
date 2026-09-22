@@ -20,6 +20,12 @@
 namespace ninfer::ops {
 
 inline constexpr int kCausalHeadDim = 256;
+// Shared-memory budget two small-T CTAs may claim on one SM.
+inline constexpr int kCausalSmallTSharedResidencyBytes = 100 * 1024;
+
+[[nodiscard]] __host__ __device__ inline constexpr int causal_shared_align16(int bytes) {
+    return ((bytes + 15) / 16) * 16;
+}
 
 struct CausalAppendInput {
     static constexpr bool writes_cache = true;
