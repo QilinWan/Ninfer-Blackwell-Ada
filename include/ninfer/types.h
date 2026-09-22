@@ -1108,6 +1108,17 @@ struct ContextCostSummary {
     std::filesystem::path preset_path;
 };
 
+// Resident weight bytes of one tensor-parallel rank. The sharded, replicated and local counts are
+// the placed parents' and slices' own bytes, and capacity_bytes adds the alignment between them.
+// At tp 1 every parent counts as replicated.
+struct LoadDeviceSummary {
+    std::uint64_t capacity_bytes       = 0; // Weight arena, including alignment.
+    std::uint64_t host_to_device_bytes = 0;
+    std::uint64_t sharded_bytes        = 0; // This rank's slices of row- or column-split parents.
+    std::uint64_t replicated_bytes     = 0; // Complete parents every rank holds.
+    std::uint64_t local_bytes          = 0; // Complete parents only this rank holds.
+};
+
 struct LoadSummary {
     std::string architecture;
     std::string model_name;
@@ -1121,6 +1132,7 @@ struct LoadSummary {
     std::uint64_t peak_staging_bytes   = 0;
     std::size_t device_object_count    = 0;
     std::size_t host_object_count      = 0;
+    std::vector<LoadDeviceSummary> devices; // One entry per tensor-parallel rank.
     ContextCostSummary context_cost;
 };
 

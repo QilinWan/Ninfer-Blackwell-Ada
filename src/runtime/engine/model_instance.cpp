@@ -177,6 +177,14 @@ ConstructedModel construct_model(EngineOptions& options, DeviceContext& device) 
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
     summary.device_object_count  = stats.device_object_count;
     summary.host_object_count    = stats.host_object_count;
+    for (int i = 0; i < stats.device_count; ++i) {
+        const auto device = static_cast<std::size_t>(i);
+        summary.devices.push_back({.capacity_bytes       = stats.per_device_capacity_bytes[device],
+                                   .host_to_device_bytes = stats.per_device_h2d_bytes[device],
+                                   .sharded_bytes        = stats.sharded_bytes[device],
+                                   .replicated_bytes     = stats.replicated_bytes[device],
+                                   .local_bytes          = stats.local_bytes[device]});
+    }
     summary.context_cost         = std::move(context_cost.summary);
     return {std::move(instance), std::move(summary), std::move(context_cost.model)};
 }
