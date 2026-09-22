@@ -39,4 +39,26 @@ void fp8_gdn_input_a8_dispatch(const Tensor& x, const Weight& weight, Tensor& qk
 void fp8_gdn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                             LinearPolicy policy, WorkspaceArena* workspace, cudaStream_t stream);
 
+// Two-device shard: one rank's standalone [8192,5120] parent, Q|K|V|Z sections of 1024, 1024,
+// 3072 and 3072 rows, writing qkv [5120,T] and z [3072,T]. K is unchanged, so the route frontier
+// and the workspace query are those of the parent.
+void fp8_gdn_input_shard_decode_launch(const Tensor& x, const Weight& weight, Tensor& qkv,
+                                       Tensor& z, cudaStream_t stream);
+
+void fp8_gdn_input_shard_matrix_launch(const Tensor& x, const Weight& weight, Tensor& qkv,
+                                       Tensor& z, cudaStream_t stream);
+
+void fp8_gdn_input_shard_a8_launch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
+                                   Fp8A8Workspace workspace, cudaStream_t stream);
+
+void fp8_gdn_input_shard_a16_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
+                                      cudaStream_t stream);
+
+void fp8_gdn_input_shard_a8_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
+                                     WorkspaceArena& workspace, cudaStream_t stream);
+
+void fp8_gdn_input_shard_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
+                                  LinearPolicy policy, WorkspaceArena* workspace,
+                                  cudaStream_t stream);
+
 } // namespace ninfer::ops::detail

@@ -127,7 +127,13 @@ ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool 
                         k == std::vector<std::uint64_t>{512, 2048} && third == q && fourth == k
                   : q == std::vector<std::uint64_t>{2048, 2048} && k == q &&
                         third == std::vector<std::uint64_t>{4096, 2048} && fourth == third;
-    require(dense || moe, "input projection: unsupported logical projection geometry");
+    // Two-device shard: one rank's heads of every section, stored as one contiguous parent.
+    const bool shard =
+        attention ? q == std::vector<std::uint64_t>{3072, 5120} &&
+                        k == std::vector<std::uint64_t>{512, 5120} && third == q && fourth == k
+                  : q == std::vector<std::uint64_t>{1024, 5120} && k == q &&
+                        third == std::vector<std::uint64_t>{3072, 5120} && fourth == third;
+    require(dense || moe || shard, "input projection: unsupported logical projection geometry");
     const auto joined = concatenate_rows(inputs);
     if (contiguous(joined)) {
         auto result       = single(inputs);
@@ -135,7 +141,8 @@ ProjectionWeights input_projection(std::span<const WeightInput, 4> inputs, bool 
         const bool supported =
             (moe && format == QType::Q8_G32_FP16) ||
             (dense && (format == QType::NVFP4 || format == QType::FP8_E4M3FN_ROW_BF16 ||
-                       (attention && format == QType::BF16)));
+                       (attention && format == QType::BF16))) ||
+            (shard && format == QType::FP8_E4M3FN_ROW_BF16);
         require(supported, "input projection: unsupported single-parent format");
         return result;
     }
@@ -188,7 +195,9 @@ ProjectionWeights prepare_gdn_input_proj_weights(const WeightInput& query, const
 
 ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a, const WeightInput& b) {
     const auto& shape = matrix(a);
+    // [24,5120] is one rank's half of the [48,5120] geometry on two devices.
     require(shape == matrix(b) && (shape == std::vector<std::uint64_t>{48, 5120} ||
+                                   shape == std::vector<std::uint64_t>{24, 5120} ||
                                    shape == std::vector<std::uint64_t>{32, 2048}),
             "GDN control: unsupported A/B geometry");
     const std::array inputs{a, b};
@@ -197,7 +206,7 @@ ProjectionWeights prepare_gdn_gating_proj_weights(const WeightInput& a, const We
         require(result.weight.qtype == QType::BF16, "GDN control requires BF16 weights");
         return result;
     }
-    require(shape[0] == 48, "GDN control: this geometry requires a combined parent");
+    require(shape[1] == 5120, "GDN control: this geometry requires a combined parent");
     const auto first  = prepare_linear_weight(a);
     const auto second = prepare_linear_weight(b);
     require(first.weight.qtype == QType::BF16 && second.weight.qtype == QType::BF16,

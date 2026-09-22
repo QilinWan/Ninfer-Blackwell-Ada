@@ -107,6 +107,11 @@ Fp8GdnConvPlan fp8_gdn_record_resolve_plan(LinearPolicy policy, std::int32_t wid
 
 } // namespace
 
+bool fp8_gdn_conv_uses_a8(LinearPolicy policy, std::int32_t width, std::int32_t batch_size) {
+    return fp8_gdn_snapshot_resolve_plan(policy, width, batch_size).schedule ==
+           Fp8GdnConvScheduleId::MaterializedA8;
+}
+
 std::size_t fp8_gdn_snapshot_workspace_capacity_bytes(LinearPolicy policy, std::int32_t batch_size,
                                                       std::int32_t min_width,
                                                       std::int32_t max_width) {

@@ -22,6 +22,11 @@ namespace ninfer::ops::detail {
                                                                   std::int32_t min_width,
                                                                   std::int32_t max_width);
 
+// Whether the snapshot and record forms quantize the activation for this policy and B/W block.
+// Their A8 frontier differs from the bare projection's; the two-device shard follows it too.
+[[nodiscard]] bool fp8_gdn_conv_uses_a8(LinearPolicy policy, std::int32_t width,
+                                        std::int32_t batch_size);
+
 void fp8_gdn_snapshot_fused_launch(const Tensor& x, const Weight& weight, const Tensor& conv_weight,
                                    Tensor& conv_states, const Tensor& valid_columns,
                                    const Tensor& initial_slot, const Tensor& snapshot_base_slot,

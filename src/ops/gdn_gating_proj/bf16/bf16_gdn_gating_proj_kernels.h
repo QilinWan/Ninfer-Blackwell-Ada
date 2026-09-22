@@ -88,4 +88,21 @@ void bf16_gdn_gating_proj_35_mma_unsplit_launch(Bf16GdnGatingTokenVariant varian
                                                 const Tensor& A_log, const Tensor& dt_bias,
                                                 Tensor& g, Tensor& beta, cudaStream_t stream);
 
+// Two-device column shard [24,5120] per weight; see kShardN in bf16_gdn_gating_proj_kernels.cu.
+void bf16_gdn_gating_proj_gemv_shard_launch(const Tensor& x, const Weight& a_weight,
+                                            const Weight& b_weight, const Tensor& A_log,
+                                            const Tensor& dt_bias, Tensor& g, Tensor& beta,
+                                            cudaStream_t stream);
+void bf16_gdn_gating_proj_small_t_split10_shard_launch(const Tensor& x, const Weight& a_weight,
+                                                       const Weight& b_weight, const Tensor& A_log,
+                                                       const Tensor& dt_bias, void* workspace,
+                                                       std::size_t workspace_bytes, Tensor& g,
+                                                       Tensor& beta, cudaStream_t stream);
+// GEMV at T=1 (workspace unused) and split-10 small-T at T>=2.
+void bf16_gdn_gating_dispatch_shard(const Tensor& x, const Weight& a_weight, const Weight& b_weight,
+                                    const Tensor& A_log, const Tensor& dt_bias, void* workspace,
+                                    std::size_t workspace_bytes, Tensor& g, Tensor& beta,
+                                    cudaStream_t stream);
+[[nodiscard]] std::size_t bf16_gdn_gating_shard_workspace_bytes(std::int32_t tokens);
+
 } // namespace ninfer::ops::detail
