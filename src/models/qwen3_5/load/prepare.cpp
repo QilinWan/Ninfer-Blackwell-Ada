@@ -3,6 +3,7 @@
 #include "artifact/views.h"
 
 #include <cmath>
+#include <string>
 
 namespace ninfer::models::qwen3_5::loading {
 
@@ -76,6 +77,29 @@ std::vector<BoundWeight> resolve_weights(std::vector<PendingWeight>&& pending,
         auto view = artifact::bind_view(item.reference, materialized);
         out.push_back({std::move(item.reference.name), std::move(item.source_objects),
                        std::move(view), std::move(item.uses)});
+    }
+    return out;
+}
+
+std::vector<BoundWeight> resolve_weights(std::span<const PendingWeight> pending,
+                                         const artifact::MaterializedArtifact& materialized,
+                                         int device) {
+    std::vector<BoundWeight> out;
+    out.reserve(pending.size());
+    for (const auto& item : pending) {
+        const auto& reference = item.reference;
+        std::size_t held      = 0;
+        for (const auto& part : reference.binding.parts) {
+            held += materialized.has_device(part.object, device) ? 1 : 0;
+        }
+        WeightView view;
+        if (held == reference.binding.parts.size()) {
+            view = artifact::bind_view(reference, materialized, device);
+        } else if (held != 0) {
+            throw artifact::ArtifactError(reference.name + ": device " + std::to_string(device) +
+                                          " holds only some of its parents");
+        }
+        out.push_back({reference.name, item.source_objects, std::move(view), item.uses});
     }
     return out;
 }

@@ -132,30 +132,92 @@ Reader、binder、原生参数准备、容量查询、warmup 和执行各自检�
 
 ## 3. 请求生命周期
 
-```mermaid
-stateDiagram-v2
-    [*] --> Waiting
-    Waiting --> Materializing: 初次绑定
-    Materializing --> Prefill
-    Materializing --> Replay: 重新执行已接受历史
-    Materializing --> DecodeReady: Snapshot 恢复
-    Materializing --> ControlReady
-    Prefill --> DecodeReady
-    DecodeReady --> ControlReady
-    ControlReady --> DecodeReady
-    Replay --> Prefill
-    Replay --> DecodeReady
-    Replay --> ControlReady
-    Prefill --> Pausing
-    DecodeReady --> Pausing
-    ControlReady --> Pausing
-    Replay --> Pausing
-    Pausing --> Paused
-    Paused --> Materializing: 恢复绑定
-    Prefill --> ModelFinished
-    DecodeReady --> ModelFinished
-    ControlReady --> ModelFinished
-    ModelFinished --> [*]: 资源与输出结算
+Scheduler 不读取 checkpoint payload、victim list、resource vector 或 allocator 状态。
+
+### 3.2 ResourceManager：只决定“保留什么逻辑上下文”
+
+ResourceManager 维护：
+
+- logical lane 状态；
+- private/shared checkpoint catalog；
+- SessionIndex 与 prefix candidate index；
+- retention class、命中观测和逻辑 claim；
+- admission、capture 与 finish 的缓存策略。
+
+它把请求和缓存候选交给 Program 评估，并采用 Program 返回的完整物理结果。它不维护一份
+Device/Host bytes、page refcount 或 allocator free space 的镜像。
+
+### 3.3 Program：只决定“物理上能否执行以及如何执行”
+
+Program 中的真实 stores 与 allocators 是物理事实的唯一权威。Program：
+
+- 从完整候选终态计算占用、共享、回收和阶段峰值；
+- seal 与当前 `resource_revision` 绑定的 opaque `ResourcePlan`；
+- 执行唯一的物理 transition；
+- 返回足以让 ResourceManager 更新逻辑 catalog 的完整结果。
+
+Program 不根据 session、FIFO 位置或用户身份决定缓存价值。
+
+### 3.4 模型实例与 Engine lifetime
+
+Engine 按标准架构/config 解释所选功能的逻辑需求，binder 将它们对应到 artifact 的对象与 Use。
+Materializer 建立稳定 backing 并上传原字节，得到只读 Model。ModelInstance 持有 Model，
+从它形成 const Parameters，并将已解析的 tokenizer 等只读资源交给 Frontend。
+
+Planner 与实际执行借用同一 Parameters。Planner 根据启动范围查询各层及所选后端的需求，
+建立容量曲线；结合权重驻留后的 Device 余量解析 KV 容量，再构造 Program 的最终布局。
+GenerationCore 或 CausalScoreCore 在实例准备完成后使用它。
+
+模型配置、绑定和权重地址在实例存活期间固定；每个 Program 独占自己的可变 State/KV、
+workspace 和 Graph。销毁时先结束 Engine core 和未决设备工作，再销毁实例的 Program、
+Frontend 和 Parameters，最后释放 Model backing。Reader 与上传 staging 属于加载生命周期。
+
+权重、State/KV backing、block-table matrices、workspace 与 CUDA Graph resources 在 Engine 开始接受请求前
+建立。运行期改变 ownership、mapping、frontier 与 replica placement，但不重建这些大块 Device allocations。
+
+### 3.5 固定执行与原生参数
+
+逻辑参数、物理对象和 Op 参数数量分别由数学、存储和实际入口决定。例如当前 Dense Attention
+投影的两种已实现写法：
+
+| 实际绑定 | 固定模型调用 |
+|---|---|
+| 一个 Q4 parent 保存 Q/K，另一个 Q5 parent 保存 gate/V | 准备两个权重参数，使用双权重投影入口 |
+| 一个完整 FP8 或 NVFP4 parent 按顺序保存 Q/K/gate/V | 准备一个权重参数，使用单权重投影入口 |
+
+View 保留完整 parent 的几何、planes 和元素范围；原生准备按入口要求解释这些引用。
+共享对象只驻留一次，各使用位置保留独立的 Use。激活许可为 `A16Only={A16}`、
+`AllowA8={A16,A8}`、`AllowA4={A16,A8,A4}`；融合调用取相关 Use 的许可交集并处理所需辅助值。
+
+`LoadOptions.tp=2` 时 Dense Qwen3.5 在加载阶段按逻辑参数名切分（`qwen3_5/load/sharding.h`）：
+Attention 与 GDN 投影、MLP gate/up、`text/output_head` 按 head/中间宽度/词表分行，输出投影、
+MLP down、`mtp/input_projection` 与 GDN 卷积通道分列；norm 与 `text/token_embedding` 复制；
+Vision 只驻留在 `vision_rank`，DFlash 与 proposal 只驻留在设备 0。同一 parent 上的逻辑参数
+合成一个 parent 放置。Model 为每个设备保存一组视图，每个设备构造自己的 Parameters；
+MoE、以及读取整份 head 的设备 0 drafter（完整 proposal head）在 tp=2 下被拒绝。
+
+模型代码直接维护有限调用写法、跨 Op 融合和阶段关系；闭合计算及其 shape/格式分派属于 Op。
+Reader、binder、原生参数准备、容量查询、warmup 和实际执行各自检查所消费的合同。
+合法 artifact 的可执行范围取决于实际消费者，转换不要求完整权重组合预先注册。
+
+数学公式、权重表示值和实现精度分别解释。不同量化、prefill、batch 或 speculative 路线可以
+产生不同结果；数值与状态正确性按[Op 合同](op-development.md)及对应的独立 oracle 验证。
+
+---
+
+## 4. 请求与资源生命周期
+
+### 4.1 Request 状态
+
+请求沿以下稳定状态前进：
+
+```text
+Waiting
+  -> Materializing
+  -> Prefill
+  -> DecodeReady | ControlReady
+  -> TerminalPending
+  -> Finished
 ```
 
 `Materializing` 包含 source lease、必要传输和 destination 安装；完整绑定采用后才暴露 SequenceHandle。

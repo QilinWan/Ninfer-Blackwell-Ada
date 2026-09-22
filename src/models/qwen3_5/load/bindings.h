@@ -65,5 +65,10 @@ void bind_dflash2(Bindings& bindings, DraftWeights& weights, const DraftConfig& 
 [[nodiscard]] std::vector<BoundWeight>
 resolve_weights(std::vector<PendingWeight>&& pending,
                 const artifact::MaterializedArtifact& materialized);
+// One tensor-parallel rank's views. A parameter whose parents `device` does not hold (placed
+// PrimaryOnly or SingleDevice on the other rank) keeps its name and uses with an empty view.
+[[nodiscard]] std::vector<BoundWeight>
+resolve_weights(std::span<const PendingWeight> pending,
+                const artifact::MaterializedArtifact& materialized, int device);
 
 } // namespace ninfer::models::qwen3_5::loading

@@ -7,6 +7,7 @@
 #include "models/qwen3_5/weights.h"
 #include "ninfer/ops/weight_input.h"
 
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -36,12 +37,24 @@ public:
 
     [[nodiscard]] const ModelWeights& weights() const noexcept { return weights_; }
 
-    [[nodiscard]] const BoundWeight& weight(WeightId id) const { return bound_.at(id.index); }
+    // Tensor-parallel degree of the backing: 1, or 2 with one view set per rank.
+    [[nodiscard]] int device_count() const noexcept { return device_count_; }
 
-    [[nodiscard]] ops::WeightInput input(WeightUseId id) const;
-    [[nodiscard]] ops::WeightInput input(WeightId id) const;
+    // False when `device` holds none of the parameter's parents (a PrimaryOnly or SingleDevice
+    // placement on the other rank).
+    [[nodiscard]] bool resident(WeightId id, int device = 0) const;
 
-    [[nodiscard]] std::span<const BoundWeight> weight_data() const noexcept { return bound_; }
+    // The view on `device`: a complete parent, or that rank's Rows/Columns shard with the split
+    // axis of its logical shape narrowed. Throws when the parameter is not resident there.
+    [[nodiscard]] const BoundWeight& weight(WeightId id, int device = 0) const;
+
+    [[nodiscard]] ops::WeightInput input(WeightUseId id, int device = 0) const;
+    [[nodiscard]] ops::WeightInput input(WeightId id, int device = 0) const;
+
+    // Indexed by WeightId; entries not resident on `device` have an empty view.
+    [[nodiscard]] std::span<const BoundWeight> weight_data(int device = 0) const {
+        return bound_.at(checked_device(device));
+    }
 
     [[nodiscard]] const FrontendResources& resources() const noexcept { return resources_; }
 
@@ -54,15 +67,24 @@ public:
 private:
     friend std::unique_ptr<Model> materialize_model(LoadPlan&&, DeviceContext&,
                                                     const StartupObserver*);
-    Model(Config config, LoadOptions options, ModelWeights weights, std::vector<BoundWeight> bound,
-          FrontendResources resources, InstanceInfo info, artifact::MaterializedArtifact backing);
+    friend std::unique_ptr<Model> materialize_model(LoadPlan&&, ExecutionContext&,
+                                                    const StartupObserver*);
+    using DeviceWeights = std::array<std::vector<BoundWeight>, artifact::kMaximumDevices>;
 
-    // Destroy all borrowers before backing. The caller keeps DeviceContext alive through cleanup.
+    Model(Config config, LoadOptions options, ModelWeights weights, DeviceWeights bound,
+          int device_count, FrontendResources resources, InstanceInfo info,
+          artifact::MaterializedArtifact backing);
+
+    [[nodiscard]] std::size_t checked_device(int device) const;
+
+    // Destroy all borrowers before backing. The caller keeps its DeviceContext or ExecutionContext
+    // alive through cleanup.
     artifact::MaterializedArtifact backing_;
     Config config_;
     LoadOptions options_;
     ModelWeights weights_;
-    std::vector<BoundWeight> bound_;
+    DeviceWeights bound_;
+    int device_count_ = 1;
     FrontendResources resources_;
     InstanceInfo info_;
 };

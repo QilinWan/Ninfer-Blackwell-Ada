@@ -122,3 +122,15 @@ add_test(NAME ninfer_qwen3_5_tool_schema_oracle_test
 ninfer_add_test(ninfer_qwen3_5_shard_map_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_shard_map.cpp"
   LIBRARIES ninfer_model_loading)
+
+ninfer_add_test(ninfer_qwen3_5_sharded_load_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_sharded_load_real.cpp"
+  LIBRARIES ninfer_model_runtime)
+
+add_test(NAME ninfer_qwen3_5_sharded_load_mtp_real_test
+  COMMAND ninfer_qwen3_5_sharded_load_real_test mtp)
+
+set_tests_properties(
+  ninfer_qwen3_5_sharded_load_real_test
+  ninfer_qwen3_5_sharded_load_mtp_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)

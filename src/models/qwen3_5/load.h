@@ -38,13 +38,20 @@ private:
     friend LoadPlan plan_load(const artifact::Reader&, LoadOptions);
     friend std::unique_ptr<Model> materialize_model(LoadPlan&&, DeviceContext&,
                                                     const StartupObserver*);
+    friend std::unique_ptr<Model> materialize_model(LoadPlan&&, ExecutionContext&,
+                                                    const StartupObserver*);
 };
 
 // options.tp == 2 plans one backing per device from the logical tensor-parallel placement in
 // load/sharding.h; it rejects the MoE architecture and a masked draft that reads the full
 // output head.
 [[nodiscard]] LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options = {});
+// Requires a plan for one device.
 [[nodiscard]] std::unique_ptr<Model> materialize_model(LoadPlan&& plan, DeviceContext& device,
+                                                       const StartupObserver* observer = nullptr);
+// Requires execution.tp == options.tp. Device i of the Model is execution.dev[i]; at tp 1 this is
+// the DeviceContext overload on execution.primary().
+[[nodiscard]] std::unique_ptr<Model> materialize_model(LoadPlan&& plan, ExecutionContext& execution,
                                                        const StartupObserver* observer = nullptr);
 [[nodiscard]] std::unique_ptr<Model> load_model(const std::filesystem::path& path,
                                                 LoadOptions options, DeviceContext& device,

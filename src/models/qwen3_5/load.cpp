@@ -138,9 +138,32 @@ std::unique_ptr<Model> materialize_model(LoadPlan&& plan, DeviceContext& device,
     auto data    = std::move(plan.impl_);
     auto backing = artifact::materialize(*data->materialization.source,
                                          std::move(data->materialization), device, observer);
-    auto bound   = loading::resolve_weights(std::move(data->pending), backing);
+    Model::DeviceWeights bound;
+    bound[0] = loading::resolve_weights(std::move(data->pending), backing);
     return std::unique_ptr<Model>(new Model(
-        std::move(data->config), data->options, std::move(data->weights), std::move(bound),
+        std::move(data->config), data->options, std::move(data->weights), std::move(bound), 1,
+        std::move(data->resources), std::move(data->info), std::move(backing)));
+}
+
+std::unique_ptr<Model> materialize_model(LoadPlan&& plan, ExecutionContext& execution,
+                                         const StartupObserver* observer) {
+    if (!plan.impl_) { throw artifact::ArtifactError("load plan was already consumed"); }
+    const int tp = plan.impl_->options.tp;
+    if (execution.tp != tp) {
+        throw std::invalid_argument(
+            "ExecutionContext tensor parallelism differs from the load plan");
+    }
+    if (tp == 1) { return materialize_model(std::move(plan), execution.primary(), observer); }
+    auto data    = std::move(plan.impl_);
+    auto backing = artifact::materialize(*data->materialization.source,
+                                         std::move(data->materialization), execution, observer);
+    Model::DeviceWeights bound;
+    for (int device = 0; device < tp; ++device) {
+        bound[static_cast<std::size_t>(device)] =
+            loading::resolve_weights(data->pending, backing, device);
+    }
+    return std::unique_ptr<Model>(new Model(
+        std::move(data->config), data->options, std::move(data->weights), std::move(bound), tp,
         std::move(data->resources), std::move(data->info), std::move(backing)));
 }
 
