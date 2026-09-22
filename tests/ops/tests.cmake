@@ -32,7 +32,9 @@ set(ninfer_op_tests
   attention_headlocal
   attn_input_proj_split
   gdn_projections_split
-  gdn_headsplit)
+  gdn_headsplit
+  linear_swiglu_split
+  linear_add_split)
 foreach(op IN LISTS ninfer_op_tests)
   ninfer_add_op_test(ninfer_${op}_test
     SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_${op}.cpp"

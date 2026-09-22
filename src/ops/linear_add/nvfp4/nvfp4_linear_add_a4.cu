@@ -54,9 +54,14 @@ void launch_problem(const Weight& weight, Tensor& residual, Nvfp4A4Workspace wor
 void nvfp4_linear_add_a4_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                                 Nvfp4A4Workspace workspace, cudaStream_t stream) {
     const std::int32_t tokens = x.ne[1];
-    const auto layout = uses_tma(tokens) ? Nvfp4ScaleLayout::Tiled256 : Nvfp4ScaleLayout::RowMajor;
+    // The fused-residual TMA launcher has instances for [5120,6144] and [5120,17408] only, so the
+    // two-device input-column half [5120,8704] stays on the fused A4 MMA route at every T (routing
+    // it through TMA is a separate step). The scale layout follows the route actually taken.
+    const bool tma_route =
+        uses_tma(tokens) && weight.k != Nvfp4N5120K8704::kInputRows;
+    const auto layout = tma_route ? Nvfp4ScaleLayout::Tiled256 : Nvfp4ScaleLayout::RowMajor;
     launch_nvfp4_a4_quantize(x, weight, workspace, layout, stream);
-    if (uses_tma(tokens)) {
+    if (tma_route) {
         launch_nvfp4_a4_tma_linear_add(nvfp4_a4_operands(weight, workspace, tokens, layout),
                                        static_cast<__nv_bfloat16*>(residual.data), stream);
         return;
@@ -68,11 +73,16 @@ void nvfp4_linear_add_a4_launch(const Tensor& x, const Weight& weight, Tensor& r
     case Nvfp4GeometryId::N5120K17408:
         launch_problem<Nvfp4N5120K17408>(weight, residual, workspace, tokens, stream);
         return;
+    // The two-device input-column half [5120,8704] runs this tree's fused A4 MMA route at every T:
+    // the fused-residual TMA launcher has no instance for it (that routing is a separate step), and
+    // the schedules take the halved K as their static width.
+    case Nvfp4GeometryId::N5120K8704:
+        launch_problem<Nvfp4N5120K8704>(weight, residual, workspace, tokens, stream);
+        return;
     case Nvfp4GeometryId::N14336K5120:
     case Nvfp4GeometryId::N16384K5120:
     case Nvfp4GeometryId::N34816K5120:
     case Nvfp4GeometryId::N17408K5120:
-    case Nvfp4GeometryId::N5120K8704:
         break;
     }
     throw std::invalid_argument("nvfp4 linear_add: unsupported problem");

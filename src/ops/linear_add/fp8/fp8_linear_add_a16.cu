@@ -11,14 +11,14 @@
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
-template <int K>
+template <int K, int Ladder = K>
 void launch_matrix(const Tensor& x, const Weight& weight, Tensor& residual, cudaStream_t stream) {
     const auto operands = fp8_a16_operands(x, weight);
     auto* data          = static_cast<__nv_bfloat16*>(residual.data);
     const LinearBf16Output output{data, weight.n};
     const LinearResidualAddEpilogue epilogue{{data, weight.n}};
     // The short-K residual projection retains its lower-latency SIMT decode capacities.
-    if constexpr (K == 6144) {
+    if constexpr (Ladder == 6144) {
         if (x.ne[1] <= 4) {
             const auto tiny = [&]<int Tokens>() {
                 using Schedule =
@@ -37,11 +37,11 @@ void launch_matrix(const Tensor& x, const Weight& weight, Tensor& residual, cuda
         launch_fp8_a16_sliced_k_mma<Fp8ScheduleInstance<Fp8SlicedInstance<T, W, Stages>, K>>(
             operands, output, epilogue, stream);
     };
-    if constexpr (K == 17408) {
+    if constexpr (Ladder == 17408) {
         if (x.ne[1] <= 8) return sliced.template operator()<8, 8, 2>();
     }
     if (x.ne[1] <= 16) return sliced.template operator()<16, 8, 2>();
-    if constexpr (K == 6144) {
+    if constexpr (Ladder == 6144) {
         if (x.ne[1] <= 32) return sliced.template operator()<16, 4, 2>();
         if (x.ne[1] <= 64) return sliced.template operator()<32, 4, 1>();
     } else {
@@ -58,9 +58,21 @@ void launch_matrix(const Tensor& x, const Weight& weight, Tensor& residual, cuda
 
 void fp8_linear_add_matrix_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                                   cudaStream_t stream) {
-    if (weight.k == 6144)
-        launch_matrix<6144>(x, weight, residual, stream);
-    else
-        launch_matrix<17408>(x, weight, residual, stream);
+    // The contraction width is the operand's static K; the measured schedule ladder is the one of
+    // the problem being halved, because the two-device input-column halves [5120,3072] and
+    // [5120,8704] keep the routes and crossovers of [5120,6144] and [5120,17408].
+    switch (weight.k) {
+    case 6144:
+        return launch_matrix<6144>(x, weight, residual, stream);
+    case 3072:
+        return launch_matrix<3072, 6144>(x, weight, residual, stream);
+    case 17408:
+        return launch_matrix<17408>(x, weight, residual, stream);
+    case 8704:
+        return launch_matrix<8704, 17408>(x, weight, residual, stream);
+    default:
+        break;
+    }
+    throw std::invalid_argument("fp8 linear_add: unsupported problem");
 }
 } // namespace ninfer::ops::detail

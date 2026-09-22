@@ -4,11 +4,14 @@
 
 #include "core/weight.h"
 #include "core/arena.h"
+#include "core/device.h"
 #include "core/tensor.h"
+#include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/linear.h"
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -75,5 +78,64 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual, WorkspaceAre
 
 void linear_add(const Tensor& x, const Weight& w, Tensor& residual, LinearPolicy policy,
                 WorkspaceArena& ws, cudaStream_t stream);
+
+/**
+ * Returns the per-rank transient capacity linear_add_row_parallel() requires for every T in the
+ * inclusive [min_tokens,max_tokens] interval, at the shard shape `[output_rows,input_rows]`. One
+ * arena of this size serves either rank. Invalid profiles or intervals throw.
+ */
+[[nodiscard]] std::size_t
+linear_add_row_parallel_workspace_capacity_bytes(QType qtype, std::int32_t output_rows,
+                                                 std::int32_t input_rows, LinearPolicy policy,
+                                                 std::int32_t min_tokens, std::int32_t max_tokens);
+
+/**
+ * @brief Row-parallel (input-split) linear_add across two devices, summed across ranks.
+ *
+ * @details Rank r holds the activation block `x[r]` `[K_r,T]` and the matching weight-column
+ * shard `w[r]` `[N,K_r]`, a standalone tensor of a registered linear_add problem. `residual[r]`
+ * holds the same `[N,T]` residual on both ranks on entry. On completion both ranks hold
+ *
+ * @f[
+ *   \mathrm{ideal}_{n,t} = \mathrm{residual}_{n,t} + \sum_{r} \sum_{k \in \mathrm{block}(r)}
+ *     \mathrm{FP32Dequant}(w)_{n,k}\,\mathrm{FP32}(x_{k,t}).
+ * @f]
+ *
+ * The residual enters the sum once: rank 0 runs linear_add() on its copy, rank 1 overwrites its
+ * copy with the residual-free partial of linear() at the same shard shape, and one allreduce_sum()
+ * combines the two. The result therefore carries the storage roundings of both partials and of the
+ * sum, which the single-device evaluation does not; an A8 route also quantizes each rank's
+ * activation block with that block's own per-token scale.
+ *
+ * Both ranks must agree on the weight format, on `N`, and on `T`. Every requirement of
+ * linear_add() applies per rank. `x[r]`, `w[r]`, `residual[r]`, `staging[r]` and `workspace[r]`
+ * must be resident on `ec.dev[r]`, and rank r's work is enqueued on `ec.dev[r]->stream`.
+ * `staging[r]` is BF16 scratch of `residual[r]`'s shape that must not overlap it; its contents
+ * after the call are unspecified. The caller obligation of ninfer/ops/allreduce.h applies, and
+ * consecutive calls sharing buffers, staging and events need no host synchronization between them.
+ * The call does not synchronize and preserves the caller's current CUDA device.
+ *
+ * @param[in] x Per-rank BF16 activation block `[K_r,T]`.
+ * @param[in] w Per-rank weight-column shard `[N,K_r]`.
+ * @param[in,out] residual Per-rank BF16 `[N,T]`, identical on entry; both ranks hold the identical
+ * updated residual on completion.
+ * @param[in,out] staging Per-rank BF16 scratch matching `residual`.
+ * @param[in] policy Permitted private activation-compute profiles, applied to both ranks.
+ * @param[in,out] workspace Per-rank caller-owned transient arena, sized by
+ * linear_add_row_parallel_workspace_capacity_bytes(). It may be null when that capacity is zero.
+ * @param[in] ec Execution context holding two distinct devices.
+ * @param[in] events Live cross-device ordering events, as for allreduce_sum().
+ */
+void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                             const std::array<Tensor, 2>& residual,
+                             const std::array<Tensor, 2>& staging, LinearPolicy policy,
+                             const std::array<WorkspaceArena*, 2>& workspace,
+                             const ExecutionContext& ec, const PeerEvents& events);
+
+/// A16-only row-parallel form; it requires no transient workspace.
+void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                             const std::array<Tensor, 2>& residual,
+                             const std::array<Tensor, 2>& staging, const ExecutionContext& ec,
+                             const PeerEvents& events);
 
 } // namespace ninfer::ops

@@ -1,9 +1,12 @@
 #include "core/weight.h"
 #include "ninfer/ops/linear_add.h"
 
+#include "ops/common/split_launch.h"
 #include "ops/linear_add/bf16/bf16_linear_add_plan.h"
 #include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/linear/fp8/fp8_format.h"
+#include "ops/linear/linear_dispatch.h"
+#include "ops/linear/nvfp4/nvfp4_geometry.h"
 #include "ops/linear/nvfp4/nvfp4_layout.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
 #include "ops/linear_add/fp8/fp8_linear_add_plan.h"
@@ -12,6 +15,9 @@
 #include "ops/linear_add/q5/q5_linear_add_plan.h"
 #include "ops/linear_add/q8/q8_linear_add_plan.h"
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -293,6 +299,71 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
                 WorkspaceArena& ws, cudaStream_t stream) {
     validate_linear_add(x, w, residual_out, policy);
     dispatch_linear_add(x, w, residual_out, policy, &ws, stream);
+}
+
+std::size_t linear_add_row_parallel_workspace_capacity_bytes(QType qtype, std::int32_t output_rows,
+                                                             std::int32_t input_rows,
+                                                             LinearPolicy policy,
+                                                             std::int32_t min_tokens,
+                                                             std::int32_t max_tokens) {
+    // Rank 0 runs linear_add() and rank 1 linear() at the shard shape; one arena size serves both.
+    return std::max(linear_add_workspace_capacity_bytes(qtype, output_rows, input_rows, policy,
+                                                        min_tokens, max_tokens),
+                    linear_workspace_capacity_bytes(qtype, output_rows, input_rows, policy,
+                                                    min_tokens, max_tokens));
+}
+
+void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                             const std::array<Tensor, 2>& residual,
+                             const std::array<Tensor, 2>& staging, LinearPolicy policy,
+                             const std::array<WorkspaceArena*, 2>& workspace,
+                             const ExecutionContext& ec, const PeerEvents& events) {
+    detail::require_split_context(ec, "linear_add row-parallel: requires two distinct devices");
+    if (x[0].ne[1] != x[1].ne[1]) {
+        throw std::invalid_argument("linear_add row-parallel: ranks must agree on T");
+    }
+    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
+        throw std::invalid_argument(
+            "linear_add row-parallel: ranks must agree on the weight format");
+    }
+    if (w[0].n != w[1].n) {
+        throw std::invalid_argument("linear_add row-parallel: ranks must agree on N");
+    }
+    if (!events.live()) {
+        throw std::invalid_argument("linear_add row-parallel: events must be live");
+    }
+    // Both ranks are validated before either issues work, so a rejected pair enqueues nothing.
+    std::array<Tensor, 2> destination{residual[0], residual[1]};
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        validate_linear_add(x[rank], w[rank], destination[rank], policy);
+        detail::require_rank_residency(
+            ec, static_cast<int>(rank), x[rank].data, w[rank].payload, residual[rank].data,
+            "linear_add row-parallel: rank arguments must reside on its device");
+    }
+    // The residual must enter the sum once: rank 0 adds its partial into its copy, and rank 1
+    // overwrites its copy with the residual-free partial. allreduce_sum() then leaves
+    // `residual + partial_0 + partial_1` on both ranks. It records its inputs-ready event on each
+    // rank's stream after the partial, which orders the peer's read, and checks staging.
+    detail::for_each_rank(ec, [&](int rank) {
+        const auto slot           = static_cast<std::size_t>(rank);
+        const cudaStream_t stream = ec.dev[slot]->stream;
+        if (rank == 0) {
+            dispatch_linear_add(x[slot], w[slot], destination[slot], policy, workspace[slot],
+                                stream);
+        } else {
+            detail::dispatch_linear(x[slot], w[slot], destination[slot], policy, workspace[slot],
+                                    stream);
+        }
+    });
+    allreduce_sum(residual, staging, ec, events);
+}
+
+void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
+                             const std::array<Tensor, 2>& residual,
+                             const std::array<Tensor, 2>& staging, const ExecutionContext& ec,
+                             const PeerEvents& events) {
+    linear_add_row_parallel(x, w, residual, staging, LinearPolicy::A16Only, {nullptr, nullptr}, ec,
+                            events);
 }
 
 } // namespace ninfer::ops

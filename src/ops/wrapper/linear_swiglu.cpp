@@ -1,6 +1,7 @@
 #include "core/weight.h"
 #include "ninfer/ops/linear_swiglu.h"
 
+#include "ops/common/split_launch.h"
 #include "ops/linear/fp8/fp8_format.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
 #include "ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.h"
@@ -8,6 +9,8 @@
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/q8/q8_linear_swiglu_plan.h"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
@@ -181,6 +184,46 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
 void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, WorkspaceArena& ws,
                    cudaStream_t stream) {
     linear_swiglu(x, gate_up_weight, out, LinearPolicy::A16Only, ws, stream);
+}
+
+void linear_swiglu_column_parallel(const std::array<Tensor, 2>& x,
+                                   const std::array<Weight, 2>& gate_up_weight,
+                                   const std::array<Tensor, 2>& out, LinearPolicy policy,
+                                   const std::array<WorkspaceArena*, 2>& workspace,
+                                   const ExecutionContext& ec) {
+    detail::require_split_context(ec,
+                                  "linear_swiglu column-parallel: requires two distinct devices");
+    if (x[0].ne[1] != x[1].ne[1]) {
+        throw std::invalid_argument("linear_swiglu column-parallel: ranks must agree on T");
+    }
+    if (gate_up_weight[0].qtype != gate_up_weight[1].qtype ||
+        gate_up_weight[0].layout != gate_up_weight[1].layout) {
+        throw std::invalid_argument(
+            "linear_swiglu column-parallel: ranks must agree on the weight format");
+    }
+    if (gate_up_weight[0].k != gate_up_weight[1].k) {
+        throw std::invalid_argument("linear_swiglu column-parallel: ranks must agree on K");
+    }
+    // Both ranks are validated before either issues work, so a rejected pair enqueues nothing.
+    std::array<Tensor, 2> destination{out[0], out[1]};
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        validate_linear_swiglu(x[rank], gate_up_weight[rank], destination[rank], policy);
+        detail::require_rank_residency(
+            ec, static_cast<int>(rank), x[rank].data, gate_up_weight[rank].payload, out[rank].data,
+            "linear_swiglu column-parallel: rank arguments must reside on its device");
+    }
+    detail::for_each_rank(ec, [&](int rank) {
+        const auto slot = static_cast<std::size_t>(rank);
+        dispatch_linear_swiglu(x[slot], gate_up_weight[slot], destination[slot], policy,
+                               workspace[slot], ec.dev[slot]->stream);
+    });
+}
+
+void linear_swiglu_column_parallel(const std::array<Tensor, 2>& x,
+                                   const std::array<Weight, 2>& gate_up_weight,
+                                   const std::array<Tensor, 2>& out, const ExecutionContext& ec) {
+    linear_swiglu_column_parallel(x, gate_up_weight, out, LinearPolicy::A16Only, {nullptr, nullptr},
+                                  ec);
 }
 
 } // namespace ninfer::ops
