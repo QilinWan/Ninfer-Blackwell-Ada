@@ -13,6 +13,8 @@ namespace ninfer::ops::detail {
 // Registered split partitions, named by their row profile. The wrapper resolves one of these from
 // the destination row counts and refuses anything else.
 enum class CausalConvSplitGeometry {
+    Rows1024x1024x2048,
+    Rows1024x1024x3072,
     Rows2048x2048x4096,
     Rows2048x2048x6144,
 };

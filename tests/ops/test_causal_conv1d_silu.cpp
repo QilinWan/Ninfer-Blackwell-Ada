@@ -751,6 +751,14 @@ int main() {
                                7000U + static_cast<std::uint32_t>(T));
     }
 
+    // The two-device halves of both geometries, across the same route boundary.
+    for (const std::int32_t T : {1, 16, 17, 65, 257}) {
+        failures += split_case(kQwen27Channels / 2, 1024, 1024, 3072, T, false, false,
+                               6300U + static_cast<std::uint32_t>(T));
+        failures += split_case(kQwen35Channels / 2, 1024, 1024, 2048, T, T == 17, false,
+                               7300U + static_cast<std::uint32_t>(T));
+    }
+
     // The exact-alias state form, on both geometries, across every route boundary.
     for (const std::int32_t T : {1, 2, 15, 16, 17, 32, 33, 64, 65, 257}) {
         failures += split_case(kQwen27Channels, 2048, 2048, 6144, T, true, false,

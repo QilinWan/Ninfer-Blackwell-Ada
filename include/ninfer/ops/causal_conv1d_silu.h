@@ -33,9 +33,10 @@ void causal_conv1d_silu(const Tensor& x, const Tensor& weight, const Tensor& con
 // Split-output form. `ideal` is unchanged; its rows are written to three destinations instead of
 // one, partitioned in row order as out0, out1, out2. Every destination is contiguous BF16 with the
 // column count of x, and every operand is four-byte aligned. The supported row profiles are
-// (2048, 2048, 4096) over C = 8192 and (2048, 2048, 6144) over C = 10240; any other profile is
-// rejected. conv_state_in and conv_state_out follow the family rule above: disjoint or exactly the
-// same storage. No destination may overlap another, x, weight, or either state.
+// (2048, 2048, 4096) over C = 8192 and (2048, 2048, 6144) over C = 10240, and their two-device
+// halves (1024, 1024, 2048) over C = 4096 and (1024, 1024, 3072) over C = 5120; any other profile
+// is rejected. conv_state_in and conv_state_out follow the family rule above: disjoint or exactly
+// the same storage. No destination may overlap another, x, weight, or either state.
 void causal_conv1d_silu_split(const Tensor& x, const Tensor& weight, const Tensor& conv_state_in,
                               Tensor& conv_state_out, Tensor& out0, Tensor& out1, Tensor& out2,
                               cudaStream_t stream);
