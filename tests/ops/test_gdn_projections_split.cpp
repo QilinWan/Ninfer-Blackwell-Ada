@@ -976,9 +976,14 @@ int verify_registry() {
                 const std::size_t bytes =
                     ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(
                         kFp8, kShardRows, kHidden, policy, tokens, tokens);
-                // The route frontier is the parent's: A8 from T=8 when the policy permits it.
-                const bool a8 = policy != ops::LinearPolicy::A16Only && tokens >= 8;
-                if ((bytes != 0) != a8) { throw std::runtime_error("unexpected A8 workspace"); }
+                // The shard keeps the parent's K, so the route frontier and the workspace are the
+                // parent's. Compared against the parent's own public query instead of a literal T,
+                // which is this tree's measured frontier (fp8_gdn_input_plan.cpp: A8 from T=17).
+                const std::size_t parent = ops::gdn_input_proj_workspace_capacity_bytes(
+                    kFp8, kParentRows, kHidden, policy, tokens, tokens);
+                if (bytes != parent) {
+                    throw std::runtime_error("shard workspace quote is not the parent's");
+                }
             });
         }
         failures += expect_accepted("gdn snapshot workspace", [&] {
