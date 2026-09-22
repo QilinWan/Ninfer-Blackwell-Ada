@@ -21,6 +21,9 @@ inline constexpr int kFp8AttnInputLastSmallMmaT = 32;
                                                                   std::int32_t min_tokens,
                                                                   std::int32_t max_tokens);
 
+// Every launcher and fp8_attn_input_dispatch() serve the whole [14336,5120] parent and one
+// device's [7168,5120] two-device shard (fp8_attn_input_output.cuh), selected by `weight.n`.
+// Both share K, so the routes, their token cutoffs and the workspace capacity are the same.
 void fp8_attn_input_a16_small_mma_launch(const Tensor& x, const Weight& weight, Tensor& q,
                                          Tensor& gate, Tensor& k, Tensor& v, cudaStream_t stream);
 void fp8_attn_input_a16_gemm_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,

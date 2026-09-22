@@ -29,7 +29,8 @@ set(ninfer_op_tests
   allreduce
   linear_split
   output_head_split
-  attention_headlocal)
+  attention_headlocal
+  attn_input_proj_split)
 foreach(op IN LISTS ninfer_op_tests)
   ninfer_add_op_test(ninfer_${op}_test
     SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_${op}.cpp"

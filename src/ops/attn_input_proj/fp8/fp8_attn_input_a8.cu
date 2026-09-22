@@ -1,5 +1,6 @@
 #include "ops/attn_input_proj/fp8/fp8_attn_input_plan.h"
 #include "ops/attn_input_proj/fp8/fp8_attn_input_output.cuh"
+#include "ops/linear/fp8/fp8_a8_split_k.h"
 #include "ops/linear/fp8/fp8_template_launch.cuh"
 #include "ops/linear/fp8/fp8_instances.cuh"
 
@@ -13,22 +14,33 @@ using Bulk      = Fp8A8TmaSplitKSchedule<Fp8A8TmaMmaSchedule<128, 256, 128, 2, 4
 } // namespace
 
 std::size_t fp8_attn_input_partial_capacity_bytes(std::int32_t max_tokens) {
-    return max_tokens > 384 ? Bulk::kPartialBytes : 0;
+    // Every launcher here serves the whole [14336,5120] parent and one device's [7168,5120] shard.
+    // Only the bulk route splits K, and the shard has half the parent's 256-row tiles, so it
+    // reaches an underfilled final wave from T=289 while the parent stays whole through T=384.
+    // The shared capacity therefore reserves the larger of the two requirements.
+    const std::size_t last = static_cast<std::size_t>(max_tokens);
+    if (last <= 288) return 0;
+    const std::size_t parent =
+        fp8_a8_band_partial_bytes<Bulk>(289, last, Fp8AttnInputParent::Geometry::kOutputRows / 256);
+    const std::size_t shard =
+        fp8_a8_band_partial_bytes<Bulk>(289, last, Fp8AttnInputShard::Geometry::kOutputRows / 256);
+    return std::max(parent, shard);
 }
 
-void fp8_attn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
-                              Tensor& key, Tensor& value, Fp8A8Workspace workspace,
-                              cudaStream_t stream) {
+namespace {
+template <class Problem>
+void run_a8(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate, Tensor& key,
+            Tensor& value, Fp8A8Workspace workspace, cudaStream_t stream) {
     launch_fp8_a8_quantize(x, weight, workspace, stream);
-    const Fp8AttentionInputOutput output{
+    const typename Problem::Output output{
         static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(key.data),
         static_cast<__nv_bfloat16*>(gate.data), static_cast<__nv_bfloat16*>(value.data)};
     const auto operands = fp8_a8_operands(weight, workspace, x.ne[1]);
     const auto launch   = [&]<class Schedule>() {
-        using S = Fp8ScheduleInstance<Schedule, 5120>;
+        using S = Fp8ScheduleInstance<Schedule, Problem::Geometry::kInputRows>;
         if constexpr (S::kTmaSwizzle)
             launch_fp8_a8_tma_mma<S>(operands, output, LinearIdentityEpilogue{}, stream,
-                                       workspace.partials);
+                                      workspace.partials);
         else
             launch_fp8_a8_mma<S>(operands, output, LinearIdentityEpilogue{}, stream);
     };
@@ -39,5 +51,14 @@ void fp8_attn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& q, 
     // Three 96-token tiles give 168 CTAs: one almost-full wave through T=288.
     if (x.ne[1] <= 288) return launch.template operator()<Tma96x256>();
     launch.template operator()<Bulk>();
+}
+} // namespace
+
+void fp8_attn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
+                              Tensor& k, Tensor& v, Fp8A8Workspace workspace,
+                              cudaStream_t stream) {
+    visit_fp8_attn_input_problem(weight.n, [&]<class Problem>() {
+        run_a8<Problem>(x, weight, q, gate, k, v, workspace, stream);
+    });
 }
 } // namespace ninfer::ops::detail
