@@ -1,6 +1,7 @@
 #include "models/qwen3_5/state/state_image.h"
 
 #include "core/device.h"
+#include "core/device_scope.h"
 
 #include <limits>
 #include <stdexcept>
@@ -338,8 +339,20 @@ const CyclicKVCache* StateImageDevicePool::dflash_local() const noexcept {
     return dflash_local_ ? &*dflash_local_ : nullptr;
 }
 
-void StateImageDevicePool::zero_slot(std::int32_t slot, cudaStream_t stream) {
-    validate_slot(slot, slot_count(), "StateImage zero slot is out of range");
+void StateImageDevicePool::attach_mirror(StateImageDevicePool& mirror, int device,
+                                         cudaStream_t stream) {
+    if (&mirror == this || mirror.slot_count() != slot_count() ||
+        mirror.linear_.layer_count() != linear_.layer_count() ||
+        mirror.host_layout_.spec.hidden != host_layout_.spec.hidden || device < 0 ||
+        stream == nullptr) {
+        throw std::invalid_argument("StateImage mirror pool does not match the origin pool");
+    }
+    mirror_        = &mirror;
+    mirror_device_ = device;
+    mirror_stream_ = stream;
+}
+
+void StateImageDevicePool::zero_slot_local(std::int32_t slot, cudaStream_t stream) {
     linear_.zero_slot(slot, stream);
     const Tensor hidden = continuation_hidden_slot(slot);
     CUDA_CHECK(cudaMemsetAsync(hidden.data, 0, hidden.bytes(), stream));
@@ -354,7 +367,18 @@ void StateImageDevicePool::zero_slot(std::int32_t slot, cudaStream_t stream) {
     }
 }
 
-void StateImageDevicePool::zero_all(cudaStream_t stream) {
+void StateImageDevicePool::zero_slot(std::int32_t slot, cudaStream_t stream) {
+    validate_slot(slot, slot_count(), "StateImage zero slot is out of range");
+    zero_slot_local(slot, stream);
+    if (mirror_ != nullptr) {
+        const ScopedCurrentDevice scope(mirror_device_);
+        mirror_->linear_.zero_slot(slot, mirror_stream_);
+        const Tensor hidden = mirror_->continuation_hidden_slot(slot);
+        CUDA_CHECK(cudaMemsetAsync(hidden.data, 0, hidden.bytes(), mirror_stream_));
+    }
+}
+
+void StateImageDevicePool::zero_all_local(cudaStream_t stream) {
     linear_.zero_all(stream);
     CUDA_CHECK(cudaMemsetAsync(continuation_hidden_.data, 0, continuation_hidden_.bytes(), stream));
     if (dflash_local_) {
@@ -366,18 +390,35 @@ void StateImageDevicePool::zero_all(cudaStream_t stream) {
     }
 }
 
-void StateImageDevicePool::copy_slot(std::int32_t source, std::int32_t destination,
-                                     cudaStream_t stream) {
-    validate_slot(source, slot_count(), "StateImage copy source is out of range");
-    validate_slot(destination, slot_count(), "StateImage copy destination is out of range");
-    if (source == destination) { return; }
+void StateImageDevicePool::zero_all(cudaStream_t stream) {
+    zero_all_local(stream);
+    if (mirror_ != nullptr) {
+        const ScopedCurrentDevice scope(mirror_device_);
+        mirror_->zero_all_local(mirror_stream_);
+    }
+}
+
+void StateImageDevicePool::copy_slot_local(std::int32_t source, std::int32_t destination,
+                                           cudaStream_t stream) {
     linear_.copy_slot(source, destination, stream);
     const Tensor source_hidden      = continuation_hidden_slot(source);
     const Tensor destination_hidden = continuation_hidden_slot(destination);
     CUDA_CHECK(cudaMemcpyAsync(destination_hidden.data, source_hidden.data,
                                destination_hidden.bytes(), cudaMemcpyDeviceToDevice, stream));
+}
+
+void StateImageDevicePool::copy_slot(std::int32_t source, std::int32_t destination,
+                                     cudaStream_t stream) {
+    validate_slot(source, slot_count(), "StateImage copy source is out of range");
+    validate_slot(destination, slot_count(), "StateImage copy destination is out of range");
+    if (source == destination) { return; }
+    copy_slot_local(source, destination, stream);
     if (dflash_local_) {
         dflash_local_->copy_slot_from(*dflash_local_, source, destination, stream);
+    }
+    if (mirror_ != nullptr) {
+        const ScopedCurrentDevice scope(mirror_device_);
+        mirror_->copy_slot_local(source, destination, mirror_stream_);
     }
 }
 
@@ -400,6 +441,10 @@ void StateImageDevicePool::validate_host_layout(const StateImageHostLayout* layo
 
 void StateImageDevicePool::copy_to_host(std::int32_t source, HostStateImageView destination,
                                         cudaStream_t stream) const {
+    if (mirror_ != nullptr) {
+        throw std::logic_error(
+            "StateImage Host snapshot is not available while a tensor-parallel mirror is attached");
+    }
     validate_slot(source, slot_count(), "StateImage copy-to-host source is out of range");
     validate_host_layout(destination.layout, destination.data);
     for (std::uint32_t layer = 0; layer < linear_.layer_count(); ++layer) {
@@ -437,6 +482,10 @@ void StateImageDevicePool::copy_to_host(std::int32_t source, HostStateImageView 
 
 void StateImageDevicePool::copy_from_host(HostStateImageConstView source, std::int32_t destination,
                                           cudaStream_t stream) {
+    if (mirror_ != nullptr) {
+        throw std::logic_error(
+            "StateImage Host restore is not available while a tensor-parallel mirror is attached");
+    }
     validate_slot(destination, slot_count(),
                   "StateImage copy-from-host destination is out of range");
     validate_host_layout(source.layout, source.data);

@@ -12,6 +12,7 @@
 #include <iostream>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -485,6 +486,110 @@ int exercise_layout_and_transfer(ninfer::DeviceContext& context, ninfer::KVPageG
     return failures;
 }
 
+std::vector<unsigned char> read_page(const ninfer::Tensor& plane, std::int32_t page) {
+    std::vector<unsigned char> out(plane.nb[3]);
+    const cudaError_t err =
+        cudaMemcpy(out.data(), static_cast<const unsigned char*>(plane.data) + page * plane.nb[3],
+                   out.size(), cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("page read failed: ") + cudaGetErrorString(err));
+    }
+    return out;
+}
+
+// A tensor-parallel mirror on the same device: every addressing mutation of the origin pools must
+// land at the same physical/row index of the mirror, and the mirror's execution rows must follow
+// the origin's leases.
+int exercise_mirror(ninfer::DeviceContext& context) {
+    int failures = 0;
+    ninfer::KVPageGeometry geometry{
+        .device_plane_order = ninfer::PagedKVPlaneOrder::PageMajor,
+        .planes             = {{ninfer::DType::I8, 8, 2, 256}},
+    };
+    PlannedCache plan = plan_cache(4, 4, 2, geometry);
+    ninfer::DeviceArena mirror_arena(plan.bytes);
+    ninfer::DeviceArena origin_arena(plan.bytes);
+    // The mirror pools must outlive the origin pools, which hold the mirror's row leases.
+    ninfer::DeviceKVPagePool mirror_pool({mirror_arena.base(), mirror_arena.capacity()},
+                                         plan.pages);
+    ninfer::KVExecutionTablePool mirror_tables({mirror_arena.base(), mirror_arena.capacity()},
+                                               plan.tables, mirror_pool);
+    ninfer::DeviceKVPagePool pool({origin_arena.base(), origin_arena.capacity()}, plan.pages);
+    ninfer::KVExecutionTablePool tables({origin_arena.base(), origin_arena.capacity()}, plan.tables,
+                                        pool);
+
+    const ninfer::DeviceKVMirror where{.device = context.device, .stream = context.transfer_stream};
+    pool.attach_mirror(mirror_pool, where);
+    tables.attach_mirror(mirror_tables, where);
+
+    std::vector<ninfer::DeviceKVPageLease> pages  = materialize(pool, 3);
+    ninfer::KVExecutionRowLease row               = tables.acquire(1);
+    const ninfer::KVExecutionRowLease& mirror_row = tables.mirror_row(row.handle());
+    failures += expect(mirror_row.belongs_to(mirror_tables) && mirror_row.row_index() == 1,
+                       "mirror execution row was not acquired with the origin row");
+    bool mirror_row_owned = false;
+    try {
+        (void)mirror_tables.acquire(1);
+    } catch (const std::invalid_argument&) {
+    } catch (const std::logic_error&) { mirror_row_owned = true; }
+    failures += expect(mirror_row_owned, "mirror execution row was acquirable independently");
+
+    tables.publish(row.handle(), 0, pages, context.stream);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    failures += expect(read_mapping(tables.row(row.handle()), pages.size()) ==
+                           read_mapping(mirror_tables.row(mirror_row.handle()), pages.size()),
+                       "mirror execution row differs from the origin row");
+
+    const auto origin_bytes = fill_device_pool(pool, context.stream);
+    const auto mirror_bytes = fill_device_pool(mirror_pool, context.transfer_stream);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const ninfer::Tensor& mirror_plane       = mirror_pool.plane(0);
+    const std::vector<std::int32_t> physical = read_mapping(tables.row(row.handle()), pages.size());
+    const std::vector<unsigned char> mirror_source = read_page(mirror_plane, physical[0]);
+    pool.copy_page(pages[0].handle(), pages[1].handle(), context.stream);
+    const ninfer::DeviceKVPageHandle zeroed[] = {pages[2].handle()};
+    pool.zero_pages(zeroed, context.stream);
+    CUDA_CHECK(cudaDeviceSynchronize());
+    failures += expect(read_page(mirror_plane, physical[1]) == mirror_source,
+                       "copy_page was not replayed on the mirror pool");
+    const std::vector<unsigned char> mirror_zeroed = read_page(mirror_plane, physical[2]);
+    failures += expect(std::all_of(mirror_zeroed.begin(), mirror_zeroed.end(),
+                                   [](unsigned char byte) { return byte == 0; }),
+                       "zero_pages was not replayed on the mirror pool");
+
+    bool host_rejected = false;
+    try {
+        pool.copy_to_host(handles(pages), ninfer::HostKVAllocationView{}, context.stream);
+    } catch (const std::invalid_argument&) {
+    } catch (const std::logic_error&) { host_rejected = true; }
+    failures += expect(host_rejected, "Host transfer was accepted with a mirror attached");
+
+    const ninfer::KVExecutionRowHandle stale = row.handle();
+    row.release();
+    bool stale_rejected = false;
+    try {
+        (void)tables.mirror_row(stale);
+    } catch (const std::invalid_argument&) { stale_rejected = true; }
+    failures += expect(stale_rejected, "stale origin row still named a mirror row");
+    try {
+        ninfer::KVExecutionRowLease reacquired = mirror_tables.acquire(1);
+        (void)reacquired;
+    } catch (const std::logic_error&) {
+        failures += expect(false, "mirror execution row was not released with the origin row");
+    }
+
+    ninfer::KVExecutionRowLease bound = tables.acquire(0);
+    bool bound_attach_rejected        = false;
+    try {
+        tables.attach_mirror(mirror_tables, where);
+    } catch (const std::invalid_argument&) {
+    } catch (const std::logic_error&) { bound_attach_rejected = true; }
+    failures += expect(bound_attach_rejected, "mirror was re-attached while a row was bound");
+    (void)origin_bytes;
+    (void)mirror_bytes;
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -502,6 +607,7 @@ int main() {
     try {
         ninfer::DeviceContext context(0);
         int failures = exercise_reservation_and_mapping(context);
+        failures += exercise_mirror(context);
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{

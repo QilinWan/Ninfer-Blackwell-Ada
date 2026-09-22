@@ -401,6 +401,20 @@ table；唯一有效 source 也不能先释放。
 Logical descriptor 不构成第三份 payload。它可以在 Device-only、Host-only 或 Both placements 下继续存在。
 只有当 references、replicas 和 transaction pins 均为零时，descriptor 才能回收并推进 generation。
 
+### 5.6 Tensor-parallel mirror
+
+tp 2 时 rank 1 持有自己的 Device page pool 与 execution tables（plane 按减半的 KV heads 分配），但没有
+logical page、reservation 或 address-space 簿记；这些只在 rank 0。
+
+- `DeviceKVPagePool::attach_mirror(mirror, where)`：rank 0 pool 的每次 `zero_pages`/`copy_page` 在
+  `where.stream` 上以相同 physical page ID 在 mirror 上重放。Mirror 必须有相同 page 容量；挂接后 Host
+  transfer 被拒绝，因为 Host 层没有 rank 1 副本。
+- `KVExecutionTablePool::attach_mirror(mirror, where)`：每次 row acquire/release 与 publication 在 mirror 的
+  同一行重放。Rank 0 持有 mirror 的 row lease，rank 1 只通过 `mirror_row()` 读取，不自行 `acquire`；
+  挂接时两个 pool 都不能有 bound row，mirror 的生命周期必须长于主 pool。
+
+因此 rank 0 的一套 page/address 决策同时寻址两个 rank 的 KV，两个 rank 的 block table 逐项相同。
+
 ---
 
 ## 6. KV history 与 address space

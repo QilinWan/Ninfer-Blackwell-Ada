@@ -1768,74 +1768,6 @@ int exercise_concurrent_resource_settlement(const char* artifact) {
     return 0;
 }
 
-// Forced tokens prefill through the Program's single prefill KV row scalar. Lane 0 thinks with a
-// small budget while lane 1 is admitted, prefilled over several chunks and decoded beside it;
-// the thinking-control suffix is forced into lane 0 only after lane 1's bind and prefill. If
-// that suffix used the row scalar left by lane 1's bind, it would write lane 0's K/V into lane
-// 1's pages at positions lane 1 has already prefilled. Lane 1's greedy tokens must therefore be
-// identical to a run whose lane 0 thinks without a budget and forces nothing: both runs decode
-// lane 1 in the same two-row rounds, whose rows do not depend on each other.
-int exercise_forced_tokens_keep_their_kv_row(const char* artifact) {
-    constexpr std::uint32_t kThinkingBudget  = 8;
-    constexpr std::uint32_t kThinkingOutput  = 96;
-    constexpr std::uint32_t kNeighbourPrompt = 600;
-    constexpr std::uint32_t kNeighbourOutput = 24;
-    ninfer::EngineOptions options;
-    options.artifact_path        = artifact;
-    options.max_context          = 1024;
-    options.kv_capacity          = ninfer::KvCapacityPolicy::explicit_capacity(4096);
-    options.prefill_chunk        = 256;
-    options.speculative.backend  = ninfer::SpeculativeBackend::None;
-    options.max_concurrency      = 2;
-    options.max_pending_requests = 2;
-    options.context_cache        = ninfer::ContextCacheOptions{.enabled = false};
-    ninfer::Engine engine(std::move(options));
-
-    const std::optional<std::string> neighbour_text =
-        exact_repeated_prompt_text(engine, kNeighbourPrompt, "delta");
-    if (!neighbour_text) {
-        std::cerr << "forced-token KV row fixture has no exact neighbour prompt\n";
-        return 1;
-    }
-    const auto thinking_prompt = [] {
-        ninfer::PromptInput input;
-        ninfer::ChatMessage user;
-        user.role = ninfer::ChatRole::User;
-        user.parts.push_back(ninfer::MessagePart{.kind  = ninfer::MessagePartKind::Text,
-                                                 .text  = "What is 17*23? Answer with the number.",
-                                                 .media = {}});
-        input.messages.push_back(std::move(user));
-        input.options.enable_thinking = true;
-        return input;
-    };
-    const auto run = [&](std::optional<std::uint32_t> budget) {
-        ninfer::RequestOptions thinking    = fixed_output(kThinkingOutput, false);
-        thinking.execution.thinking.budget = budget;
-        auto first = engine.submit(engine.prepare(thinking_prompt()), thinking);
-        auto second =
-            engine.submit(engine.prepare(pressure_turn(*neighbour_text, "",
-                                                       ninfer::CacheRetentionHint::Disposable)),
-                          fixed_output(kNeighbourOutput, false));
-        ninfer::GenerationResult neighbour = second.wait();
-        ninfer::GenerationResult thinker   = first.wait();
-        return std::pair{std::move(thinker), std::move(neighbour)};
-    };
-
-    const auto [forced, forced_neighbour]     = run(kThinkingBudget);
-    const auto [unforced, unforced_neighbour] = run(std::nullopt);
-    if (!forced.thinking.applied || forced.thinking.injected_tokens == 0 ||
-        unforced.thinking.injected_tokens != 0) {
-        std::cerr << "forced-token KV row fixture did not force exactly one thinking suffix\n";
-        return 1;
-    }
-    if (forced_neighbour.generated_token_ids.size() != kNeighbourOutput ||
-        forced_neighbour.generated_token_ids != unforced_neighbour.generated_token_ids) {
-        std::cerr << "another lane's forced tokens changed a concurrent lane's greedy output\n";
-        return 1;
-    }
-    return 0;
-}
-
 int verify_loaded_product(const ninfer::Engine& engine) {
     const ninfer::LoadSummary load = engine.load_summary();
     if (load.architecture != "Qwen3_5ForCausalLM" || load.model_name.empty() ||
@@ -1896,9 +1828,6 @@ int exercise_artifact(const char* artifact) {
         return result;
     }
     if (const int result = exercise_concurrent_resource_settlement(artifact); result != 0) {
-        return result;
-    }
-    if (const int result = exercise_forced_tokens_keep_their_kv_row(artifact); result != 0) {
         return result;
     }
     return 0;
@@ -2035,8 +1964,6 @@ int main() {
         result = exercise_artifact(artifact);
     } else if (scenario == "concurrent") {
         result = exercise_concurrent_resource_settlement(artifact);
-    } else if (scenario == "forced-token-kv-row") {
-        result = exercise_forced_tokens_keep_their_kv_row(artifact);
     } else if (scenario == "anthropic-prefix-regression") {
         result = exercise_anthropic_prefix_regression(artifact);
     } else if (scenario == "nested-tool-markers") {

@@ -161,6 +161,12 @@ public:
 
     [[nodiscard]] const StateImageHostLayout& host_layout() const noexcept { return host_layout_; }
 
+    // Tensor-parallel rank 1's replica of this pool. Every zero_slot/zero_all/copy_slot issued
+    // here is repeated at the same slot indices on `mirror` on `stream` with `device` current, so
+    // rank 1's GDN/hidden continuation state follows rank 0's slot lifecycle. DFlash local state
+    // is rank-0-only and is not mirrored; Host transfers are rejected while a mirror is attached.
+    void attach_mirror(StateImageDevicePool& mirror, int device, cudaStream_t stream);
+
     void zero_slot(std::int32_t slot, cudaStream_t stream = nullptr);
     void zero_all(cudaStream_t stream = nullptr);
     void copy_slot(std::int32_t source, std::int32_t destination, cudaStream_t stream = nullptr);
@@ -173,11 +179,17 @@ public:
 
 private:
     void validate_host_layout(const StateImageHostLayout* layout, const std::byte* data) const;
+    void zero_slot_local(std::int32_t slot, cudaStream_t stream);
+    void zero_all_local(cudaStream_t stream);
+    void copy_slot_local(std::int32_t source, std::int32_t destination, cudaStream_t stream);
 
     LinearAttentionStatePool linear_;
     Tensor continuation_hidden_;
     std::optional<CyclicKVCache> dflash_local_;
     StateImageHostLayout host_layout_;
+    StateImageDevicePool* mirror_ = nullptr;
+    int mirror_device_            = -1;
+    cudaStream_t mirror_stream_   = nullptr;
 };
 
 } // namespace ninfer::models::qwen3_5
