@@ -258,6 +258,9 @@ int main() {
     int failures = 0;
     failures += run_shape(5120, 6144, 17, 861U);
     failures += run_shape(5120, 17408, 20, 863U);
+    // Two-device input-column halves, which keep the crossover of the problem they halve.
+    failures += run_shape(5120, 3072, 17, 865U);
+    failures += run_shape(5120, 8704, 20, 867U);
     std::cout << (failures == 0 ? "OK" : "FAIL") << " FP8 linear_add\n";
     return failures == 0 ? 0 : 1;
 }

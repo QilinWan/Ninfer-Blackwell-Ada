@@ -239,6 +239,8 @@ int main() {
     int failures = 0;
     failures += run_shape(5120, 6144, 811U);
     failures += run_shape(5120, 17408, 821U);
+    // The two-device input-column half, which keeps the crossover of [5120,17408].
+    failures += run_shape(5120, 8704, 831U);
     std::cout << (failures == 0 ? "OK" : "FAIL") << " NVFP4 linear_add\n";
     return failures == 0 ? 0 : 1;
 }

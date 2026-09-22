@@ -1,5 +1,6 @@
 #include "ops/linear_add/fp8/fp8_linear_add_plan.h"
 #include "ops/linear/fp8/fp8_template_launch.cuh"
+#include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/linear/fp8/fp8_instances.cuh"
 
 namespace ninfer::ops::detail {
@@ -44,7 +45,10 @@ void launch_problem(const Tensor& x, const Weight& weight, Tensor& residual,
             launch_fp8_a8_mma<S>(operands, output, LinearResidualAddEpilogue{{data, weight.n}},
                                    stream);
     };
-    if constexpr (K == 6144) {
+    // K is the contraction width; the two-device input-column halves [5120,3072] and [5120,8704]
+    // run their parent's ladder (N and the row-tile count are unchanged, and every tile divides the
+    // halved K), so each half maps to the family it halves.
+    if constexpr (K == 6144 || K == 3072) {
         if (x.ne[1] <= 64) return launch.template operator()<K6144Tma32x64>();
         if (x.ne[1] <= 128) return launch.template operator()<Fp8A8T64R64K128>();
         if (x.ne[1] <= 192) return launch.template operator()<K6144Tma64x128>();
@@ -65,7 +69,7 @@ void launch_problem(const Tensor& x, const Weight& weight, Tensor& residual,
 } // namespace
 
 std::size_t fp8_linear_add_partial_capacity_bytes(std::int32_t k, std::int32_t max_tokens) {
-    if (k == 6144) {
+    if (k == 6144 || k == 3072) {
         if (max_tokens > 768) return K6144Bulk::kPartialBytes;
         return max_tokens > 192 ? K6144MidBulk::kPartialBytes : 0;
     }
@@ -81,9 +85,20 @@ void fp8_linear_add_a8_launch(const Tensor& x, const Weight& weight, Tensor& res
     const auto scratch = allocate_fp8_a8_workspace(
         workspace, x.ne[1], weight.k, fp8_linear_add_partial_capacity_bytes(weight.k, x.ne[1]));
     launch_fp8_a8_quantize(x, weight, scratch, stream);
-    if (weight.k == 6144)
-        launch_problem<6144>(x, weight, residual, scratch, stream);
-    else
-        launch_problem<17408>(x, weight, residual, scratch, stream);
+    // The A8 route is keyed on the contraction width: the two-device input-column halves keep the
+    // ladder and the wave anchors of the problem they halve (N=5120 is unchanged).
+    switch (weight.k) {
+    case Fp8N5120K6144::kInputRows:
+        return launch_problem<Fp8N5120K6144::kInputRows>(x, weight, residual, scratch, stream);
+    case Fp8N5120K3072::kInputRows:
+        return launch_problem<Fp8N5120K3072::kInputRows>(x, weight, residual, scratch, stream);
+    case Fp8N5120K17408::kInputRows:
+        return launch_problem<Fp8N5120K17408::kInputRows>(x, weight, residual, scratch, stream);
+    case Fp8N5120K8704::kInputRows:
+        return launch_problem<Fp8N5120K8704::kInputRows>(x, weight, residual, scratch, stream);
+    default:
+        break;
+    }
+    throw std::invalid_argument("fp8 linear_add: unsupported problem");
 }
 } // namespace ninfer::ops::detail

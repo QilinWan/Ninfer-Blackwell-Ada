@@ -75,6 +75,17 @@ int main() {
             "LinearSwiGLU FP8_A8",
             {QType::FP8_E4M3FN_ROW_BF16, 34816, 5120, 17408, 1813U, ActivationCompute::A8},
             kA8Cases, std::array{4, 5, 65, 193, 257, 512, 513, 1025});
+        // The two-device output-row half [17408,5120] runs the same routes at half the gate/up
+        // rows, including the 257-token point where its 256-row tile count first leaves an
+        // underfilled final wave for the bulk schedule.
+        failures += run_profile(
+            "LinearSwiGLU FP8_A16 half",
+            {QType::FP8_E4M3FN_ROW_BF16, 17408, 5120, 8704, 1815U, ActivationCompute::A16},
+            kA16Cases, std::array<std::int32_t, 1>{16});
+        failures += run_profile(
+            "LinearSwiGLU FP8_A8 half",
+            {QType::FP8_E4M3FN_ROW_BF16, 17408, 5120, 8704, 1817U, ActivationCompute::A8},
+            kA8Cases, std::array{4, 5, 65, 193, 257, 512, 513, 1025});
         std::cout << (failures == 0 ? "OK" : "FAIL") << " LinearSwiGLU FP8 correctness\n";
         return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {

@@ -34,28 +34,39 @@ void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t
 
 } // namespace
 
-std::size_t fp8_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy, std::int32_t min_tokens,
+std::size_t fp8_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy,
+                                                       std::int32_t gate_up_rows,
+                                                       std::int32_t min_tokens,
                                                        std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("fp8 linear_swiglu workspace: invalid token interval");
     }
+    if (gate_up_rows != Fp8N34816K5120::kOutputRows &&
+        gate_up_rows != Fp8N17408K5120::kOutputRows) {
+        throw std::invalid_argument("fp8 linear_swiglu: unsupported problem");
+    }
     (void)resolve_route(policy, min_tokens);
     (void)resolve_route(policy, max_tokens);
     const bool interval_uses_a8 = allows_a8(policy) && max_tokens >= 5;
-    return interval_uses_a8 ? fp8_a8_workspace_capacity_bytes(
-                                  max_tokens, Fp8N34816K5120::kInputRows,
-                                  fp8_linear_swiglu_partial_capacity_bytes(max_tokens))
-                            : 0;
+    return interval_uses_a8
+               ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8N34816K5120::kInputRows,
+                                                 fp8_linear_swiglu_partial_capacity_bytes(
+                                                     gate_up_rows, max_tokens))
+               : 0;
 }
 
 void fp8_linear_swiglu_dispatch(const Tensor& x, const Weight& weight, Tensor& out,
-                                LinearPolicy policy, WorkspaceArena& workspace,
+                                LinearPolicy policy, WorkspaceArena* workspace,
                                 cudaStream_t stream) {
     if (resolve_route(policy, x.ne[1]) == Fp8LinearSwiGluRoute::A16) {
         launch_a16(x, weight, out, stream);
         return;
     }
-    fp8_linear_swiglu_a8_launch(x, weight, out, workspace, stream);
+    // The arena is nullable: only the A8 route needs it.
+    if (workspace == nullptr) {
+        throw std::invalid_argument("fp8 linear_swiglu: the A8 route requires caller workspace");
+    }
+    fp8_linear_swiglu_a8_launch(x, weight, out, *workspace, stream);
 }
 
 } // namespace ninfer::ops::detail

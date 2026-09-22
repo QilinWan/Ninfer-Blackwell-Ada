@@ -17,15 +17,24 @@ enum class Fp8LinearAddRoute : std::uint8_t {
     A8,
 };
 
+// The two-device input-column halves [5120,3072] and [5120,8704] keep the crossover of the problem
+// they halve.
 Fp8LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                 LinearPolicy policy, std::int32_t tokens) {
+    const bool output_family =
+        input_rows == Fp8N5120K6144::kInputRows || input_rows == Fp8N5120K3072::kInputRows;
+    const bool down_family =
+        input_rows == Fp8N5120K17408::kInputRows || input_rows == Fp8N5120K8704::kInputRows;
     if (tokens <= 0 || output_rows != Fp8N5120K6144::kOutputRows ||
-        (input_rows != Fp8N5120K6144::kInputRows && input_rows != Fp8N5120K17408::kInputRows)) {
+        (!output_family && !down_family)) {
         throw std::invalid_argument("fp8 linear_add: unsupported shape");
     }
     if (policy == LinearPolicy::A16Only) { return Fp8LinearAddRoute::A16; }
     if (!allows_a8(policy)) { throw std::invalid_argument("fp8 linear_add: unsupported policy"); }
-    const std::int32_t first_a8 = input_rows == Fp8N5120K6144::kInputRows ? 17 : 20;
+    // This tree's measured frontier (17 for the [5120,6144] family, 20 for the down family); the
+    // two-device halves inherit the frontier of the family they halve, per resolve_route's
+    // output_family/down_family grouping. The donor's 22/25 belong to its own 5070Ti tuning.
+    const std::int32_t first_a8 = output_family ? 17 : 20;
     return tokens >= first_a8 ? Fp8LinearAddRoute::A8 : Fp8LinearAddRoute::A16;
 }
 
@@ -52,13 +61,16 @@ std::size_t fp8_linear_add_workspace_capacity_bytes(std::int32_t output_rows,
 }
 
 void fp8_linear_add_dispatch(const Tensor& x, const Weight& weight, Tensor& residual,
-                             LinearPolicy policy, WorkspaceArena& workspace, cudaStream_t stream) {
+                             LinearPolicy policy, WorkspaceArena* workspace, cudaStream_t stream) {
     const Fp8LinearAddRoute route = resolve_route(weight.n, weight.k, policy, x.ne[1]);
     if (route == Fp8LinearAddRoute::A16) {
         launch_a16(x, weight, residual, stream);
         return;
     }
-    fp8_linear_add_a8_launch(x, weight, residual, workspace, stream);
+    if (workspace == nullptr) {
+        throw std::invalid_argument("fp8 linear_add: A8 route requires caller workspace");
+    }
+    fp8_linear_add_a8_launch(x, weight, residual, *workspace, stream);
 }
 
 } // namespace ninfer::ops::detail

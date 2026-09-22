@@ -27,7 +27,8 @@ void fp8_linear_add_matrix_launch(const Tensor&, const Weight&, Tensor&, cudaStr
 void fp8_linear_add_a8_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                               WorkspaceArena& workspace, cudaStream_t stream);
 
+// `workspace` may be null when the resolved route needs none; the A8 route then throws.
 void fp8_linear_add_dispatch(const Tensor& x, const Weight& weight, Tensor& residual,
-                             LinearPolicy policy, WorkspaceArena& workspace, cudaStream_t stream);
+                             LinearPolicy policy, WorkspaceArena* workspace, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

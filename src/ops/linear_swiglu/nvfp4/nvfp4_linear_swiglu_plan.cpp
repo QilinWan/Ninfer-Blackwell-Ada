@@ -3,6 +3,7 @@
 
 #include "core/layout.h"
 #include "ops/linear/nvfp4/nvfp4_layout.h"
+#include "ops/linear/nvfp4/nvfp4_geometry.h"
 #include "ops/linear/nvfp4/nvfp4_a4_plan.h"
 #include "ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_a4_tma_launch.h"
 
@@ -51,11 +52,19 @@ std::size_t fused_workspace_bytes(std::int32_t tokens) {
 
 } // namespace
 
-std::size_t nvfp4_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy,
+std::size_t nvfp4_linear_swiglu_workspace_capacity_bytes(std::int32_t gate_up_rows,
+                                                         LinearPolicy policy,
                                                          std::int32_t min_tokens,
                                                          std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("nvfp4 linear_swiglu workspace: invalid token interval");
+    }
+    // The gate/up problems are [34816,5120] and its two-device output-row half [17408,5120]. They
+    // share the input width, and this tree has no un-fused baseline route, so the fused workspace
+    // depends only on T and K; the rows are validated to keep the registry honest.
+    if (gate_up_rows != Nvfp4N34816K5120::kOutputRows &&
+        gate_up_rows != Nvfp4N17408K5120::kOutputRows) {
+        throw std::invalid_argument("nvfp4 linear_swiglu: unsupported problem");
     }
     (void)resolve_route(policy, min_tokens);
     (void)resolve_route(policy, max_tokens);
@@ -67,9 +76,15 @@ std::size_t nvfp4_linear_swiglu_workspace_capacity_bytes(LinearPolicy policy,
 }
 
 void nvfp4_linear_swiglu_dispatch(const Tensor& x, const Weight& weight, Tensor& out,
-                                  LinearPolicy policy, WorkspaceArena& workspace,
+                                  LinearPolicy policy, WorkspaceArena* workspace,
                                   cudaStream_t stream) {
-    switch (resolve_route(policy, x.ne[1])) {
+    const auto route = resolve_route(policy, x.ne[1]);
+    // The arena is nullable: only a quantized-activation route needs it.
+    if (route != Nvfp4LinearSwiGluRoute::DecodeFusedA16 &&
+        route != Nvfp4LinearSwiGluRoute::SmallTFusedA16 && workspace == nullptr) {
+        throw std::invalid_argument("nvfp4 linear_swiglu: the A4 route requires caller workspace");
+    }
+    switch (route) {
     case Nvfp4LinearSwiGluRoute::DecodeFusedA16:
         nvfp4_linear_swiglu_decode_launch(x, weight, out, stream);
         return;
@@ -77,11 +92,11 @@ void nvfp4_linear_swiglu_dispatch(const Tensor& x, const Weight& weight, Tensor&
         nvfp4_linear_swiglu_small_t_launch(x, weight, out, stream);
         return;
     case Nvfp4LinearSwiGluRoute::FusedA4:
-        nvfp4_linear_swiglu_a4_launch(x, weight, out, workspace, stream);
+        nvfp4_linear_swiglu_a4_launch(x, weight, out, *workspace, stream);
         return;
     case Nvfp4LinearSwiGluRoute::TmaFusedA4: {
-        auto scope                     = workspace.scope();
-        const Nvfp4A4Workspace scratch = allocate_fused_workspace(workspace, x.ne[1]);
+        auto scope                     = workspace->scope();
+        const Nvfp4A4Workspace scratch = allocate_fused_workspace(*workspace, x.ne[1]);
         launch_nvfp4_a4_quantize(x, weight, scratch, Nvfp4ScaleLayout::Tiled256, stream);
         launch_nvfp4_linear_swiglu_a4_tma(
             nvfp4_a4_operands(weight, scratch, x.ne[1], Nvfp4ScaleLayout::Tiled256),

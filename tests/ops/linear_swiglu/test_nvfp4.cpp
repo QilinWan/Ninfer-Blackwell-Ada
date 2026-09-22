@@ -89,6 +89,13 @@ int main() {
         failures += run_profile("LinearSwiGLU NVFP4_A4",
                                 {QType::NVFP4, 34816, 5120, 17408, 1803U, ActivationCompute::A4},
                                 kA4Cases, std::array<std::int32_t, 4>{65, 97, 128, 129});
+        // The two-device output-row half runs the same routes at half the gate/up rows.
+        failures += run_profile("LinearSwiGLU NVFP4_A16 half",
+                                {QType::NVFP4, 17408, 5120, 8704, 1805U, ActivationCompute::A16},
+                                kA16Cases);
+        failures += run_profile("LinearSwiGLU NVFP4_A4 half",
+                                {QType::NVFP4, 17408, 5120, 8704, 1807U, ActivationCompute::A4},
+                                kA4Cases, std::array<std::int32_t, 2>{128, 256});
         std::cout << (failures == 0 ? "OK" : "FAIL") << " LinearSwiGLU NVFP4 correctness\n";
         return failures == 0 ? 0 : 1;
     } catch (const std::exception& error) {

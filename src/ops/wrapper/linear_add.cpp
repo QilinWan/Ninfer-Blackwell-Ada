@@ -80,6 +80,34 @@ void validate_policy(LinearPolicy policy) {
     throw std::invalid_argument("linear_add: invalid compute policy");
 }
 
+// The registered NVFP4 residual problems. [5120,8704] is the two-device input-column half of
+// [5120,17408].
+bool nvfp4_residual_problem(std::int32_t output_rows, std::int32_t input_rows) {
+    using detail::Nvfp4N5120K17408;
+    using detail::Nvfp4N5120K6144;
+    using detail::Nvfp4N5120K8704;
+    return (output_rows == Nvfp4N5120K6144::kOutputRows &&
+            input_rows == Nvfp4N5120K6144::kInputRows) ||
+           (output_rows == Nvfp4N5120K17408::kOutputRows &&
+            input_rows == Nvfp4N5120K17408::kInputRows) ||
+           (output_rows == Nvfp4N5120K8704::kOutputRows &&
+            input_rows == Nvfp4N5120K8704::kInputRows);
+}
+
+// The registered FP8 residual problems. [5120,3072] and [5120,8704] are the two-device
+// input-column halves of [5120,6144] and [5120,17408].
+bool fp8_residual_problem(std::int32_t output_rows, std::int32_t input_rows) {
+    using detail::Fp8N5120K17408;
+    using detail::Fp8N5120K3072;
+    using detail::Fp8N5120K6144;
+    using detail::Fp8N5120K8704;
+    return (output_rows == Fp8N5120K6144::kOutputRows && input_rows == Fp8N5120K6144::kInputRows) ||
+           (output_rows == Fp8N5120K17408::kOutputRows &&
+            input_rows == Fp8N5120K17408::kInputRows) ||
+           (output_rows == Fp8N5120K3072::kOutputRows && input_rows == Fp8N5120K3072::kInputRows) ||
+           (output_rows == Fp8N5120K8704::kOutputRows && input_rows == Fp8N5120K8704::kInputRows);
+}
+
 } // namespace
 
 std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output_rows,
@@ -116,22 +144,14 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
                                                               min_tokens, max_tokens);
     }
     if (qtype == QType::NVFP4) {
-        const bool supported = (output_rows == detail::Nvfp4N5120K6144::kOutputRows &&
-                                input_rows == detail::Nvfp4N5120K6144::kInputRows) ||
-                               (output_rows == detail::Nvfp4N5120K17408::kOutputRows &&
-                                input_rows == detail::Nvfp4N5120K17408::kInputRows);
-        if (!supported) {
+        if (!nvfp4_residual_problem(output_rows, input_rows)) {
             throw std::invalid_argument("linear_add workspace: unsupported NVFP4 profile");
         }
         return detail::nvfp4_linear_add_workspace_capacity_bytes(output_rows, input_rows, policy,
                                                                  min_tokens, max_tokens);
     }
     if (qtype == QType::FP8_E4M3FN_ROW_BF16) {
-        const bool supported = (output_rows == detail::Fp8N5120K6144::kOutputRows &&
-                                input_rows == detail::Fp8N5120K6144::kInputRows) ||
-                               (output_rows == detail::Fp8N5120K17408::kOutputRows &&
-                                input_rows == detail::Fp8N5120K17408::kInputRows);
-        if (!supported) {
+        if (!fp8_residual_problem(output_rows, input_rows)) {
             throw std::invalid_argument("linear_add workspace: unsupported FP8 profile");
         }
         return detail::fp8_linear_add_workspace_capacity_bytes(output_rows, input_rows, policy,
@@ -140,13 +160,12 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
     throw std::invalid_argument("linear_add workspace: unsupported weight format");
 }
 
-void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, WorkspaceArena& ws,
-                cudaStream_t stream) {
-    linear_add(x, w, residual_out, LinearPolicy::A16Only, ws, stream);
-}
+namespace {
 
-void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPolicy policy,
-                WorkspaceArena& ws, cudaStream_t stream) {
+// Every check linear_add() makes, so that a split form can reject a rank pair before either rank
+// issues work.
+void validate_linear_add(const Tensor& x, const Weight& w, const Tensor& residual_out,
+                         LinearPolicy policy) {
     validate_policy(policy);
     const std::int32_t t = x.ne[1];
     if (t <= 0) { throw std::invalid_argument("linear_add: T must be positive"); }
@@ -166,20 +185,17 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
             throw std::invalid_argument(
                 "linear_add: BF16 requires 16-byte x/residual/weight alignment");
         }
-        (void)ws;
-        detail::bf16_linear_add_dispatch(x, w, residual_out, stream);
         return;
     }
 
     if (w.qtype == QType::Q4_G64_FP16) {
         require_q4(w);
-        const auto launch = detail::select_q4_linear_add(w.n, w.k, t);
+        (void)detail::select_q4_linear_add(w.n, w.k, t);
         if (!aligned_to(x.data, 16) || !aligned_to(residual_out.data, 16) ||
             !aligned_to(w.qdata, 16) || !aligned_to(w.scales, 16)) {
             throw std::invalid_argument(
                 "linear_add: Q4 requires 16-byte x/residual/code/scale alignment");
         }
-        launch(x, w, residual_out, stream);
         return;
     }
 
@@ -192,7 +208,6 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
             throw std::invalid_argument(
                 "linear_add: Q5 requires 16-byte x/residual/code/high/scale alignment");
         }
-        detail::q5_linear_add_dispatch(x, w, residual_out, ws, stream);
         return;
     }
 
@@ -206,44 +221,78 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
             throw std::invalid_argument(
                 "linear_add: Q8 requires 16-byte x/residual/code/scale alignment");
         }
-        (void)ws;
-        detail::q8_linear_add_dispatch(x, w, residual_out, stream);
         return;
     }
 
     if (w.qtype == QType::NVFP4) {
         detail::validate_nvfp4_weight(w, "nvfp4 linear_add");
-        const bool supported_shape = (w.n == detail::Nvfp4N5120K6144::kOutputRows &&
-                                      w.k == detail::Nvfp4N5120K6144::kInputRows) ||
-                                     (w.n == detail::Nvfp4N5120K17408::kOutputRows &&
-                                      w.k == detail::Nvfp4N5120K17408::kInputRows);
-        if (!supported_shape) {
+        if (!nvfp4_residual_problem(w.n, w.k)) {
             throw std::invalid_argument("nvfp4 linear_add: unsupported weight shape");
         }
         if (!aligned_to(x.data, 16) || !aligned_to(residual_out.data, 16)) {
             throw std::invalid_argument("linear_add: NVFP4 requires 16-byte x/residual alignment");
         }
-        detail::nvfp4_linear_add_dispatch(x, w, residual_out, policy, ws, stream);
         return;
     }
 
     if (w.qtype == QType::FP8_E4M3FN_ROW_BF16) {
         (void)detail::validate_fp8_weight(w, "fp8 linear_add");
-        const bool supported_shape = (w.n == detail::Fp8N5120K6144::kOutputRows &&
-                                      w.k == detail::Fp8N5120K6144::kInputRows) ||
-                                     (w.n == detail::Fp8N5120K17408::kOutputRows &&
-                                      w.k == detail::Fp8N5120K17408::kInputRows);
-        if (!supported_shape) {
+        if (!fp8_residual_problem(w.n, w.k)) {
             throw std::invalid_argument("fp8 linear_add: unsupported weight shape");
         }
         if (!aligned_to(x.data, 16) || !aligned_to(residual_out.data, 16)) {
             throw std::invalid_argument("linear_add: FP8 requires 16-byte x/residual alignment");
         }
-        detail::fp8_linear_add_dispatch(x, w, residual_out, policy, ws, stream);
         return;
     }
 
     throw std::invalid_argument("linear_add: unsupported weight format");
+}
+
+// Issues a validated call. `ws` may be null when the resolved route needs no workspace.
+void dispatch_linear_add(const Tensor& x, const Weight& w, Tensor& residual_out,
+                         LinearPolicy policy, WorkspaceArena* ws, cudaStream_t stream) {
+    switch (w.qtype) {
+    case QType::BF16:
+        detail::bf16_linear_add_dispatch(x, w, residual_out, stream);
+        return;
+    case QType::Q4_G64_FP16:
+        detail::select_q4_linear_add(w.n, w.k, x.ne[1])(x, w, residual_out, stream);
+        return;
+    case QType::Q5_G64_FP16:
+        if (ws == nullptr) {
+            throw std::invalid_argument("linear_add: Q5 requires caller workspace");
+        }
+        detail::q5_linear_add_dispatch(x, w, residual_out, *ws, stream);
+        return;
+    case QType::Q8_G32_FP16:
+        detail::q8_linear_add_dispatch(x, w, residual_out, stream);
+        return;
+    case QType::NVFP4:
+        detail::nvfp4_linear_add_dispatch(x, w, residual_out, policy, ws, stream);
+        return;
+    case QType::FP8_E4M3FN_ROW_BF16:
+        detail::fp8_linear_add_dispatch(x, w, residual_out, policy, ws, stream);
+        return;
+    case QType::Q6_G64_FP16:
+    case QType::FP32:
+    case QType::INT32:
+        break;
+    }
+    throw std::invalid_argument("linear_add: unsupported weight format");
+}
+
+} // namespace
+
+void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, WorkspaceArena& ws,
+                cudaStream_t stream) {
+    linear_add(x, w, residual_out, LinearPolicy::A16Only, ws, stream);
+}
+
+void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPolicy policy,
+                WorkspaceArena& ws, cudaStream_t stream) {
+    validate_linear_add(x, w, residual_out, policy);
+    dispatch_linear_add(x, w, residual_out, policy, &ws, stream);
 }
 
 } // namespace ninfer::ops

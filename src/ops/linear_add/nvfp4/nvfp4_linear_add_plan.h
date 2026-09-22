@@ -31,7 +31,8 @@ void nvfp4_linear_add_small_t_launch(const Tensor& x, const Weight& weight, Tens
 void nvfp4_linear_add_a4_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                                 Nvfp4A4Workspace workspace, cudaStream_t stream);
 
+// `workspace` may be null when the resolved route needs none; the A4 route then throws.
 void nvfp4_linear_add_dispatch(const Tensor& x, const Weight& weight, Tensor& residual,
-                               LinearPolicy policy, WorkspaceArena& workspace, cudaStream_t stream);
+                               LinearPolicy policy, WorkspaceArena* workspace, cudaStream_t stream);
 
 } // namespace ninfer::ops::detail

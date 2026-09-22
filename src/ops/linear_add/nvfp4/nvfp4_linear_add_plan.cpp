@@ -15,9 +15,11 @@ enum class Nvfp4LinearAddRoute : std::uint8_t {
     A4,
 };
 
+// [5120,8704] is the two-device input-column half of [5120,17408] and keeps its crossover.
 Nvfp4LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                   LinearPolicy policy, std::int32_t tokens) {
-    if (tokens <= 0 || output_rows != 5120 || (input_rows != 6144 && input_rows != 17408)) {
+    if (tokens <= 0 || output_rows != 5120 ||
+        (input_rows != 6144 && input_rows != 17408 && input_rows != 8704)) {
         throw std::invalid_argument("nvfp4 linear_add: unsupported shape");
     }
     if (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8) {
@@ -45,14 +47,18 @@ std::size_t nvfp4_linear_add_workspace_capacity_bytes(std::int32_t output_rows,
 }
 
 void nvfp4_linear_add_dispatch(const Tensor& x, const Weight& weight, Tensor& residual,
-                               LinearPolicy policy, WorkspaceArena& workspace,
+                               LinearPolicy policy, WorkspaceArena* workspace,
                                cudaStream_t stream) {
     if (resolve_route(weight.n, weight.k, policy, x.ne[1]) == Nvfp4LinearAddRoute::A16) {
         nvfp4_linear_add_a16_launch(x, weight, residual, stream);
         return;
     }
-    auto scope                     = workspace.scope();
-    const Nvfp4A4Workspace scratch = allocate_nvfp4_a4_workspace(workspace, x.ne[1], weight.k);
+    // The dispatcher takes a nullable arena: only the quantized-activation route needs it.
+    if (workspace == nullptr) {
+        throw std::invalid_argument("nvfp4 linear_add: A4 route requires caller workspace");
+    }
+    auto scope                     = workspace->scope();
+    const Nvfp4A4Workspace scratch = allocate_nvfp4_a4_workspace(*workspace, x.ne[1], weight.k);
     nvfp4_linear_add_a4_launch(x, weight, residual, scratch, stream);
 }
 
