@@ -2,7 +2,10 @@
 
 #include "artifact/reader.h"
 #include "models/qwen3_5/load/bindings.h"
+#include "models/qwen3_5/load/sharding.h"
 
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace ninfer::models::qwen3_5 {
@@ -33,6 +36,8 @@ const artifact::MaterializationPlan& LoadPlan::materialization() const {
     return impl_->materialization;
 }
 
+std::size_t LoadPlan::parameter_count() const { return impl_->pending.size(); }
+
 const artifact::ParameterReference& LoadPlan::parameter(WeightId id) const {
     return impl_->pending.at(id.index).reference;
 }
@@ -41,11 +46,37 @@ std::span<const WeightUse> LoadPlan::uses(WeightId id) const {
     return impl_->pending.at(id.index).uses;
 }
 
+namespace {
+
+void validate_tensor_parallel(const LoadOptions& options) {
+    if (options.tp < 1 || options.tp > static_cast<int>(artifact::kMaximumDevices)) {
+        throw std::invalid_argument("tensor parallelism must be 1 or 2");
+    }
+    if (options.vision_rank < 0 || options.vision_rank >= options.tp) {
+        throw std::invalid_argument("vision_rank must name a tensor-parallel rank");
+    }
+    // The drafter runs on rank 0 only while the full output head is split by vocabulary rows.
+    if (options.tp > 1 && options.masked_draft() && !options.proposal_enabled()) {
+        throw std::invalid_argument("tensor-parallel DFlash requires the optimized proposal head");
+    }
+}
+
+void validate_tensor_parallel(const Config& config, const LoadOptions& options) {
+    if (options.tp > 1 && config.text.architecture != Architecture::Qwen3_5) {
+        throw std::invalid_argument(std::string(architecture_name(config.text.architecture)) +
+                                    " does not support tensor parallelism");
+    }
+}
+
+} // namespace
+
 LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
     auto out     = std::make_unique<LoadPlan::Impl>();
+    validate_tensor_parallel(options);
     out->options = options;
     out->config  = parse_config(reader.directory(), options);
-    artifact::Binder binder(reader);
+    validate_tensor_parallel(out->config, options);
+    artifact::Binder binder(reader, options.tp);
     out->resources = loading::bind_resources(binder, out->config);
     loading::Bindings bindings(binder);
     const auto& text  = out->config.text;
@@ -90,6 +121,7 @@ LoadPlan plan_load(const artifact::Reader& reader, LoadOptions options) {
             bindings.use(out->weights.draft->output_head,
                          std::string(options.speculative_component()) + "/final_hidden");
     }
+    loading::install_shard_resolver(binder, bindings.weights, out->config, options);
     out->pending         = std::move(bindings.weights);
     out->materialization = std::move(binder).finish();
     out->info.name       = reader.directory().metadata.value(

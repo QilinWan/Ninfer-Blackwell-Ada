@@ -118,3 +118,7 @@ add_test(NAME ninfer_qwen3_5_tool_schema_oracle_test
   COMMAND ${CMAKE_COMMAND} -E env
     "NINFER_TOOL_PROBE=$<TARGET_FILE:ninfer_qwen3_5_tool_constraints_test>"
     ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_LIST_DIR}/test_tool_schema.py")
+
+ninfer_add_test(ninfer_qwen3_5_shard_map_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_shard_map.cpp"
+  LIBRARIES ninfer_model_loading)

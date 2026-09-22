@@ -11,6 +11,11 @@ struct LoadOptions {
     bool vision                    = false;
     SpeculativeBackend speculative = SpeculativeBackend::None;
     ProposalHead proposal_head     = ProposalHead::Full;
+    // Tensor-parallel degree (1 or 2). At 2 the dense Text, MTP and output head are split
+    // across both devices of an ExecutionContext; Vision is held whole by `vision_rank` and a
+    // masked draft or proposal head by rank 0 (models/qwen3_5/load/sharding.h).
+    int tp          = 1;
+    int vision_rank = 0;
 
     bool operator==(const LoadOptions&) const = default;
 
