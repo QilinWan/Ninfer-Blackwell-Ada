@@ -251,8 +251,10 @@ void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z
 // convolution channels are the matching 1024+1024+3072 channels of the 10240-channel parent in the
 // same order, and a shard-local head index plus 8r (Q/K) or 24r (V/Z) is the global head. `x`
 // holds the same activation on both ranks. Convolution is depthwise and the projection is
-// column-parallel, so nothing is communicated and each rank's results equal the corresponding
-// sections of the single-device Op. Other formats are not registered.
+// column-parallel, so nothing is communicated and each rank's results match the corresponding
+// sections of the single-device Op to rounding: the shard always materializes the projection
+// before the convolution, where the single-device form may fuse the two. Other formats are not
+// registered.
 //
 // Every requirement of the single-device FP8 form applies per rank at the shard profile, and each
 // form's activation-quantization frontier is that of the same form over the [16384,5120] parent
@@ -277,6 +279,7 @@ void gdn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
                                     const ExecutionContext& ec);
 
 /// A16-only column-parallel form; it requires no transient workspace.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void gdn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
                                     const std::array<Weight, 2>& query_key_value_z_weight,
                                     const std::array<Tensor, 2>& qkv,

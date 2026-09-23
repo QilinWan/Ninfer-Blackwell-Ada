@@ -46,7 +46,9 @@ namespace ninfer::ops {
  *   BlockScaleK16M128x4 [5120,6144] or [5120,17408], row-scaled
  *   FP8_E4M3FN_ROW_BF16 [5120,6144] or [5120,17408], or BF16 Contiguous [5120,6144]. For
  *   two-device execution, NVFP4 also registers the input-column half [5120,8704] and FP8 the
- *   halves [5120,3072] and [5120,8704], each resolving to the routes of the problem it halves.
+ *   halves [5120,3072] and [5120,8704], each keeping the activation-quantization crossover of the
+ *   problem it halves; linear() over the same half switches at the same T, so both ranks of a
+ *   row-parallel projection take the same route.
  *   T may be any positive value.
  *
  * Numeric:
@@ -133,6 +135,7 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
                              const ExecutionContext& ec, const PeerEvents& events);
 
 /// A16-only row-parallel form; it requires no transient workspace.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                              const std::array<Tensor, 2>& residual,
                              const std::array<Tensor, 2>& staging, const ExecutionContext& ec,

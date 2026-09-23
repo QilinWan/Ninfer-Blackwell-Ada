@@ -146,6 +146,7 @@ void attn_input_proj_column_parallel(
     const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& ec);
 
 /// A16-only column-parallel form; it requires no transient workspace.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void attn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
                                      const std::array<Weight, 2>& query_key_gate_value_weight,
                                      const std::array<Tensor, 2>& q,

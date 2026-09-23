@@ -80,11 +80,14 @@ enum class LinearPolicy : std::uint8_t {
  * [34816,5120], [248320,5120], [5120,6144], [5120,17408]}` at every positive T, and for two-device
  * execution also registers their halves `[7168,5120]`, `[8192,5120]`, `[17408,5120]`,
  * `[124160,5120]`, `[5120,3072]` and `[5120,8704]`, each at every positive T and resolving to the
- * routes of the problem it halves. The current NVFP4 problems register the seven non-vocabulary
- * FP8 geometries — the five parents plus the shards `[17408,5120]` and `[5120,8704]` — and accept
- * every positive T. Q8 and BF16 register the exact physical N/K problems in their format-owned
- * shape registries; the BF16 registry includes the two-device shards `[7168,5120]` and
- * `[5120,3072]`. Text/MTP problems accept every positive column extent T. Registered Vision problems accept raw-patch P in
+ * routes of the problem it halves, except that FP8 `[5120,8704]` takes A8 from T=20, as
+ * linear_add() over the same half does (the `[5120,3072]` half needs no exception: its A8 floor is
+ * 17, which is already linear_add()'s over the [5120,6144] family). The current NVFP4 problems
+ * register the seven non-vocabulary FP8 geometries — the five parents plus the shards
+ * `[17408,5120]` and `[5120,8704]` — and accept every positive T. Q8 and BF16 register the exact
+ * physical N/K problems in their format-owned shape registries; the BF16 registry includes the
+ * two-device shards `[7168,5120]` and `[5120,3072]`. Text/MTP problems accept every positive column
+ * extent T. Registered Vision problems accept raw-patch P in
  * `{4,8,...,131072}` or merged-token V in `[1,32768]`; a matrix column does not inherently
  * represent a text token. FP32 is unsupported.
  *
@@ -178,6 +181,7 @@ void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Wei
                             const ExecutionContext& ec);
 
 /// A16-only column-parallel form; it requires no transient workspace.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                             const std::array<Tensor, 2>& out, const ExecutionContext& ec);
 
@@ -217,6 +221,7 @@ void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight
                          const ExecutionContext& ec, const PeerEvents& events);
 
 /// A16-only row-parallel form; it requires no transient workspace.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
                          const ExecutionContext& ec, const PeerEvents& events);

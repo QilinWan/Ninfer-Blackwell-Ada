@@ -125,6 +125,7 @@ void linear_swiglu_column_parallel(const std::array<Tensor, 2>& x,
 
 /// A16-only column-parallel form; it passes no workspace, which the NVFP4 and FP8 A16 routes do
 /// not need.
+/// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void linear_swiglu_column_parallel(const std::array<Tensor, 2>& x,
                                    const std::array<Weight, 2>& gate_up_weight,
                                    const std::array<Tensor, 2>& out, const ExecutionContext& ec);

@@ -162,6 +162,31 @@ typed assignment or a copy with cast, transpose, concat, scatter, remap, or anot
 mapping is the corresponding Op. An interface expressed only as addresses, byte count, and transfer
 direction is a core or host transfer.
 
+### 2.6 Tensor-parallel forms
+
+Two-device tensor parallelism adds entries beside a family's single-device Op; it does not add new
+mathematics.
+
+- `ninfer/ops/allreduce.h` owns the cross-device collectives: `allreduce_sum` (row-parallel
+  partial sums) and `allgather_rows` (vocabulary-split logits), ordered by `PeerEvents` on each
+  device's own stream.
+- `<op>_column_parallel` splits the output rows: each rank reads the replicated activation and its
+  weight-row shard and writes its own output block, with no communication.
+  `<op>_row_parallel` splits the input rows: each rank computes a full-width partial from its
+  activation and weight-column blocks, and one `allreduce_sum` leaves the sum on both ranks. Only
+  the forms a model needs exist: `linear` has both, `linear_add` is row-parallel, and
+  `linear_swiglu`, `attn_input_proj`, `gdn_input_proj` (with its conv snapshot and record forms)
+  and `gdn_gating_proj` are column-parallel.
+- A shard is a standalone weight of the same format with one axis narrowed, so every rank runs the
+  single-device dispatch at the shard's registered problem. A shard shape is registered like any
+  other problem and joins its format's oracle qualification; an unregistered shard is rejected. A
+  fused kernel may need its geometry templated to accept the shard. The two-device suites then
+  compare each split form with the single-device Op.
+- Rank r's tensors, weights and workspace live on `ec.dev[r]`. Both ranks are validated before
+  either issues work (`ops/common/split_launch.h`: device pair, column extent, weight format,
+  unsplit axis, workspace), so a rejected call enqueues nothing. The caller's current device is
+  preserved.
+
 ## 3. Contract headers
 
 Repository-internal contracts live in:

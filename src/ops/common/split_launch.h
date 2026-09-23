@@ -2,7 +2,9 @@
 
 // ninfer::ops::detail - shared mechanics for the tp2 split forms of the Op families.
 //
-// Every split-capable Op family has two extra entry points beside its single-device one:
+// A split-capable Op family has one or both of these entry points beside its single-device one
+// (linear has both, linear_add is row-parallel only, the fused input projections and
+// linear_swiglu are column-parallel only):
 //
 //   <op>_column_parallel  each rank owns a contiguous block of the OUTPUT rows. Rank r reads the
 //                         full (replicated) activation and its own weight-row shard and writes its
@@ -17,10 +19,10 @@
 // narrowed (that is exactly what the tp2 loader materializes into each device's arena), so the
 // existing single-device kernel run against a shard Weight already halves its grid along the
 // split axis and already reads only the shard's bytes. What the split forms add is (a) the
-// per-rank device/stream discipline below, (b) the cross-rank shape agreement checks a single
-// device cannot make, and (c) for the row-parallel form, the collective. The only kernel-side
-// change a family needs is that its shape registry admits the shard geometries -- see each
-// family's *_config.h / *_dispatch.cpp.
+// per-rank device/stream discipline below, (b) the cross-rank checks a single device cannot make
+// (require_split_pair), and (c) for the row-parallel form, the collective. Kernel-side, a family
+// registers the shard geometries in its shape registry (*_config.h / *_dispatch.cpp); fused
+// kernels whose geometry was a constant take it as a template parameter.
 //
 // STREAMS. Rank r's work is issued on ec.dev[r]->stream, the same stream include/ninfer/ops/
 // allreduce.h runs its collectives on, because "the stream a device executes on" is a property of
