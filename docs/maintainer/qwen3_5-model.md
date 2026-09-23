@@ -321,8 +321,20 @@ acceptance. Rank 1 receives the accepted counts, anchors, frontiers and licensed
 device-to-device copies ordered by a cross-device event, and derives everything else from its
 own upload of the same round ingress with the same Ops. The prompt MTP alignment runs on both
 ranks from each rank's final-normed chunk; rank 1 keeps its whole chunk in its own
-`prefill_hidden`. The MTP bridge, which resumes the head from a hidden only rank 0 retains, is not
-split: admission declines every non-Root reuse at width 2 with a speculative backend.
+`prefill_hidden`.
+
+Under MTP rank 1 also retains its own copy of every target hidden the Program retains: the
+prompt and forced-token tails (`copy_tail`), the hidden of a capture frontier inside a chunk
+(written to the slot `PrefillContext::peer_rewrite_checkpoint_hidden` names), and the accepted
+column of a verification round (`target_verify_accept`) or of a partial terminal commit. Each is
+a local copy from rank 1's own replicated hidden into the same StateImage slot of its mirror
+pool, so checkpoint Forks, Moves and copies carry it with rank 0's. The MTP bridge of a resumed
+prefix runs the split head from each rank's retained copy (`TextContext::mtp_forward_batch` over
+rank arrays) and appends both ranks' MTP K/V at the bridge position. A zero-suffix reuse samples
+its first token through the vocabulary-split head from rank 0's retained hidden, which rank 1
+pulls across devices once, so it needs no rank 1 copy and works for every backend. Tensor
+parallelism admits text prompts only, so the per-sequence RoPE delta is zero; start_sequence
+still publishes it to rank 1.
 
 The Program plans one per-rank layout (`SequencePlanImpl::tp`): KV heads and GDN state halved,
 and a workspace sized from the split schedule's own allocation order with the rank's

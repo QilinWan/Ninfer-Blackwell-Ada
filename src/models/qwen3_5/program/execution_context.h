@@ -183,10 +183,13 @@ struct MtpBridgeInput {
 
 void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_t absolute_position,
                         std::int32_t purpose);
+// Resumes the MTP head at `position` from the retained target hidden of that position. At
+// tensor-parallel width 2 `peer_previous_hidden` is rank 1's retained copy (the same StateImage
+// slot of its mirror pool) and both ranks run the split head; it is null on one device.
 void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
-                            const Tensor& previous_hidden, std::int32_t position,
-                            std::span<const std::int32_t> rope_position, bool build_proposal,
-                            const Tensor* next_embedding = nullptr);
+                            const Tensor& previous_hidden, const Tensor* peer_previous_hidden,
+                            std::int32_t position, std::span<const std::int32_t> rope_position,
+                            bool build_proposal, const Tensor* next_embedding = nullptr);
 void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prompt,
                            VisionPrefillSession& vision, const MtpBridgeInput& bridge);
 

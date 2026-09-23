@@ -2837,6 +2837,47 @@ void TextContext::mtp_propose_batch(const RankTensors& hidden, const RankTensors
     proposal_argmax_tp2(hidden, output_logits, &logits[1], draft_tokens);
 }
 
+void TextContext::mtp_forward_batch(const Tensor& ids, const RankTensors& hidden,
+                                    const RankTensors& positions, const RankTensors& rope_positions,
+                                    ops::CausalAttentionExecutionEnvelope envelope,
+                                    const RankTensors& mtp_hidden, int logits_column,
+                                    Tensor* logits, Tensor* draft_token) {
+    if (!tp2()) { throw std::invalid_argument("rank-pair MTP bridge requires tensor parallelism"); }
+    if (batch_mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
+    const int T = ids.ne[0];
+    if (T <= 0 || static_cast<std::uint32_t>(T) > prefill_chunk_) {
+        throw std::invalid_argument("MTP batch T must be in [1,prefill_chunk]");
+    }
+    const std::int32_t H = dimension(config_.hidden_size);
+    require_tensor_shape(ids, DType::I32, {T}, "MTP ids");
+    for (std::size_t r = 0; r < 2; ++r) {
+        require_tensor_shape(positions[r], DType::I32, {T}, "MTP positions");
+        require_tensor_shape(rope_positions[r], DType::I32, {T}, "MTP RoPE positions");
+        require_tensor_shape(hidden[r], DType::BF16, {H, T}, "MTP hidden");
+        require_tensor_shape(mtp_hidden[r], DType::BF16, {H, T}, "MTP output hidden");
+    }
+    if (logits_column >= T) { throw std::invalid_argument("MTP logits column out of range"); }
+    if (logits_column >= 0) {
+        if (logits == nullptr || draft_token == nullptr) {
+            throw std::invalid_argument("MTP logits and draft_token outputs are required");
+        }
+        require_tensor_shape(*logits, DType::BF16, {dimension(config_.vocab_size), 1},
+                             "MTP logits");
+        require_tensor_shape(*draft_token, DType::I32, {1}, "MTP draft token");
+    }
+    const DeviceScope device(ctx_.device);
+    // Unbatched: each rank appends and attends through its own prefill MTP row (io_ on rank 0,
+    // TpExecution::backend_kv_table_row on rank 1), as the single-device bridge does.
+    mtp_forward_core_tp2(ids, hidden, positions, rope_positions, envelope, mtp_hidden);
+    if (logits_column >= 0) {
+        auto logits_scope0 = work_.scope();
+        auto logits_scope1 = tp_->work->scope();
+        const RankTensors column{mtp_hidden[0].slice(1, logits_column, 1),
+                                 mtp_hidden[1].slice(1, logits_column, 1)};
+        proposal_argmax_tp2(column, *logits, nullptr, *draft_token);
+    }
+}
+
 void TextContext::mtp_forward_ar_step(const Tensor& token, const RankTensors& previous_hidden,
                                       const RankTensors& position,
                                       ops::CausalAttentionExecutionEnvelope envelope,

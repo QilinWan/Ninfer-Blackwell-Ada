@@ -960,8 +960,7 @@ other half of every attention and Gated DeltaNet head group, MLP intermediate wi
 vocabulary, plus its half of the KV pages and recurrent state, whose allocation and checkpoint
 copies follow rank 0's. Both ranks reserve the same runtime layout, and `--kv-capacity auto` sizes
 it from the rank with less free memory. Prefix reuse, concurrent requests and CUDA Graph decode
-work as on one GPU, except that a request whose whole prompt is already cached re-prefills from an
-earlier checkpoint instead of reusing it completely.
+work as on one GPU.
 
 Rank 1 has no Host copy of its KV or state, so the Host tiers are off: an omitted
 `--host-state-slots` or `--host-kv-mib` becomes `0`, and a nonzero value is rejected. Every
@@ -986,9 +985,8 @@ MTP speculative decoding works at `--tp 2` with the same options as on one GPU:
 
 The MTP head is split across the ranks like a Text layer, verification and the recurrent-state
 commit run on both, and acceptance and sampling run on rank 0; `--lm-head-draft` keeps the
-optimized proposal head on rank 0 alone. With `--spec mtp` a request never resumes from a retained
-prefix: the MTP bridge needs a retained hidden that only rank 0 keeps, so admission re-prefills
-from the root instead, and prefix reuse saves no prompt work.
+optimized proposal head on rank 0 alone. Prefix reuse works as on one GPU: each rank keeps its own
+copy of the hidden state a retained prefix ends with, and the MTP head resumes from it on both.
 
 Tensor parallelism covers ordinary decoding and `--spec mtp` with `bf16` or `int8` KV.
 `--spec dflash|dflash2`, `--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV

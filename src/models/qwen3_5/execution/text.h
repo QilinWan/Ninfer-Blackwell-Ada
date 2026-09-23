@@ -70,12 +70,11 @@ class VisionPrefillSession;
 // One Text call over the rank-0 operands, and with a non-null `tp` over both ranks of a
 // two-device Model (tp.h). A null `tp` is the single-device schedule, unchanged. With `tp`, the
 // text prefill chunk (with its MTP prompt alignment), ordinary decode, speculative target
-// verification, the MTP decode-round forwards and proposals, and their logits run split through
-// the rank-array overloads below; the single-rank MTP and verification entries, the MTP bridge
-// (mtp_forward_batch), DFlash feature capture in verification and multimodal prefill are rejected
-// with std::invalid_argument. The constructor rejects the MoE FFN, paired input projections, KV
-// caches the head-local attention does not support (only BF16 and INT8-G64) and incomplete MTP
-// bindings.
+// verification, the MTP decode-round forwards and proposals, the MTP bridge and their logits run
+// split through the rank-array overloads below; the single-rank MTP and verification entries,
+// DFlash feature capture in verification and multimodal prefill are rejected with
+// std::invalid_argument. The constructor rejects the MoE FFN, paired input projections, KV caches
+// the head-local attention does not support (only BF16 and INT8-G64) and incomplete MTP bindings.
 class TextContext {
 public:
     // Rank 0's operand then rank 1's, each resident on that rank's device.
@@ -205,6 +204,16 @@ public:
                                   const RankTensors& mtp_hidden);
     void mtp_propose_batch(const RankTensors& hidden, const RankTensors& logits,
                            Tensor& draft_tokens);
+    // The MTP bridge over both ranks: `ids` [T] (rank 0's alone) against each rank's copy of the
+    // target hidden [H,T], appending both ranks' MTP K/V at `positions` through each rank's
+    // prefill MTP KV row. `rope_positions[r]` are one-axis [T]. With `logits_column` >= 0 rank 0
+    // proposes `draft_token` from that column of `mtp_hidden`; rank 1's gathered logits stay in
+    // its arena.
+    void mtp_forward_batch(const Tensor& ids, const RankTensors& hidden,
+                           const RankTensors& positions, const RankTensors& rope_positions,
+                           ops::CausalAttentionExecutionEnvelope envelope,
+                           const RankTensors& mtp_hidden, int logits_column, Tensor* logits,
+                           Tensor* draft_token);
     // One prompt proposal step through each rank's prefill MTP KV row; rank 1's gathered logits
     // stay in its arena.
     void mtp_forward_ar_step(const Tensor& token, const RankTensors& previous_hidden,

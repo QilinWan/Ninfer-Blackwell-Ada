@@ -25,6 +25,22 @@
 //   * repeated requests: more than the private continuation catalog's worth of requests in series,
 //     each binding and releasing both ranks' MTP KV rows (a leaked rank 1 row fails the bind of a
 //     later request).
+//   * prefix reuse, shaped like ninfer-serve's Chat Completions traffic (no session key, the
+//     default implicit shared-prefix marker after the last message), on a 16k-context INT8-KV
+//     Engine with 4 lanes and with 1 lane: a ~9k-token document with a question, then the same
+//     conversation with the answer and a new question. The second turn resumes a retained prefix
+//     through the MTP bridge on both ranks: it must reuse at least 80 % of the first prompt, run
+//     MTP rounds and answer correctly. Parity: the same second-turn prompt prefilled cold (prefix
+//     reuse disabled, so admission starts from the root exactly as on a fresh Engine) must give
+//     the identical greedy answer, and so must an exact repeat of it, run before the cold leg
+//     (whose whole-prompt prefill would evict the retained conversation from the 16k KV pool). The
+//     repeat resumes the whole prompt when the template retains a response-replay checkpoint at
+//     the generation prompt (zero suffix: the first token is sampled from the retained hidden
+//     through the vocabulary-split head), else an earlier checkpoint of the second turn. The
+//     answer is a three-digit number, far from a near tie. Greedy
+//     verification is lossless, so a wrong rank 1 hidden in the bridge would lower acceptance
+//     rather than change the answer; the acceptance of the resumed and cold runs is printed for
+//     comparison.
 //
 // Returns 77 without the artifact or below two CUDA devices.
 
@@ -46,6 +62,8 @@
 namespace {
 
 constexpr std::uint32_t kMaxContext        = 8192;
+constexpr std::uint32_t kLongMaxContext    = 16384;
+constexpr std::uint32_t kMinimumLongPrompt = 4096;
 constexpr std::uint32_t kDraftTokens       = 3;
 constexpr std::size_t kMinimumCommonPrefix = 24;
 constexpr double kMinimumAcceptance        = 0.25;
@@ -74,6 +92,19 @@ ninfer::EngineOptions engine_options(const char* artifact, bool mtp, bool optimi
     return options;
 }
 
+// The serving shape of the prefix-reuse legs: 16k context and KV, INT8 KV, `lanes` lanes and the
+// Engine's tp 2 context-cache defaults.
+ninfer::EngineOptions long_engine_options(const char* artifact, bool optimized,
+                                          std::uint32_t lanes) {
+    ninfer::EngineOptions options = engine_options(artifact, true, optimized);
+    options.max_context           = kLongMaxContext;
+    options.kv_capacity           = ninfer::KvCapacityPolicy::explicit_capacity(kLongMaxContext);
+    options.max_concurrency       = lanes;
+    options.max_pending_requests  = 4;
+    options.kv_cache              = ninfer::KvCacheStorage::Int8Group64;
+    return options;
+}
+
 ninfer::PromptInput user_prompt(std::string text) {
     ninfer::ChatMessage message;
     message.role = ninfer::ChatRole::User;
@@ -85,11 +116,11 @@ ninfer::PromptInput user_prompt(std::string text) {
     return input;
 }
 
-ninfer::RequestOptions greedy(std::uint32_t tokens) {
+ninfer::RequestOptions greedy(std::uint32_t tokens, bool allow_prefix_reuse = false) {
     ninfer::RequestOptions options;
     options.execution.requested_output_tokens = tokens;
     options.execution.sampling.temperature    = 0.0F;
-    options.execution.allow_prefix_reuse      = false;
+    options.execution.allow_prefix_reuse      = allow_prefix_reuse;
     return options;
 }
 
@@ -268,6 +299,142 @@ int exercise_repeated(ninfer::Engine& engine) {
     return failures;
 }
 
+// OpenAI Chat Completions without prompt_cache_options: one default implicit shared-prefix
+// candidate after the last content part, and no Engine structural candidates
+// (serve/openai_common.cpp).
+void mark_like_chat_completions(ninfer::PromptInput& input) {
+    const ninfer::ChatMessage& last = input.messages.back();
+    input.context_cache.markers.push_back(ninfer::PromptCacheMarker{
+        .after_message_count      = static_cast<std::uint32_t>(input.messages.size()),
+        .kind                     = ninfer::PromptCacheMarkerKind::SharedStablePrefix,
+        .evidence                 = ninfer::SharedCandidateEvidence::DefaultAutomatic,
+        .location                 = ninfer::PromptCacheMarkerLocation::MessagePartBoundary,
+        .after_message_part_count = static_cast<std::uint32_t>(last.parts.size()),
+    });
+    input.context_cache.allow_engine_automatic_shared_prefixes = false;
+}
+
+std::string long_document() {
+    std::string text = "Leggi il registro del magazzino e poi rispondi alla domanda.\n\n";
+    for (int line = 1; line <= 240; ++line) {
+        text += "Riga " + std::to_string(line) + ": il magazzino di Verona ha ricevuto " +
+                std::to_string(line * 7) + " casse di mele e " + std::to_string(line * 3) +
+                " casse di pere, spedite il giorno " + std::to_string(1 + line % 28) + ".\n";
+    }
+    return text;
+}
+
+void print_run(const char* label, const char* leg, const ninfer::GenerationResult& result,
+               std::uint64_t computed_prefill_tokens) {
+    std::cout << label << ", " << leg << ": reused " << result.reused_prompt_tokens << " of "
+              << result.prompt.prompt_tokens << " prompt tokens (path "
+              << static_cast<int>(result.prefix_reuse_path) << "), computed prefill "
+              << computed_prefill_tokens << ", acceptance " << result.speculative.accepted_tokens
+              << "/" << result.speculative.drafted_tokens << ", answer \"" << result.content
+              << "\"\n";
+}
+
+int exercise_prefix_reuse(ninfer::Engine& engine, const char* label) {
+    const std::string document = long_document();
+    const auto first_turn      = [&] {
+        ninfer::PromptInput input =
+            user_prompt(document + "\nDomanda: quanto fa 17*23? Rispondi col solo numero.");
+        mark_like_chat_completions(input);
+        return input;
+    };
+    const ninfer::GenerationResult first =
+        engine.generate(engine.prepare(first_turn()), greedy(32, true));
+    int failures = check_answer(first, "391", label);
+
+    const auto second_turn = [&] {
+        ninfer::PromptInput input = first_turn();
+        input.context_cache       = {};
+        ninfer::ChatMessage assistant;
+        assistant.role = ninfer::ChatRole::Assistant;
+        assistant.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Text, .text = first.content, .media = {}});
+        input.messages.push_back(std::move(assistant));
+        ninfer::ChatMessage question;
+        question.role = ninfer::ChatRole::User;
+        question.parts.push_back(
+            ninfer::MessagePart{.kind  = ninfer::MessagePartKind::Text,
+                                .text  = "Quanto fa 12*12? Rispondi col solo numero.",
+                                .media = {}});
+        input.messages.push_back(std::move(question));
+        mark_like_chat_completions(input);
+        return input;
+    };
+    const auto run = [&](bool allow_prefix_reuse, const char* leg) {
+        const ninfer::RuntimeStats before = engine.runtime_stats();
+        ninfer::GenerationResult result =
+            engine.generate(engine.prepare(second_turn()), greedy(32, allow_prefix_reuse));
+        const ninfer::RuntimeStats after = engine.runtime_stats();
+        print_run(label, leg, result,
+                  after.computed_prefill_tokens - before.computed_prefill_tokens);
+        std::cout << "  selections endpoint "
+                  << after.private_endpoint_selections - before.private_endpoint_selections
+                  << " turn-closure "
+                  << after.private_turn_closure_selections - before.private_turn_closure_selections
+                  << " anchor "
+                  << after.private_long_anchor_selections - before.private_long_anchor_selections
+                  << " shared "
+                  << after.shared_stable_prefix_selections - before.shared_stable_prefix_selections
+                  << "; evicted private "
+                  << after.pressure_private_owners_evicted - before.pressure_private_owners_evicted
+                  << " shared "
+                  << after.pressure_shared_owners_evicted - before.pressure_shared_owners_evicted
+                  << " checkpoints dropped "
+                  << after.pressure_checkpoints_dropped - before.pressure_checkpoints_dropped
+                  << '\n';
+        return result;
+    };
+    // The cold leg runs last: it prefills the whole prompt into pages of its own, and on this
+    // 16k KV pool that pressure evicts the retained conversation the repeat resumes from.
+    const ninfer::GenerationResult resumed = run(true, "resumed second turn");
+    const ninfer::GenerationResult repeat  = run(true, "repeated second turn");
+    const ninfer::GenerationResult cold    = run(false, "cold second turn");
+
+    const std::uint32_t first_tokens = first.prompt.prompt_tokens;
+    const auto reused_most           = [&](const ninfer::GenerationResult& result) {
+        return result.prefix_reuse_path != ninfer::PrefixReusePath::Root &&
+               static_cast<std::uint64_t>(result.reused_prompt_tokens) * 5U >=
+                   static_cast<std::uint64_t>(first_tokens) * 4U;
+    };
+    if (first_tokens < kMinimumLongPrompt) {
+        std::cerr << label << ": the first turn has only " << first_tokens << " prompt tokens\n";
+        ++failures;
+    }
+    for (const auto& [result, leg] :
+         {std::pair{&resumed, "resumed second turn"}, std::pair{&repeat, "repeated second turn"}}) {
+        failures += check_answer(*result, "144", label);
+        if (!reused_most(*result)) {
+            std::cerr << label << ", " << leg << ": reused " << result->reused_prompt_tokens
+                      << " prompt tokens, less than 80 % of the first turn's " << first_tokens
+                      << '\n';
+            ++failures;
+        }
+        if (result->speculative.backend != ninfer::SpeculativeBackend::Mtp ||
+            result->speculative.rounds == 0) {
+            std::cerr << label << ", " << leg << ": no MTP round ran\n";
+            ++failures;
+        }
+        if (result->generated_token_ids != cold.generated_token_ids) {
+            std::cerr << label << ", " << leg << ": the answer differs from the cold prefill's (\""
+                      << result->content << "\" against \"" << cold.content << "\")\n";
+            ++failures;
+        }
+    }
+    failures += check_answer(cold, "144", label);
+    if (cold.reused_prompt_tokens != 0 || cold.prefix_reuse_path != ninfer::PrefixReusePath::Root) {
+        std::cerr << label << ": the cold second turn resumed a retained prefix\n";
+        ++failures;
+    }
+    if (repeat.reused_prompt_tokens == repeat.prompt.prompt_tokens) {
+        std::cout << label << ": the repeated second turn resumed its whole prompt\n";
+    }
+    return failures;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -289,10 +456,21 @@ int main(int argc, char** argv) {
             ninfer::Engine ordinary(engine_options(artifact, false, false));
             reference = run_probes(ordinary);
         }
-        ninfer::Engine engine(engine_options(artifact, true, optimized));
-        int failures = exercise_parity(engine, reference);
-        failures += exercise_concurrent(engine);
-        failures += exercise_repeated(engine);
+        int failures = 0;
+        {
+            ninfer::Engine engine(engine_options(artifact, true, optimized));
+            failures += exercise_parity(engine, reference);
+            failures += exercise_concurrent(engine);
+            failures += exercise_repeated(engine);
+        }
+        {
+            ninfer::Engine engine(long_engine_options(artifact, optimized, 4));
+            failures += exercise_prefix_reuse(engine, "MTP prefix reuse, 4 lanes");
+        }
+        {
+            ninfer::Engine engine(long_engine_options(artifact, optimized, 1));
+            failures += exercise_prefix_reuse(engine, "MTP prefix reuse, 1 lane");
+        }
         if (failures != 0) { return 1; }
     } catch (const std::exception& error) {
         std::cerr << "tp 2 MTP Engine failed: " << error.what() << '\n';

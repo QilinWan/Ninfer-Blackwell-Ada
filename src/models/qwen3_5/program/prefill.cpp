@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
+#include "models/qwen3_5/execution/workspace.h"
 #include "core/device.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
@@ -46,6 +47,34 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
                                   {exact, exact});
             (void)rewrite_checkpoint;
         });
+}
+
+// The vocabulary-split output head over one retained hidden column. The hidden axis is
+// replicated, so rank 1's operand is rank 0's column itself: rank 1 pulls it once rank 0's stream
+// reaches it, and each rank then projects its half of the vocabulary for the row gather.
+void project_split_output_head(PrefillContext& state, const Tensor& hidden, Tensor& logits) {
+    const TpExecution& tp             = *state.execution.tp;
+    const ExecutionContext& execution = *tp.execution;
+    const DeviceContext& rank1        = *execution.dev[1];
+    const TextConfig& config          = state.execution.parameters.model.config().text;
+    const LinearParameters& head0     = state.execution.parameters.text.output_head;
+    const LinearParameters& head1     = tp.parameters->text.output_head;
+    const std::int32_t H              = dimension(config.hidden_size);
+    tp.work->reset();
+    const Tensor rank0_hidden = hidden.view({H, 1});
+    const Tensor rank1_hidden = tp.work->alloc(DType::BF16, {H, 1});
+    CUDA_CHECK(cudaEventRecord(tp.events->inputs_ready(0), state.execution.device.stream));
+    {
+        const detail::ScopedCurrentDevice scope(rank1.device);
+        CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, tp.events->inputs_ready(0), 0));
+        CUDA_CHECK(cudaMemcpyAsync(rank1_hidden.data, rank0_hidden.data, rank1_hidden.bytes(),
+                                   cudaMemcpyDeviceToDevice, rank1.stream));
+    }
+    const auto part0 = workspace::tp_logits(state.execution.work, config, head0.weight.n, 1, false);
+    const auto part1 = workspace::tp_logits(*tp.work, config, head1.weight.n, 1, true);
+    output_logits_split({rank0_hidden, rank1_hidden}, {&head0, &head1},
+                        {part0.partial, part1.partial}, {logits, part1.gathered},
+                        {&state.execution.work, tp.work}, execution, *tp.events);
 }
 
 } // namespace
@@ -151,18 +180,12 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
         composed_embedding = &visual_embedding;
     }
 
-    mtp_bridge_and_propose(state, bridge_token, *bridge.previous_hidden, bridge.position,
+    mtp_bridge_and_propose(state, bridge_token, *bridge.previous_hidden, nullptr, bridge.position,
                            bridge.rope_position, false, composed_embedding);
 }
 
 void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_t absolute_position,
                         std::int32_t purpose) {
-    if (state.execution.tp != nullptr) {
-        // Rank 0 holds half of the vocabulary-split output head. Admission declines every
-        // zero-suffix reuse at tensor-parallel width 2, so this is a backstop.
-        throw std::logic_error(
-            "sampling from a retained hidden is not implemented at tensor-parallel width 2");
-    }
     if (hidden.dtype != DType::BF16 ||
         hidden.ne[0] != dimension(state.execution.parameters.model.config().text.hidden_size) ||
         hidden.ne[1] != 1 || hidden.ne[2] != 1 || hidden.ne[3] != 1 || hidden.data == nullptr) {
@@ -170,8 +193,12 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
     }
     state.execution.work.reset();
     Tensor logits = state.execution.io.logits.slice(1, 0, 1);
-    project(hidden, state.execution.parameters.text.output_head, logits, state.execution.work,
-            state.execution.device.stream);
+    if (state.execution.tp != nullptr) {
+        project_split_output_head(state, hidden, logits);
+    } else {
+        project(hidden, state.execution.parameters.text.output_head, logits, state.execution.work,
+                state.execution.device.stream);
+    }
     CUDA_CHECK(cudaMemcpyAsync(state.execution.io.pos.data, &absolute_position,
                                sizeof(absolute_position), cudaMemcpyHostToDevice,
                                state.execution.device.stream));
@@ -180,6 +207,7 @@ void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_
                 state.sampling, state.execution.io.pos, purpose, state.execution.work,
                 state.execution.device.stream);
     state.execution.work.reset();
+    if (state.execution.tp != nullptr) { state.execution.tp->work->reset(); }
 }
 
 } // namespace ninfer::models::qwen3_5::execution
@@ -596,6 +624,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             }
             mark_workspace_usage(workspace_plan.mtp_prefill);
             const Tensor& previous_hidden = sequence.tail_hidden;
+            const Tensor peer_previous_hidden =
+                peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
             const execution::MtpBridgeInput bridge{
                 .previous_hidden = &previous_hidden,
                 .position        = checked_i32(staged.base - 1, "MTP bridge position"),
@@ -610,6 +640,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 CUDA_CHECK(cudaMemcpyAsync(bridge_token.data, &token, sizeof(token),
                                            cudaMemcpyHostToDevice, device.stream));
                 execution::mtp_bridge_and_propose(schedule_state, bridge_token, previous_hidden,
+                                                  peer_retains_hidden() ? &peer_previous_hidden
+                                                                        : nullptr,
                                                   bridge.position, bridge.rope_position, false);
             }
             sequence.mtp_kv_valid = staged.base;
@@ -761,8 +793,11 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 mark_workspace_usage(workspace_plan.mtp_prefill);
                 const auto bridge_rope =
                     prompt_rope_position(staged.prompt, staged.prompt_tokens - 1);
+                const Tensor peer_previous_hidden =
+                    peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
                 execution::mtp_bridge_and_propose(
                     schedule_state, io.token, sequence.tail_hidden,
+                    peer_retains_hidden() ? &peer_previous_hidden : nullptr,
                     checked_i32(staged.prompt_tokens - 1, "MTP full-prefix bridge position"),
                     bridge_rope, staged.initial_mtp_extent != 0);
                 sequence.mtp_kv_valid = staged.prompt_tokens;
