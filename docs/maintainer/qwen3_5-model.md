@@ -282,8 +282,8 @@ before the split gating projection because the fused norm-and-gating Op has no s
 final norm is replicated; each rank projects its half of the vocabulary, and rank 0 alone
 assembles the complete logits, where sampling runs: one cross-device copy pulls rank 1's
 contiguous `[V/2, C]` half into rank-0 staging and two local pitched copies interleave both halves
-column by column. Only the speculative verification and MTP proposal logits, which the rounds
-keep in per-rank frames, are still gathered per column on both ranks.
+column by column. Rank 1 keeps no copy of the logits, in prefill, ordinary decode, verification
+and the MTP proposals alike.
 
 Rank 1 receives its own copies of the control tensors: prefill fills its positions on device and
 reads its KV row from `TpExecution::text_kv_table_row`; ordinary decode reads

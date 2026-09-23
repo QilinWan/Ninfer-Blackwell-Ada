@@ -2016,28 +2016,21 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
 }
 
 void TextContext::logits_tp2(const RankTensors& hidden, Tensor& logits) {
-    logits_tp2(hidden, {&parameters_.text.output_head, &tp_->parameters->text.output_head}, logits,
-               nullptr);
+    logits_tp2(hidden, {&parameters_.text.output_head, &tp_->parameters->text.output_head}, logits);
 }
 
 void TextContext::logits_tp2(const RankTensors& hidden,
-                             const std::array<const LinearParameters*, 2>& head, Tensor& logits,
-                             const Tensor* peer_logits) {
+                             const std::array<const LinearParameters*, 2>& head, Tensor& logits) {
     const auto ws              = workspaces();
     const std::int32_t columns = hidden[0].ne[1];
     const std::int32_t rows0   = head[0]->weight.n;
     const std::int32_t rows1   = head[1]->weight.n;
     auto scope0                = work_.scope();
     auto scope1                = tp_->work->scope();
-    const auto part0 = workspace::tp_logits(*ws[0], rows0, rows1, columns, peer_logits == nullptr);
-    const auto part1 = workspace::tp_logits(*ws[1], rows1, rows0, columns, false);
-    if (peer_logits == nullptr) {
-        output_logits_split_rank0(hidden, head, {part0.partial, part1.partial}, logits,
-                                  part0.staging, ws, *tp_->execution, *tp_->events);
-        return;
-    }
-    output_logits_split(hidden, head, {part0.partial, part1.partial}, {logits, *peer_logits}, ws,
-                        *tp_->execution, *tp_->events);
+    const auto part0           = workspace::tp_logits(*ws[0], rows0, rows1, columns, true);
+    const auto part1           = workspace::tp_logits(*ws[1], rows1, rows0, columns, false);
+    output_logits_split_rank0(hidden, head, {part0.partial, part1.partial}, logits, part0.staging,
+                              ws, *tp_->execution, *tp_->events);
 }
 
 template <class Tap>
@@ -2313,7 +2306,7 @@ void TextContext::target_verify_batch_tp2_impl(
     const RankTensors& ids, const RankTensors& cache_positions, const RankTensors& rope_positions,
     const RankTensors& valid_columns, const RankTensors& kv_table_rows,
     const RankTensors& linear_state_source_slots, ops::CausalAttentionExecutionEnvelope envelope,
-    const RankTensors& hidden, const RankTensors& logits, Tensor& target_tokens, Tap& tap) {
+    const RankTensors& hidden, Tensor& logits, Tensor& target_tokens, Tap& tap) {
     if (!tp2()) {
         throw std::invalid_argument("rank-pair target verification requires tensor parallelism");
     }
@@ -2327,7 +2320,7 @@ void TextContext::target_verify_batch_tp2_impl(
     const std::int32_t H       = dimension(config_.hidden_size);
     const std::int32_t V       = dimension(config_.vocab_size);
     // Rank 1's destinations live on the other device, where an undersized buffer would be a silent
-    // out-of-bounds write, so both ranks' extents are checked.
+    // out-of-bounds write, so both ranks' extents are checked. The logits are rank 0's alone.
     for (std::size_t r = 0; r < 2; ++r) {
         require_tensor_shape(ids[r], DType::I32, {width, batch}, "target verify batch ids");
         require_tensor_shape(cache_positions[r], DType::I32, {width, batch},
@@ -2341,9 +2334,8 @@ void TextContext::target_verify_batch_tp2_impl(
                              "target verify batch Linear Attention slots");
         require_tensor_shape(hidden[r], DType::BF16, {H, width, batch},
                              "target verify batch hidden");
-        require_tensor_shape(logits[r], DType::BF16, {V, width, batch},
-                             "target verify batch logits");
     }
+    require_tensor_shape(logits, DType::BF16, {V, width, batch}, "target verify batch logits");
     require_tensor_shape(target_tokens, DType::I32, {width, batch}, "target verify batch tokens");
 
     const ExecutionContext& execution = *tp_->execution;
@@ -2395,10 +2387,9 @@ void TextContext::target_verify_batch_tp2_impl(
             ops::rmsnorm(x[r], rank_parameters(rank).text.final_norm, config_.rms_norm_eps, true,
                          flat_hidden[r], rank_stream(rank));
         });
-        Tensor flat_logits       = logits[0].view({V, columns});
-        const Tensor peer_logits = logits[1].view({V, columns});
+        Tensor flat_logits = logits.view({V, columns});
         logits_tp2(flat_hidden, {&parameters_.text.output_head, &tp_->parameters->text.output_head},
-                   flat_logits, &peer_logits);
+                   flat_logits);
         // Acceptance is rank 0's alone, so only rank 0 needs the target tokens.
         Tensor flat_tokens = target_tokens.view({columns});
         ops::argmax(flat_logits, flat_tokens,
@@ -2412,21 +2403,18 @@ void TextContext::target_verify_batch(
     const RankTensors& ids, const RankTensors& cache_positions, const RankTensors& rope_positions,
     const RankTensors& valid_columns, const RankTensors& kv_table_rows,
     const RankTensors& linear_state_source_slots, ops::CausalAttentionExecutionEnvelope envelope,
-    const RankTensors& hidden, const RankTensors& logits, Tensor& target_tokens) {
+    const RankTensors& hidden, Tensor& logits, Tensor& target_tokens) {
     NullTap tap;
     target_verify_batch_tp2_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
                                  linear_state_source_slots, envelope, hidden, logits, target_tokens,
                                  tap);
 }
 
-void TextContext::target_verify_batch(const RankTensors& ids, const RankTensors& cache_positions,
-                                      const RankTensors& rope_positions,
-                                      const RankTensors& valid_columns,
-                                      const RankTensors& kv_table_rows,
-                                      const RankTensors& linear_state_source_slots,
-                                      ops::CausalAttentionExecutionEnvelope envelope,
-                                      const RankTensors& hidden, const RankTensors& logits,
-                                      Tensor& target_tokens, DFlashFeatureSink& sink) {
+void TextContext::target_verify_batch(
+    const RankTensors& ids, const RankTensors& cache_positions, const RankTensors& rope_positions,
+    const RankTensors& valid_columns, const RankTensors& kv_table_rows,
+    const RankTensors& linear_state_source_slots, ops::CausalAttentionExecutionEnvelope envelope,
+    const RankTensors& hidden, Tensor& logits, Tensor& target_tokens, DFlashFeatureSink& sink) {
     target_verify_batch_tp2_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
                                  linear_state_source_slots, envelope, hidden, logits, target_tokens,
                                  sink);
@@ -2777,11 +2765,11 @@ void TextContext::mtp_prefill_chunk_tp2(const Tensor& ids, const RankTensors& hi
         ops::rmsnorm(x_last[r], rank_mtp(rank).final_norm, config_.rms_norm_eps, true, out,
                      rank_stream(rank));
     });
-    proposal_argmax_tp2(*final_hidden, *logits, nullptr, *draft_token);
+    proposal_argmax_tp2(*final_hidden, *logits, *draft_token);
 }
 
 void TextContext::proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits,
-                                      const Tensor* peer_logits, Tensor& proposal_tokens) {
+                                      Tensor& proposal_tokens) {
     const std::int32_t T = hidden[0].ne[1];
     const std::int32_t H = dimension(config_.hidden_size);
     const std::int32_t V = dimension(config_.vocab_size);
@@ -2798,16 +2786,9 @@ void TextContext::proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits,
     nvtx::ScopedRange proposal_range(nvtx::Name::MtpProposal, nvtx::Category::Mtp,
                                      static_cast<std::uint64_t>(T));
     Tensor output_logits = matrix_window(logits, T);
-    Tensor peer_window;
-    if (peer_logits != nullptr) {
-        Tensor peer = *peer_logits;
-        require_tensor_window(peer, DType::BF16, V, T, "proposal peer logits");
-        peer_window = matrix_window(peer, T);
-    }
     // The full head is the vocabulary-split output head: the argmax runs over the gathered
     // complete logits, on rank 0.
-    logits_tp2(hidden, {&rank_mtp(0).output_head, &rank_mtp(1).output_head}, output_logits,
-               peer_logits != nullptr ? &peer_window : nullptr);
+    logits_tp2(hidden, {&rank_mtp(0).output_head, &rank_mtp(1).output_head}, output_logits);
     ops::argmax(output_logits, proposal_tokens,
                 dimension(parameters_.model.resources().public_token_count), ctx_.stream);
 }
@@ -2852,7 +2833,7 @@ void TextContext::mtp_forward_decode_batch(const Tensor& ids, const RankTensors&
     mtp_forward_core_tp2(ids, hidden, cache_positions, rope_positions, envelope, mtp_hidden);
 }
 
-void TextContext::mtp_propose_batch(const RankTensors& hidden, const RankTensors& logits,
+void TextContext::mtp_propose_batch(const RankTensors& hidden, Tensor& logits,
                                     Tensor& draft_tokens) {
     if (!tp2()) {
         throw std::invalid_argument("rank-pair MTP proposal requires tensor parallelism");
@@ -2861,15 +2842,14 @@ void TextContext::mtp_propose_batch(const RankTensors& hidden, const RankTensors
     for (std::size_t r = 0; r < 2; ++r) {
         require_tensor_shape(hidden[r], DType::BF16, {dimension(config_.hidden_size), batch},
                              "MTP proposal batch hidden");
-        require_tensor_shape(logits[r], DType::BF16, {dimension(config_.vocab_size), batch},
-                             "MTP proposal batch logits");
     }
+    require_tensor_shape(logits, DType::BF16, {dimension(config_.vocab_size), batch},
+                         "MTP proposal batch logits");
     require_tensor_shape(draft_tokens, DType::I32, {batch}, "MTP proposal batch tokens");
     const DeviceScope device(ctx_.device);
     auto proposal_scope0 = work_.scope();
     auto proposal_scope1 = tp_->work->scope();
-    Tensor output_logits = logits[0];
-    proposal_argmax_tp2(hidden, output_logits, &logits[1], draft_tokens);
+    proposal_argmax_tp2(hidden, logits, draft_tokens);
 }
 
 void TextContext::mtp_forward_batch(const Tensor& ids, const RankTensors& hidden,
@@ -2909,7 +2889,7 @@ void TextContext::mtp_forward_batch(const Tensor& ids, const RankTensors& hidden
         auto logits_scope1 = tp_->work->scope();
         const RankTensors column{mtp_hidden[0].slice(1, logits_column, 1),
                                  mtp_hidden[1].slice(1, logits_column, 1)};
-        proposal_argmax_tp2(column, *logits, nullptr, *draft_token);
+        proposal_argmax_tp2(column, *logits, *draft_token);
     }
 }
 
@@ -2953,7 +2933,7 @@ void TextContext::mtp_forward_ar_step(const Tensor& token, const RankTensors& pr
     mtp_forward_core_tp2(token, previous_hidden, position, rope_position, envelope, mtp_hidden);
     auto logits_scope0 = work_.scope();
     auto logits_scope1 = tp_->work->scope();
-    proposal_argmax_tp2(mtp_hidden, logits, nullptr, draft_token);
+    proposal_argmax_tp2(mtp_hidden, logits, draft_token);
 }
 
 void TextContext::ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,

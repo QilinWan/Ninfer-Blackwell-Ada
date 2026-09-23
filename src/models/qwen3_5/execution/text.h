@@ -184,18 +184,17 @@ public:
     // host ingress record to both ranks and derives the rest with the same Ops). Token ids an MTP
     // call embeds are rank 0's alone: rank 0's half of the MTP input projection contracts the
     // token embedding and rank 1's the target hidden. Sampling, acceptance and the winning draft
-    // ids are rank 0's; rank 1's `logits` receive the gathered copy the row gather leaves there.
+    // ids are rank 0's, and so are the logits: rank 0 alone gathers them, into its own frames.
 
     // Verification with ReplaySSM records (GdnStateAction::RecordForReplay) on each rank. Both
-    // ranks keep their normalized hidden [H,W,B]; `logits[r]` receive the complete [V,W,B]
+    // ranks keep their normalized hidden [H,W,B]; rank 0's `logits` receive the complete [V,W,B]
     // logits and rank 0 writes the per-column argmax into `target_tokens`.
     void target_verify_batch(const RankTensors& ids, const RankTensors& cache_positions,
                              const RankTensors& rope_positions, const RankTensors& valid_columns,
                              const RankTensors& kv_table_rows,
                              const RankTensors& linear_state_source_slots,
                              ops::CausalAttentionExecutionEnvelope envelope,
-                             const RankTensors& hidden, const RankTensors& logits,
-                             Tensor& target_tokens);
+                             const RankTensors& hidden, Tensor& logits, Tensor& target_tokens);
     // The same verification with rank 0's DFlash drafter capturing its target features: `sink`
     // reads rank 0's residual after each captured layer's all-reduce (the complete hidden state)
     // on rank 0's stream. Rank 1 captures nothing.
@@ -204,8 +203,8 @@ public:
                              const RankTensors& kv_table_rows,
                              const RankTensors& linear_state_source_slots,
                              ops::CausalAttentionExecutionEnvelope envelope,
-                             const RankTensors& hidden, const RankTensors& logits,
-                             Tensor& target_tokens, DFlashFeatureSink& sink);
+                             const RankTensors& hidden, Tensor& logits, Tensor& target_tokens,
+                             DFlashFeatureSink& sink);
     void mtp_forward_decode_batch(const Tensor& ids, const RankTensors& hidden,
                                   const RankTensors& cache_positions,
                                   const RankTensors& rope_positions,
@@ -213,8 +212,8 @@ public:
                                   const RankTensors& kv_table_rows,
                                   ops::CausalAttentionExecutionEnvelope envelope,
                                   const RankTensors& mtp_hidden);
-    void mtp_propose_batch(const RankTensors& hidden, const RankTensors& logits,
-                           Tensor& draft_tokens);
+    // `logits` [V,B] is rank 0's.
+    void mtp_propose_batch(const RankTensors& hidden, Tensor& logits, Tensor& draft_tokens);
     // The MTP bridge over both ranks: `ids` [T] (rank 0's alone) against each rank's copy of the
     // target hidden [H,T], appending both ranks' MTP K/V at `positions` through each rank's
     // prefill MTP KV row. `rope_positions[r]` are one-axis [T]. With `logits_column` >= 0 rank 0
@@ -288,15 +287,14 @@ private:
                                       const RankTensors& kv_table_rows,
                                       const RankTensors& linear_state_source_slots,
                                       ops::CausalAttentionExecutionEnvelope envelope,
-                                      const RankTensors& hidden, const RankTensors& logits,
+                                      const RankTensors& hidden, Tensor& logits,
                                       Tensor& target_tokens, Tap& tap);
     // Vocabulary-split head: each rank projects its half of the vocabulary from its final hidden
-    // columns. Without `peer_logits` rank 0 alone gathers the complete [V, C] logits into
-    // `logits` (one pull of rank 1's half); with it, a per-column row gather also writes rank 1's
-    // copy into `peer_logits`.
+    // columns, and rank 0 alone gathers the complete [V, C] logits into its `logits` (one pull of
+    // rank 1's half).
     void logits_tp2(const RankTensors& hidden, Tensor& logits);
     void logits_tp2(const RankTensors& hidden, const std::array<const LinearParameters*, 2>& head,
-                    Tensor& logits, const Tensor* peer_logits);
+                    Tensor& logits);
     // MTP head over both ranks: three all-reduces (input projection, attention output, post-mixer
     // down projection) leave the replicated residual identical on the two ranks, as in the text
     // layers. The attention runs over each rank's half of the heads and its own MTP KV pages.
@@ -317,8 +315,7 @@ private:
                                Tensor* draft_token);
     // The optimized proposal head is rank 0's alone; the full head is the vocabulary-split output
     // head, gathered before rank 0's argmax.
-    void proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits, const Tensor* peer_logits,
-                             Tensor& proposal_tokens);
+    void proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits, Tensor& proposal_tokens);
     void ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,
                                    const Tensor& rope_positions, const Tensor& kv_table_rows,
                                    const Tensor& linear_state_source_slots,

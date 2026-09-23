@@ -429,8 +429,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
 
             if (peer) {
                 const TextContext::RankTensors ar_hidden{round.ar_hidden, peer->ar_hidden};
-                const TextContext::RankTensors proposal_logits{round.proposal_logits,
-                                                               peer->proposal_logits};
+                Tensor proposal_logits = round.proposal_logits;
                 card.mtp_propose_batch(ar_hidden, proposal_logits, draft0);
             } else {
                 Tensor proposal_logits = round.proposal_logits;
@@ -461,8 +460,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                                   mtp_rows, envelopes.ar[step], next_hidden);
                     const TextContext::RankTensors proposal_hidden{round.next_hidden,
                                                                    peer->next_hidden};
-                    const TextContext::RankTensors proposal_logits{round.proposal_logits,
-                                                                   peer->proposal_logits};
+                    Tensor proposal_logits = round.proposal_logits;
                     card.mtp_propose_batch(proposal_hidden, proposal_logits, next);
                     const detail::ScopedCurrentDevice scope(rank1->device);
                     CUDA_CHECK(cudaMemcpyAsync(peer->ar_hidden.data, peer->next_hidden.data,

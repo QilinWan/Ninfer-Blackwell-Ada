@@ -58,14 +58,6 @@ struct OrdinaryPeerFrame {
 [[nodiscard]] std::size_t output_head_split_workspace_bytes(const LinearParameters& shard,
                                                             std::int32_t first, std::int32_t last);
 
-// One exact row gather per column assembles the complete [V,C] logits in both `logits[0]` and
-// `logits[1]`: the symmetric form, for callers whose frames hold a copy on each rank.
-void output_logits_split(const std::array<Tensor, 2>& hidden,
-                         const std::array<const LinearParameters*, 2>& head,
-                         const std::array<Tensor, 2>& partial, const std::array<Tensor, 2>& logits,
-                         const std::array<WorkspaceArena*, 2>& workspace,
-                         const ExecutionContext& execution, const ops::PeerEvents& events);
-
 // Rank 0 alone receives the complete [V,C] `logits`: it pulls rank 1's contiguous `partial[1]`
 // block into its own `staging` [V_1,C] with one cross-device copy, then two local pitched copies
 // interleave both halves column by column. Rank 1 keeps no copy of the logits. `logits` and

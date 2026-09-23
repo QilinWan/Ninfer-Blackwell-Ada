@@ -107,6 +107,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan, int rank_index)
     const auto& config     = parameters.model.config().text;
     // One rank's KV heads and GDN channels/value heads; the whole config at tp 1. The round
     // state keeps the complete vocabulary: rank 0 gathers the complete logits and samples there.
+    // Rank 1's round state has the same layout, so its logits frames are allocated but unused.
     const TextConfig rank = execution::shard_text_config(config, plan.tp);
     const bool drafter    = plan.features.masked_draft() && rank_index == 0;
 
@@ -584,8 +585,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         scratch(layout, execution::output_head_split_workspace_bytes(head, columns, columns));
     };
     // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, or the
-    // vocabulary-split output head (rank 0's gather staging in its arena when the caller has no
-    // rank-1 frame).
+    // vocabulary-split output head.
     const auto proposal = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
         auto call = layout.scope();
         if (plan.proposal_head == ProposalHead::Optimized) {
@@ -668,7 +668,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         out.text_prefill = finish(layout);
     }
     // Speculative verification of `batch` rows of K+1 columns on both ranks, with ReplaySSM
-    // records and the gathered logits in the caller's frames.
+    // records and the gathered logits in rank 0's frame.
     const auto verification = [&](std::int32_t batch) {
         const std::int32_t aggregate = batch * verify;
         WorkspaceLayoutBuilder target;
@@ -679,7 +679,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             auto logits = target.scope();
             const std::int32_t rows = parameters.text.output_head.weight.n;
             (void)workspace::tp_logits(target, rows, dimension(config.vocab_size) - rows, aggregate,
-                                       false);
+                                       true);
             scratch(target, execution::output_head_split_workspace_bytes(
                                 parameters.text.output_head, aggregate, aggregate));
         }

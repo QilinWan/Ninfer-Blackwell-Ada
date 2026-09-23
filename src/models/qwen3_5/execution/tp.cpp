@@ -57,37 +57,6 @@ std::size_t output_head_split_workspace_bytes(const LinearParameters& shard, std
                                                 shard.policy, first, last);
 }
 
-void output_logits_split(const std::array<Tensor, 2>& hidden,
-                         const std::array<const LinearParameters*, 2>& head,
-                         const std::array<Tensor, 2>& partial, const std::array<Tensor, 2>& logits,
-                         const std::array<WorkspaceArena*, 2>& workspace,
-                         const ExecutionContext& execution, const ops::PeerEvents& events) {
-    const std::int32_t columns = hidden[0].ne[1];
-    const std::int32_t rows0   = partial[0].ne[0];
-    const std::int32_t rows1   = partial[1].ne[0];
-    for (std::size_t r = 0; r < 2; ++r) {
-        if (partial[r].dtype != DType::BF16 || partial[r].ne[1] != columns ||
-            !partial[r].is_contiguous() || logits[r].dtype != DType::BF16 ||
-            logits[r].ne[0] != rows0 + rows1 || logits[r].ne[1] != columns ||
-            logits[r].ne[2] != 1 || logits[r].ne[3] != 1 || !logits[r].is_contiguous()) {
-            throw std::invalid_argument(
-                "tensor-parallel logits: partial or gathered logits do not match the vocabulary");
-        }
-    }
-    project_column_parallel(hidden, head, partial, workspace, execution);
-    // The gather runs along ne[1] and the vocabulary is ne[0], so it runs one column at a time:
-    // one column of a contiguous [V,C] BF16 matrix is a contiguous V-element run, which viewed as
-    // [1,V] is the Op's [row length 1, row count V] layout. C is 1 in prefill and the decode batch
-    // size otherwise.
-    for (std::int32_t column = 0; column < columns; ++column) {
-        const std::array<Tensor, 2> piece{partial[0].slice(1, column, 1).view({1, rows0}),
-                                          partial[1].slice(1, column, 1).view({1, rows1})};
-        const std::array<Tensor, 2> whole{logits[0].slice(1, column, 1).view({1, rows0 + rows1}),
-                                          logits[1].slice(1, column, 1).view({1, rows0 + rows1})};
-        ops::allgather_rows(whole, piece, execution, events);
-    }
-}
-
 void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
                                const std::array<const LinearParameters*, 2>& head,
                                const std::array<Tensor, 2>& partial, const Tensor& logits,

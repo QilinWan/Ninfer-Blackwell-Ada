@@ -62,14 +62,13 @@ void target_verify_forward(ExecutionCore& execution, TextContext& card,
     if (frame.replay_records == nullptr || peer.replay_records == nullptr) {
         throw std::logic_error("speculative target verify has no ReplaySSM record storage");
     }
-    // The drafter, its proposals and acceptance are rank 0's alone.
+    // The drafter, its proposals, the gathered logits and acceptance are rank 0's alone.
     if (peer.feature_sink != nullptr || peer.proposal_q.data != nullptr) {
         throw std::logic_error(
             "tensor-parallel target verify captures features and accepts on rank 0 only");
     }
     card.set_gdn_state_action(GdnStateAction::RecordForReplay, frame.replay_records);
     const TextContext::RankTensors hidden{frame.target_hidden, peer.target_hidden};
-    const TextContext::RankTensors logits{frame.target_logits, peer.target_logits};
     if (frame.feature_sink != nullptr) {
         // Feature capture exists only on rank 0: it records rank 0's replicated residual.
         if (peer.feature_sink != nullptr || peer.proposal_q.data != nullptr) {
@@ -81,15 +80,15 @@ void target_verify_forward(ExecutionCore& execution, TextContext& card,
             {frame.ids, peer.ids}, {frame.cache_positions, peer.cache_positions},
             {frame.rope_positions, peer.rope_positions}, {frame.valid_columns, peer.valid_columns},
             {frame.kv_table_rows, peer.kv_table_rows},
-            {frame.state_source_slots, peer.state_source_slots}, envelope, hidden, logits,
-            frame.target_tokens, *frame.feature_sink);
+            {frame.state_source_slots, peer.state_source_slots}, envelope, hidden,
+            frame.target_logits, frame.target_tokens, *frame.feature_sink);
     } else {
         card.target_verify_batch(
             {frame.ids, peer.ids}, {frame.cache_positions, peer.cache_positions},
             {frame.rope_positions, peer.rope_positions}, {frame.valid_columns, peer.valid_columns},
             {frame.kv_table_rows, peer.kv_table_rows},
-            {frame.state_source_slots, peer.state_source_slots}, envelope, hidden, logits,
-            frame.target_tokens);
+            {frame.state_source_slots, peer.state_source_slots}, envelope, hidden,
+            frame.target_logits, frame.target_tokens);
     }
 }
 
