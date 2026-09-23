@@ -154,3 +154,15 @@ ninfer_add_test(ninfer_qwen3_5_engine_tp2_real_test
 set_tests_properties(
   ninfer_qwen3_5_engine_tp2_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
+
+ninfer_add_test(ninfer_qwen3_5_engine_mtp_tp2_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_mtp_tp2_real.cpp"
+  LIBRARIES ninfer_engine ninfer_core)
+
+add_test(NAME ninfer_qwen3_5_engine_mtp_tp2_optimized_real_test
+  COMMAND ninfer_qwen3_5_engine_mtp_tp2_real_test optimized)
+
+set_tests_properties(
+  ninfer_qwen3_5_engine_mtp_tp2_real_test
+  ninfer_qwen3_5_engine_mtp_tp2_optimized_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)

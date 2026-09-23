@@ -167,6 +167,16 @@ NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_35b_a3b.ninfer \
   ctest --test-dir build -R ninfer_qwen3_5_moe_real_test --output-on-failure
 ```
 
+The two-device tests need two CUDA devices and split the artifact across devices 0 and 1. The MTP
+test compares MTP (K=3) answers with the same tp 2 model without speculation, checks the draft
+acceptance and runs two-lane MTP rounds; its `optimized_real` variant selects the optimized
+proposal head:
+
+```bash
+NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
+  ctest --test-dir build -R 'ninfer_qwen3_5_engine_(mtp_)?tp2' --output-on-failure
+```
+
 Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Real-artifact targets
 carry the `real` label and `RUN_SERIAL` so CTest runs them alone. Run directly invoked GPU
 integration tests serially. `NINFER_PREFIX_REAL_SCENARIO` selects a focused prefix scenario such as
