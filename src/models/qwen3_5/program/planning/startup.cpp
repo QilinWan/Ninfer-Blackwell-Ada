@@ -514,28 +514,17 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     const ops::CausalAttentionExecutionEnvelope text_envelope{1, plan.capacity};
     const std::int32_t public_tokens = dimension(parameters.model.resources().public_token_count);
 
-    const auto matrix  = [](WorkspaceLayoutBuilder& layout, DType dtype, std::int32_t rows,
-                           std::int32_t tokens) { (void)layout.alloc(dtype, {rows, tokens}); };
-    const auto scratch = [](WorkspaceLayoutBuilder& layout, std::size_t bytes) {
-        if (bytes == 0) { return; }
-        auto scope = layout.scope();
-        (void)layout.alloc_bytes(bytes);
-    };
     const auto finish = [](const WorkspaceLayoutBuilder& layout) { return layout.peak_bytes(1); };
-    const auto linear_scratch = [&](WorkspaceLayoutBuilder& layout,
-                                    const execution::LinearParameters& p, int first, int last) {
-        scratch(layout, ops::linear_workspace_capacity_bytes(p.weight.qtype, p.weight.n, p.weight.k,
-                                                             p.policy, first, last));
-    };
     const auto row_parallel_scratch = [&](WorkspaceLayoutBuilder& layout,
                                           const execution::LinearParameters& p, int first,
                                           int last) {
-        scratch(layout, ops::linear_add_row_parallel_workspace_capacity_bytes(
-                            p.weight.qtype, p.weight.n, p.weight.k, p.policy, first, last));
+        reserve_scratch(layout, ops::linear_add_row_parallel_workspace_capacity_bytes(
+                                    p.weight.qtype, p.weight.n, p.weight.k, p.policy, first, last));
     };
     const auto attention_scratch = [&](WorkspaceLayoutBuilder& layout, std::int32_t batch_size,
                                        std::int32_t min_width, std::int32_t max_width) {
-        scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
+        reserve_scratch(layout,
+                        ops::causal_softmax_attention_workspace_capacity_bytes(
                             {dimension(shard.attention->head_dim),
                              dimension(shard.attention->num_attention_heads),
                              dimension(shard.attention->num_key_value_heads)},
@@ -554,33 +543,34 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                 if (const auto* attention =
                         std::get_if<execution::AttentionParameters>(&block.mixer)) {
                     (void)workspace::text_attention_projection(layout, shard, last);
-                    scratch(layout, execution::attention_projection_split_workspace_bytes(
-                                        *attention, first, last));
+                    reserve_scratch(layout, execution::attention_projection_split_workspace_bytes(
+                                                *attention, first, last));
                     (void)workspace::text_attention_results(layout, shard, last);
                     attention_scratch(layout, batch_size, min_width, max_width);
                     row_parallel_scratch(layout, attention->output, first, last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
                     (void)workspace::gdn_control(layout, shard, last);
-                    scratch(layout, execution::gdn_control_split_workspace_bytes(*shard.gdn, hidden,
-                                                                                 first, last));
+                    reserve_scratch(layout, execution::gdn_control_split_workspace_bytes(
+                                                *shard.gdn, hidden, first, last));
                     (void)workspace::gdn_projection(layout, shard, last);
                     if (phase == TextPhase::Verify) {
-                        scratch(layout, record ? execution::gdn_record_split_workspace_bytes(
-                                                     gdn, batch_size, min_width, max_width)
-                                               : execution::gdn_snapshot_split_workspace_bytes(
-                                                     gdn, batch_size, min_width, max_width));
+                        reserve_scratch(layout, record
+                                                    ? execution::gdn_record_split_workspace_bytes(
+                                                          gdn, batch_size, min_width, max_width)
+                                                    : execution::gdn_snapshot_split_workspace_bytes(
+                                                          gdn, batch_size, min_width, max_width));
                     } else {
                         (void)workspace::gdn_prefill_conv(layout, shard, last);
-                        scratch(layout,
-                                execution::gdn_projection_split_workspace_bytes(gdn, first, last));
+                        reserve_scratch(layout, execution::gdn_projection_split_workspace_bytes(
+                                                    gdn, first, last));
                     }
                     (void)workspace::gdn_recurrent_output(layout, shard, last);
                     if (phase == TextPhase::Prefill) {
-                        scratch(layout, ops::gated_delta_net_workspace_capacity_bytes(
-                                            dimension(shard.gdn->linear_num_key_heads),
-                                            dimension(shard.gdn->linear_num_value_heads), first,
-                                            last));
+                        reserve_scratch(layout, ops::gated_delta_net_workspace_capacity_bytes(
+                                                    dimension(shard.gdn->linear_num_key_heads),
+                                                    dimension(shard.gdn->linear_num_value_heads),
+                                                    first, last));
                     }
                     (void)workspace::gdn_normalized_output(layout, shard, last);
                     row_parallel_scratch(layout, gdn.output, first, last);
@@ -588,7 +578,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             }
             auto stage = layout.scope();
             (void)workspace::post_mixer_hidden(layout, config, last);
-            scratch(layout, execution::ffn_split_workspace_bytes(block.ffn, first, last));
+            reserve_scratch(layout, execution::ffn_split_workspace_bytes(block.ffn, first, last));
         }
     };
     // Vocabulary-split head over `columns` final hidden columns: this rank's rows, rank 0's
@@ -598,15 +588,16 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         const std::int32_t peer_rows            = dimension(config.vocab_size) - head.weight.n;
         auto call                               = layout.scope();
         (void)workspace::tp_logits(layout, head.weight.n, peer_rows, columns, true);
-        scratch(layout, execution::output_head_split_workspace_bytes(head, columns, columns));
+        reserve_scratch(layout,
+                        execution::output_head_split_workspace_bytes(head, columns, columns));
     };
     // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, or the
     // vocabulary-split output head.
     const auto proposal = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
         auto call = layout.scope();
         if (plan.proposal_head == ProposalHead::Optimized) {
-            matrix(layout, DType::BF16, dimension(parameters.proposal->rows), columns);
-            linear_scratch(layout, parameters.proposal->head, columns, columns);
+            reserve_matrix(layout, DType::BF16, dimension(parameters.proposal->rows), columns);
+            reserve_linear(layout, parameters.proposal->head, columns, columns);
         } else {
             split_logits(layout, columns);
         }
@@ -618,15 +609,15 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         auto core                         = layout.scope();
         (void)workspace::tp_call_roots(layout, config, tokens);
         (void)workspace::mtp_stem_split(layout, config, tokens, true);
-        linear_scratch(layout, p.input_projection, tokens, tokens);
+        reserve_linear(layout, p.input_projection, tokens, tokens);
         (void)workspace::mtp_attention_projection(layout, shard, tokens);
-        scratch(layout,
-                execution::mtp_projection_split_workspace_bytes(p.projection, tokens, tokens));
+        reserve_scratch(
+            layout, execution::mtp_projection_split_workspace_bytes(p.projection, tokens, tokens));
         (void)workspace::mtp_attention_results(layout, shard, tokens);
         attention_scratch(layout, batch_size, width, width);
         (void)workspace::mtp_post_attention(layout, config, tokens);
-        linear_scratch(layout, p.output, tokens, tokens);
-        scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, tokens, tokens));
+        reserve_linear(layout, p.output, tokens, tokens);
+        reserve_scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, tokens, tokens));
     };
     // TextContext::mtp_prefill_chunk_tp2 over a `tokens`-column chunk, the prompt's last one when
     // `last_chunk`.
@@ -638,30 +629,30 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         auto call                         = layout.scope();
         (void)workspace::tp_call_roots(layout, config, tokens);
         if (last_chunk) {
-            for (int i = 0; i < 3; ++i) { matrix(layout, DType::BF16, hidden, 1); }
+            for (int i = 0; i < 3; ++i) { reserve_matrix(layout, DType::BF16, hidden, 1); }
         }
         {
             auto bulk = layout.scope();
             (void)workspace::mtp_stem_split(layout, config, tokens, true);
-            linear_scratch(layout, p.input_projection, tokens, tokens);
-            matrix(layout, DType::BF16, key_width, tokens);
-            matrix(layout, DType::BF16, key_width, tokens);
-            scratch(layout, execution::mtp_kv_split_workspace_bytes(p.projection, *shard.attention,
-                                                                    tokens, tokens));
-            matrix(layout, DType::BF16, key_width, tokens);
+            reserve_linear(layout, p.input_projection, tokens, tokens);
+            reserve_matrix(layout, DType::BF16, key_width, tokens);
+            reserve_matrix(layout, DType::BF16, key_width, tokens);
+            reserve_scratch(layout, execution::mtp_kv_split_workspace_bytes(
+                                        p.projection, *shard.attention, tokens, tokens));
+            reserve_matrix(layout, DType::BF16, key_width, tokens);
         }
         if (!last_chunk) { return; }
-        matrix(layout, DType::BF16, query_width, 1);
-        matrix(layout, DType::BF16, query_width, 1);
-        scratch(layout, execution::mtp_query_gate_split_workspace_bytes(p.projection,
-                                                                        *shard.attention, 1, 1));
-        matrix(layout, DType::BF16, query_width, 1);
-        matrix(layout, DType::BF16, query_width, 1);
-        matrix(layout, DType::BF16, hidden, 1);
-        matrix(layout, DType::BF16, hidden, 1);
+        reserve_matrix(layout, DType::BF16, query_width, 1);
+        reserve_matrix(layout, DType::BF16, query_width, 1);
+        reserve_scratch(layout, execution::mtp_query_gate_split_workspace_bytes(
+                                    p.projection, *shard.attention, 1, 1));
+        reserve_matrix(layout, DType::BF16, query_width, 1);
+        reserve_matrix(layout, DType::BF16, query_width, 1);
+        reserve_matrix(layout, DType::BF16, hidden, 1);
+        reserve_matrix(layout, DType::BF16, hidden, 1);
         attention_scratch(layout, 1, 1, 1);
-        linear_scratch(layout, p.output, 1, 1);
-        scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, 1, 1));
+        reserve_linear(layout, p.output, 1, 1);
+        reserve_scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, 1, 1));
         proposal(layout, 1);
     };
 
@@ -674,9 +665,9 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         (void)workspace::tp_call_roots(layout, config, chunk);
         (void)layout.alloc(DType::I32, {1});
         target_body(layout, 1, chunk, TextPhase::Prefill, false, 1, 1, chunk);
-        matrix(layout, DType::BF16, hidden, 1);
+        reserve_matrix(layout, DType::BF16, hidden, 1);
         split_logits(layout, 1);
-        scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, 1, 1));
+        reserve_scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, 1, 1));
     };
     {
         WorkspaceLayoutBuilder layout;
@@ -688,7 +679,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     const auto verification = [&](std::int32_t batch) {
         const std::int32_t aggregate = batch * verify;
         WorkspaceLayoutBuilder target;
-        matrix(target, DType::BF16, hidden, aggregate);
+        reserve_matrix(target, DType::BF16, hidden, aggregate);
         (void)workspace::tp_call_roots(target, config, aggregate);
         target_body(target, aggregate, aggregate, TextPhase::Verify, true, batch, verify, verify);
         {
@@ -696,8 +687,8 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             const std::int32_t rows = parameters.text.output_head.weight.n;
             (void)workspace::tp_logits(target, rows, dimension(config.vocab_size) - rows, aggregate,
                                        true);
-            scratch(target, execution::output_head_split_workspace_bytes(
-                                parameters.text.output_head, aggregate, aggregate));
+            reserve_scratch(target, execution::output_head_split_workspace_bytes(
+                                        parameters.text.output_head, aggregate, aggregate));
         }
         return finish(target);
     };
@@ -705,19 +696,20 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
              ++batch) {
             WorkspaceLayoutBuilder layout;
-            matrix(layout, DType::BF16, hidden, batch);
+            reserve_matrix(layout, DType::BF16, hidden, batch);
             (void)workspace::tp_call_roots(layout, config, batch);
             target_body(layout, batch, batch, TextPhase::Verify, false, batch, 1, 1);
-            matrix(layout, DType::BF16, hidden, batch);
+            reserve_matrix(layout, DType::BF16, hidden, batch);
             split_logits(layout, batch);
-            scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, batch, batch));
+            reserve_scratch(layout,
+                            ops::sampling_workspace_capacity_bytes(public_tokens, batch, batch));
             out.ordinary_round = std::max(out.ordinary_round, finish(layout));
         }
     } else if (mtp) {
         {
             WorkspaceLayoutBuilder layout;
             text_prefill(layout);
-            matrix(layout, DType::I32, 1, chunk);
+            reserve_matrix(layout, DType::I32, 1, chunk);
             {
                 auto final_chunk = layout.scope();
                 mtp_prefill_chunk(layout, chunk, true);
@@ -726,9 +718,9 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             // positions and rank 1's delta, one MTP column and its proposal.
             for (std::int32_t step = 1; step < drafts; ++step) {
                 auto ar_step = layout.scope();
-                matrix(layout, DType::BF16, hidden, 1);
-                matrix(layout, DType::I32, 1, 1);
-                matrix(layout, DType::I32, 1, 1);
+                reserve_matrix(layout, DType::BF16, hidden, 1);
+                reserve_matrix(layout, DType::I32, 1, 1);
+                reserve_matrix(layout, DType::I32, 1, 1);
                 mtp_core(layout, 1, 1, 1);
                 proposal(layout, 1);
             }
