@@ -197,7 +197,13 @@ void Binder::place_device(MaterializationPlan& plan, ObjectHandle object,
                             .axis      = placement.axis};
         if (sharded) {
             out.ranges = placement.device_ranges[static_cast<std::size_t>(device)];
-            auto slice = tensor_slice(geometry, placement.axis, out.ranges);
+            auto slice = [&] {
+                try {
+                    return tensor_slice(geometry, placement.axis, out.ranges);
+                } catch (const ArtifactError& error) {
+                    throw ArtifactError(id + ": " + error.what());
+                }
+            }();
             out.bytes  = slice.geometry.bytes;
             out.copies = std::move(slice.copies);
         }

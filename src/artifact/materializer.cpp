@@ -246,9 +246,15 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
         out.stats_.per_device_capacity_bytes[device] = bytes;
         if (bytes) {
             selection.select(device);
-            out.arenas_[device] = std::make_unique<DeviceArena>(
-                static_cast<std::size_t>(bytes),
-                holds_shard[device] ? ZeroFill::Yes : ZeroFill::No);
+            try {
+                out.arenas_[device] = std::make_unique<DeviceArena>(
+                    static_cast<std::size_t>(bytes),
+                    holds_shard[device] ? ZeroFill::Yes : ZeroFill::No);
+            } catch (const std::exception& error) {
+                throw ArtifactError("device " + std::to_string(devices[device]->device) +
+                                    " weight arena of " + std::to_string(bytes) +
+                                    " bytes: " + error.what());
+            }
         }
     }
     if (capacity != plan.device_capacity_bytes) {
