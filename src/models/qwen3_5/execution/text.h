@@ -69,12 +69,18 @@ class VisionPrefillSession;
 
 // One Text call over the rank-0 operands, and with a non-null `tp` over both ranks of a
 // two-device Model (tp.h). A null `tp` is the single-device schedule, unchanged. With `tp`, the
-// text prefill chunk, ordinary decode and their logits run split; speculative verification, MTP,
-// DFlash target verification and multimodal prefill are rejected with std::invalid_argument, and
-// the constructor rejects MTP state, the MoE FFN, paired input projections and KV caches the
-// head-local attention does not support (only BF16 and INT8-G64).
+// text prefill chunk (with its MTP prompt alignment), ordinary decode, speculative target
+// verification, the MTP decode-round forwards and proposals, and their logits run split through
+// the rank-array overloads below; the single-rank MTP and verification entries, the MTP bridge
+// (mtp_forward_batch), DFlash feature capture in verification and multimodal prefill are rejected
+// with std::invalid_argument. The constructor rejects the MoE FFN, paired input projections, KV
+// caches the head-local attention does not support (only BF16 and INT8-G64) and incomplete MTP
+// bindings.
 class TextContext {
 public:
+    // Rank 0's operand then rank 1's, each resident on that rank's device.
+    using RankTensors = std::array<Tensor, kTensorParallelWidth>;
+
     TextContext(DeviceContext& ctx, const execution::Parameters& weights, WorkspaceArena& work,
                 qwen3_5::PagedKVCacheView kv, LinearAttentionStatePool& state,
                 qwen3_5::RoundState& io, Tensor& prefill_hidden, std::uint32_t prefill_chunk,
@@ -168,6 +174,40 @@ public:
     void mtp_forward_ar_step(const Tensor& token, const Tensor& previous_hidden,
                              const Tensor& position, ops::CausalAttentionExecutionEnvelope envelope,
                              Tensor& mtp_hidden, Tensor& logits, Tensor& draft_token);
+
+    // --- tp == 2 speculative forms --------------------------------------------------------------
+    // Rank 1's control tensors are its own copies of rank 0's values (the Program uploads the same
+    // host ingress record to both ranks and derives the rest with the same Ops). Token ids an MTP
+    // call embeds are rank 0's alone: rank 0's half of the MTP input projection contracts the
+    // token embedding and rank 1's the target hidden. Sampling, acceptance and the winning draft
+    // ids are rank 0's; rank 1's `logits` receive the gathered copy the row gather leaves there.
+
+    // Verification with ReplaySSM records (GdnStateAction::RecordForReplay) on each rank. Both
+    // ranks keep their normalized hidden [H,W,B]; `logits[r]` receive the complete [V,W,B]
+    // logits and rank 0 writes the per-column argmax into `target_tokens`.
+    void target_verify_batch(const RankTensors& ids, const RankTensors& cache_positions,
+                             const RankTensors& rope_positions, const RankTensors& valid_columns,
+                             const RankTensors& kv_table_rows,
+                             const RankTensors& linear_state_source_slots,
+                             ops::CausalAttentionExecutionEnvelope envelope,
+                             const RankTensors& hidden, const RankTensors& logits,
+                             Tensor& target_tokens);
+    void mtp_forward_decode_batch(const Tensor& ids, const RankTensors& hidden,
+                                  const RankTensors& cache_positions,
+                                  const RankTensors& rope_positions,
+                                  const RankTensors& valid_columns,
+                                  const RankTensors& kv_table_rows,
+                                  ops::CausalAttentionExecutionEnvelope envelope,
+                                  const RankTensors& mtp_hidden);
+    void mtp_propose_batch(const RankTensors& hidden, const RankTensors& logits,
+                           Tensor& draft_tokens);
+    // One prompt proposal step through each rank's prefill MTP KV row; rank 1's gathered logits
+    // stay in its arena.
+    void mtp_forward_ar_step(const Tensor& token, const RankTensors& previous_hidden,
+                             const RankTensors& position,
+                             ops::CausalAttentionExecutionEnvelope envelope,
+                             const RankTensors& mtp_hidden, Tensor& logits, Tensor& draft_token);
+
 private:
     [[nodiscard]] bool mtp_enabled() const noexcept {
         return mtp_kv_.valid() || batch_mtp_kv_ != nullptr;
@@ -179,8 +219,7 @@ private:
     // the identical BF16 sum on both ranks, so every later per-rank stage sees identical inputs.
     // Rank r's work is issued on ExecutionContext::dev[r]'s stream; only the collectives inside
     // the row-parallel projections order the two streams, with no host synchronization.
-    using RankBlocks  = std::array<const BlockParameters*, kTensorParallelWidth>;
-    using RankTensors = std::array<Tensor, kTensorParallelWidth>;
+    using RankBlocks = std::array<const BlockParameters*, kTensorParallelWidth>;
 
     [[nodiscard]] bool tp2() const noexcept { return tp_ != nullptr; }
 
@@ -202,6 +241,16 @@ private:
     [[nodiscard]] const Tensor& rank_kv_table_rows(int rank) const;
     [[nodiscard]] const Tensor& rank_linear_state_source_slots(int rank) const;
     [[nodiscard]] const Tensor& rank_linear_state_destination_slots(int rank) const;
+    // Both ranks bind valid columns, or neither does (an empty Tensor: every column is live); two
+    // ranks masking different columns would diverge silently.
+    [[nodiscard]] Tensor rank_valid_columns(int rank) const;
+    // The MTP execution rows: the batch binding of an MTP decode call, else the prefill scalar.
+    [[nodiscard]] const Tensor& rank_backend_kv_table_rows(int rank) const;
+    [[nodiscard]] const qwen3_5::PagedKVCache& rank_mtp_cache(int rank) const;
+    [[nodiscard]] qwen3_5::PagedKVCacheView rank_mtp_kv(int rank) const;
+    [[nodiscard]] const MtpParameters& rank_mtp(int rank) const;
+    [[nodiscard]] const GdnReplayRecords& rank_replay_records(int rank) const;
+    void validate_tensor_parallel_mtp();
     void attn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index,
                       const RankTensors& staging);
     void gdn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index, Phase phase,
@@ -210,8 +259,33 @@ private:
     template <class Tap>
     void run_layers_tp2(RankTensors& x, Phase phase, const RankTensors& staging, Tap& tap);
     // Vocabulary-split head: each rank projects its half of the vocabulary from its final hidden
-    // columns, and the row gather assembles the complete [V, C] logits in rank 0's `logits`.
+    // columns, and the row gather assembles the complete [V, C] logits in rank 0's `logits` and
+    // in `peer_logits`, or in rank 1's arena when it is null.
     void logits_tp2(const RankTensors& hidden, Tensor& logits);
+    void logits_tp2(const RankTensors& hidden, const std::array<const LinearParameters*, 2>& head,
+                    Tensor& logits, const Tensor* peer_logits);
+    // MTP head over both ranks: three all-reduces (input projection, attention output, post-mixer
+    // down projection) leave the replicated residual identical on the two ranks, as in the text
+    // layers. The attention runs over each rank's half of the heads and its own MTP KV pages.
+    void mtp_forward_stem_tp2(const Tensor& ids, const RankTensors& hidden, RankTensors& x,
+                              RankTensors& ah, const RankTensors& staging);
+    void mtp_forward_tail_tp2(RankTensors& x, const RankTensors& ah, const RankTensors& positions,
+                              const RankTensors& rope_positions,
+                              ops::CausalAttentionExecutionEnvelope envelope,
+                              const RankTensors& mtp_hidden, const RankTensors& staging);
+    void mtp_forward_core_tp2(const Tensor& ids, const RankTensors& hidden,
+                              const RankTensors& positions, const RankTensors& rope_positions,
+                              ops::CausalAttentionExecutionEnvelope envelope,
+                              const RankTensors& mtp_hidden);
+    void mtp_prefill_chunk_tp2(const Tensor& ids, const RankTensors& hidden,
+                               const RankTensors& positions, const RankTensors& rope_positions,
+                               ops::CausalAttentionExecutionEnvelope envelope, bool final_chunk,
+                               const RankTensors* final_hidden, Tensor* logits,
+                               Tensor* draft_token);
+    // The optimized proposal head is rank 0's alone; the full head is the vocabulary-split output
+    // head, gathered before rank 0's argmax.
+    void proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits, const Tensor* peer_logits,
+                             Tensor& proposal_tokens);
     void ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,
                                    const Tensor& rope_positions, const Tensor& kv_table_rows,
                                    const Tensor& linear_state_source_slots,
@@ -323,6 +397,8 @@ private:
     const Tensor* peer_kv_table_rows_                  = nullptr;
     const Tensor* peer_linear_state_source_slots_      = nullptr;
     const Tensor* peer_linear_state_destination_slots_ = nullptr;
+    const Tensor* peer_valid_columns_                  = nullptr;
+    const Tensor* peer_backend_kv_table_rows_          = nullptr;
 };
 
 } // namespace ninfer::models::qwen3_5::execution

@@ -199,6 +199,30 @@ MtpStemRoots mtp_stem(Allocator& allocator, const TextConfig& config, std::int32
     return out;
 }
 
+// One rank's roots of the two-device MTP stem. Rank 0 contracts the normalized token-embedding
+// half of the packed input projection and rank 1 the normalized hidden half, so each rank
+// normalizes only its own half into `normalized_input` and the packed input is never formed.
+// Only rank 0 embeds tokens.
+struct MtpStemSplitRoots {
+    Tensor embedding;
+    Tensor normalized_input;
+    Tensor residual;
+    Tensor attention_hidden;
+};
+
+template <class Allocator>
+MtpStemSplitRoots mtp_stem_split(Allocator& allocator, const TextConfig& config,
+                                 std::int32_t tokens, bool allocate_embedding) {
+    MtpStemSplitRoots out;
+    if (allocate_embedding) {
+        out.embedding = matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens);
+    }
+    out.normalized_input = matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens);
+    out.residual         = matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens);
+    out.attention_hidden = matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens);
+    return out;
+}
+
 struct MtpAttentionProjectionRoots {
     Tensor query;
     Tensor key;

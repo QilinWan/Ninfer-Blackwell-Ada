@@ -79,6 +79,21 @@ inline void project_add_row_parallel(const std::array<Tensor, 2>& input,
                                  execution, events);
 }
 
+// Input-split projection: one all-reduce, after which both ranks hold the complete w x in
+// `output[r]`. `staging[r]` matches `output[r]` and must not overlap it.
+inline void project_row_parallel(const std::array<Tensor, 2>& input,
+                                 const std::array<const LinearParameters*, 2>& p,
+                                 const std::array<Tensor, 2>& output,
+                                 const std::array<Tensor, 2>& staging,
+                                 const std::array<WorkspaceArena*, 2>& workspace,
+                                 const ExecutionContext& execution, const ops::PeerEvents& events) {
+    const auto policy = split_policy(p, "row-parallel projection");
+    auto scope0       = workspace[0]->scope();
+    auto scope1       = workspace[1]->scope();
+    ops::linear_row_parallel(input, split_weights(p), output, staging, policy, workspace, execution,
+                             events);
+}
+
 // Output-split gate/up projection with SwiGLU: out[r] is rank r's block of the intermediate
 // activation, which is directly its input block of the row-parallel down projection.
 inline void project_swiglu_column_parallel(const std::array<Tensor, 2>& input,

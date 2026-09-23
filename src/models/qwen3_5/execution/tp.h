@@ -11,6 +11,7 @@
 
 #include "core/arena.h"
 #include "core/device.h"
+#include "core/gdn_replay_records.h"
 #include "core/linear_attention_state.h"
 #include "core/tensor.h"
 #include "models/qwen3_5/config.h"
@@ -67,6 +68,8 @@ void output_logits_split(const std::array<Tensor, 2>& hidden,
 // Everything a TextContext needs to drive rank 1 in lockstep with its own rank-0 operands. The
 // TextContext's DeviceContext must be `execution->dev[0]`. All members are borrowed and must
 // outlive the context; the pointers into Program storage are stable for the Program's lifetime.
+// The Program owns one instance; a prefill call copies it to name the prefilling sequence's rank-1
+// MTP KV row (`mtp_kv`), the only per-sequence member.
 struct TpExecution {
     const ExecutionContext* execution = nullptr; // tp == 2
     const ops::PeerEvents* events     = nullptr; // one instance per stream pair, Program-owned
@@ -83,9 +86,33 @@ struct TpExecution {
     // Rank 1's ordinary decode control. Read by ordinary decode only; may be null otherwise.
     const OrdinaryPeerFrame* ordinary = nullptr;
 
+    // --- MTP (speculative backend Mtp only; null or empty otherwise) ----------------------------
+    // Rank 1's MTP KV cache (KV heads / 2); like the text cache, its page pool and execution
+    // tables are rank 0's mirrors.
+    const qwen3_5::PagedKVCache* mtp_cache = nullptr;
+    // Rank 1's view of the prefilling sequence's MTP KV row: rank 0's row lease mirrored onto
+    // rank 1's tables. Set per prefill call; decode reads its rows from the round frame instead.
+    qwen3_5::PagedKVCacheView mtp_kv;
+    // I32 [1] on rank 1: the prefilling sequence's MTP execution row, equal to rank 0's RoundState
+    // backend_kv_table_row. Read by the prompt MTP proposal steps only.
+    Tensor backend_kv_table_row;
+    // Rank 1's MTP prefill frame: its copies of the proposal hidden and position.
+    const qwen3_5::MtpPrefillState* mtp = nullptr;
+    // BF16 [hidden, prefill_chunk] on rank 1: the final-normed prefill chunk, which rank 1's
+    // half of the MTP input projection contracts.
+    Tensor prefill_hidden;
+    // Rank 1's ReplaySSM records of its GDN heads, written by speculative target verification.
+    const GdnReplayRecords* replay_records = nullptr;
+
     [[nodiscard]] bool complete() const noexcept {
         return execution != nullptr && events != nullptr && parameters != nullptr &&
                work != nullptr && linear_attention != nullptr && text_cache != nullptr;
+    }
+
+    // The MTP members every tensor-parallel MTP call reads (mtp_kv is per call).
+    [[nodiscard]] bool mtp_complete() const noexcept {
+        return mtp_cache != nullptr && mtp != nullptr && prefill_hidden.data != nullptr &&
+               backend_kv_table_row.data != nullptr && replay_records != nullptr;
     }
 };
 

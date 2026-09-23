@@ -51,6 +51,10 @@ void gdn_projection_record(const Tensor& hidden, const GdnParameters& parameters
                                                              std::int32_t batch,
                                                              std::int32_t first_width,
                                                              std::int32_t last_width);
+[[nodiscard]] std::size_t gdn_record_split_workspace_bytes(const GdnParameters& parameters,
+                                                           std::int32_t batch,
+                                                           std::int32_t first_width,
+                                                           std::int32_t last_width);
 void gdn_control_split(const std::array<Tensor, 2>& hidden,
                        const std::array<const GdnParameters*, 2>& parameters,
                        const std::array<Tensor, 2>& g, const std::array<Tensor, 2>& beta,
@@ -65,6 +69,15 @@ void gdn_projection_snapshot_split(
     const std::array<Tensor, 2>& hidden, const std::array<const GdnParameters*, 2>& parameters,
     const std::array<Tensor, 2>& conv_states, const std::array<Tensor, 2>& valid_columns,
     const std::array<Tensor, 2>& initial_slots, const std::array<Tensor, 2>& destination_slots,
+    const std::array<Tensor, 2>& query, const std::array<Tensor, 2>& key,
+    const std::array<Tensor, 2>& value, const std::array<Tensor, 2>& z,
+    const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& execution);
+// Speculative verification form: each rank records its own heads' projected convolution inputs
+// into `conv_record[r]` for the ReplaySSM fold instead of publishing a snapshot.
+void gdn_projection_record_split(
+    const std::array<Tensor, 2>& hidden, const std::array<const GdnParameters*, 2>& parameters,
+    const std::array<Tensor, 2>& conv_states, const std::array<Tensor, 2>& valid_columns,
+    const std::array<Tensor, 2>& initial_slots, const std::array<Tensor, 2>& conv_record,
     const std::array<Tensor, 2>& query, const std::array<Tensor, 2>& key,
     const std::array<Tensor, 2>& value, const std::array<Tensor, 2>& z,
     const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& execution);
