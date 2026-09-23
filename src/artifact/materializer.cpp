@@ -28,15 +28,46 @@ void check_cuda(cudaError_t status, const char* operation) {
     }
 }
 
-// A slot is refilled only after every device that read it has finished its copies.
+// Selects each upload device in turn and restores the caller's device. A single-device upload
+// leaves the current device alone, as it always has.
+class DeviceSelection {
+public:
+    explicit DeviceSelection(std::span<DeviceContext* const> devices) : devices_(devices) {
+        if (devices_.size() > 1) {
+            check_cuda(cudaGetDevice(&caller_), "query current device");
+            active_ = true;
+        }
+    }
+
+    ~DeviceSelection() {
+        if (active_) { (void)cudaSetDevice(caller_); }
+    }
+
+    DeviceSelection(const DeviceSelection&)            = delete;
+    DeviceSelection& operator=(const DeviceSelection&) = delete;
+
+    [[nodiscard]] std::size_t size() const noexcept { return devices_.size(); }
+
+    void select(std::size_t index) const {
+        if (active_) {
+            check_cuda(cudaSetDevice(devices_[index]->device), "select weight upload device");
+        }
+    }
+
+private:
+    std::span<DeviceContext* const> devices_;
+    int caller_  = 0;
+    bool active_ = false;
+};
+
+// A slot is refilled only after every device that read it has finished its copies. Each
+// device's completion event is created on that device.
 class Slot {
 public:
-    Slot(std::size_t bytes, std::span<DeviceContext* const> devices) : buffer(bytes) {
+    Slot(std::size_t bytes, const DeviceSelection& selection) : buffer(bytes) {
         try {
-            for (std::size_t i = 0; i < devices.size(); ++i) {
-                if (devices.size() > 1) {
-                    check_cuda(cudaSetDevice(devices[i]->device), "select weight upload device");
-                }
+            for (std::size_t i = 0; i < selection.size(); ++i) {
+                selection.select(i);
                 check_cuda(cudaEventCreateWithFlags(&events[i], cudaEventDisableTiming),
                            "create weight staging completion event");
             }
@@ -92,36 +123,6 @@ struct TransferCompletion {
         }
         pending = false;
     }
-};
-
-// Selects each upload device in turn and restores the caller's device. A single-device upload
-// leaves the current device alone, as it always has.
-class DeviceSelection {
-public:
-    explicit DeviceSelection(std::span<DeviceContext* const> devices) : devices_(devices) {
-        if (devices_.size() > 1) {
-            check_cuda(cudaGetDevice(&caller_), "query current device");
-            active_ = true;
-        }
-    }
-
-    ~DeviceSelection() {
-        if (active_) { (void)cudaSetDevice(caller_); }
-    }
-
-    DeviceSelection(const DeviceSelection&)            = delete;
-    DeviceSelection& operator=(const DeviceSelection&) = delete;
-
-    void select(std::size_t index) const {
-        if (active_) {
-            check_cuda(cudaSetDevice(devices_[index]->device), "select weight upload device");
-        }
-    }
-
-private:
-    std::span<DeviceContext* const> devices_;
-    int caller_  = 0;
-    bool active_ = false;
 };
 
 struct CopyRange {
@@ -400,7 +401,7 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     StartupPhaseScope pin_phase(observer, StartupPhase::WeightsStagingPin,
                                 StartupProgressUnit::Bytes, out.stats_.peak_staging_bytes);
     for (std::size_t i = 0; i < slot_count; ++i) {
-        slots.push_back(std::make_unique<Slot>(slot_bytes, devices));
+        slots.push_back(std::make_unique<Slot>(slot_bytes, selection));
     }
     pin_phase.complete();
     TransferCompletion completion{devices};
