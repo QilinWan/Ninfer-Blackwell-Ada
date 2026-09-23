@@ -974,7 +974,12 @@ multi-conversation servers should set `--device-state-slots 12` to `16`. The sta
 line per rank and a `tensor parallel` capacity line with the Device checkpoint pool and the
 transfer path: `p2p on` when the driver grants direct peer access, `p2p off (host-staged copies)`
 otherwise (GeForce boards). With CUDA Graphs one `cuda graphs` line per rank compares the device
-memory graph preparation took with the planned per-device allowance.
+memory graph preparation took with the planned per-device allowance, and a warning follows if a
+rank took more; startup still succeeds, the excess coming out of the memory KV sizing left free.
+The tp 2 allowance is three times what two RTX 5070 Ti measured at 32K context and
+`--max-concurrency 1`, at least 8 MiB: 8 MiB for ordinary decoding and for MTP, 11 MiB per graph
+class for DFlash2 (55 MiB for its five classes up to 32K), each multiplied by
+`--max-concurrency`.
 
 MTP speculative decoding works at `--tp 2` with the same options as on one GPU:
 

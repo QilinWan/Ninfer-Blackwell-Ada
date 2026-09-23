@@ -461,13 +461,23 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                       service.load_summary().peer_access ? "on" : "off (host-staged copies)",
                       cache.enabled ? *cache.device_state_slots : 0U);
         // Measured against the planned per-device allowance, to calibrate the tp 2 constants.
+        // An overrun only uses device memory the KV sizing left unreserved, so it warns instead
+        // of failing startup.
         if (engine.use_cuda_graph) {
             constexpr double kMiB = 1024.0 * 1024.0;
             for (std::size_t rank = 0; rank < memory.cuda_graph_observed_bytes.size(); ++rank) {
+                const std::size_t observed  = memory.cuda_graph_observed_bytes[rank];
+                const std::size_t allowance = memory.cuda_graph_allowance_bytes;
                 logger_->info("cuda graphs | rank {}: observed {:.1f} MiB, allowance {:.1f} MiB",
-                              rank,
-                              static_cast<double>(memory.cuda_graph_observed_bytes[rank]) / kMiB,
-                              static_cast<double>(memory.cuda_graph_allowance_bytes) / kMiB);
+                              rank, static_cast<double>(observed) / kMiB,
+                              static_cast<double>(allowance) / kMiB);
+                if (observed > allowance) {
+                    logger_->warn("cuda graphs | rank {}: observed {:.1f} MiB exceeds the "
+                                  "allowance of {:.1f} MiB; the excess comes out of the memory "
+                                  "left unreserved after KV sizing",
+                                  rank, static_cast<double>(observed) / kMiB,
+                                  static_cast<double>(allowance) / kMiB);
+                }
             }
         }
     }

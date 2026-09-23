@@ -358,7 +358,12 @@ records hold one rank's heads. Rank 1 allocates the same layout without the draf
 rings); its Text and MTP KV pages, execution tables and StateImages are mirrors of rank 0's. Every
 `ExecutionCore` carries the `TpExecution` (a prefill call's copy names the sequence's rank 1 MTP
 row), so prompt prefill, forced tokens, ordinary decode, MTP and DFlash2 rounds (eager and
-captured as one two-device graph) run on both ranks.
+captured as one two-device graph) run on both ranks. The per-device CUDA Graph allowance at tp 2
+(`kTp2*Allowance` in [`startup.cpp`](../../src/models/qwen3_5/program/planning/startup.cpp))
+is max(3 x observed, 8 MiB) per topology class and batch size, from the memory `prepare_graphs()`
+consumed per rank on two RTX 5070 Ti at 32K context and concurrency 1: 2 MiB ordinary and MTP3
+(one class each, 8 MiB), 18/12 MiB on rank 0/1 for DFlash2 K=4 (five classes, 11 MiB each). The
+server logs observed against allowance per rank and warns on an overrun.
 
 ## Vision and multimodal positions
 

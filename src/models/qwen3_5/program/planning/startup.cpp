@@ -39,6 +39,22 @@ namespace workspace = execution::workspace;
 constexpr std::size_t kMiB        = 1024ULL * 1024ULL;
 constexpr std::size_t kArenaAlign = 256ULL;
 
+// Per-device CUDA Graph allowances at tp 2, per topology class and captured batch size; each rank
+// holds its half of one dual-device graph per class. They are max(3 x observed, 8 MiB), where
+// observed is the per-rank free memory prepare_graphs() consumed from before the warm-up (module
+// loading included) to after the graph upload, measured on two RTX 5070 Ti at 32K context, max
+// concurrency 1 and INT8 KV (2026-09):
+//   ordinary:                  2.0 / 2.0 MiB on rank 0 / 1 for its one class -> 8 MiB;
+//   MTP3:                      2.0 / 2.0 MiB for its one class -> 8 MiB;
+//   DFlash2 K=4 --lm-head-draft: 18.0 / 12.0 MiB for five classes (rank 0 also holds the
+//                              drafter), 3.6 MiB per class -> 10.8, rounded up to 11 MiB.
+// Every batch size up to max concurrency is warmed and captured, so the allowances scale linearly
+// with it; concurrency above 1 is not measured. The server logs observed against allowance per
+// rank and warns if a rank exceeds it.
+constexpr std::size_t kTp2OrdinaryGraphAllowance     = 8ULL * kMiB;
+constexpr std::size_t kTp2MtpGraphClassAllowance     = 8ULL * kMiB;
+constexpr std::size_t kTp2DFlash2GraphClassAllowance = 11ULL * kMiB;
+
 enum class GdnWorkspacePath : std::uint8_t {
     Prefill,
     Snapshot,
@@ -1249,26 +1265,21 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         // each reachable node-topology class. These bounds cover the largest profile installed in
         // each class and the driver/module state materialized while qualifying all definitions.
         if (impl->speculative_backend == SpeculativeBackend::None) {
-            // Per device. At tp 2 each rank holds its half of one dual-device graph per topology
-            // class, and the two all-reduces per layer plus the vocabulary gather add nodes and
-            // module state on both devices; the tp 2 class allowance follows the
-            // fork's measured two-device budget.
-            const std::size_t per_batch = impl->tp == 1 ? 12ULL * kMiB : 24ULL * kMiB;
+            // Per device; tp 2 uses its measured allowance (see kTp2OrdinaryGraphAllowance).
+            const std::size_t per_batch = impl->tp == 1 ? 12ULL * kMiB : kTp2OrdinaryGraphAllowance;
             impl->graph_allowance_bytes =
                 checked_mul(per_batch, impl->max_concurrency, "ordinary exact-b graph allowance");
         } else if (impl->speculative_backend == SpeculativeBackend::Mtp) {
             const auto profiles = mtp_graph_profiles(impl->capacity, impl->draft_window);
-            // Per device. At tp 2 each rank holds its half of one dual-device graph per class,
-            // whose collectives add nodes on both devices; it doubles the class allowance as for
-            // ordinary rounds. Not yet measured for the two-device MTP round.
-            const std::uint64_t tp_scale          = impl->tp == 1 ? 1ULL : 2ULL;
+            // Per device; tp 2 uses its measured class allowance (see kTp2MtpGraphClassAllowance).
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
-                [&](GraphExecutionProfile profile) {
+                [&](GraphExecutionProfile profile) -> std::size_t {
+                    if (impl->tp != 1) { return kTp2MtpGraphClassAllowance; }
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
-                    return (final_visible <= 4096 ? 12ULL : 82ULL) * tp_scale * kMiB;
+                    return (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
                 },
                 "MTP graph allowance");
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,
@@ -1278,12 +1289,11 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                                                         impl->draft_window);
             const auto per_batch_allowance = graph_topology_allowance(
                 profiles,
-                [&](GraphExecutionProfile profile) {
-                    // Per device. At tp 2 each rank holds its half of one dual-device graph per
-                    // class, measured on the fork at about 8 MiB per class (K=4, 5 classes, 89.5K
-                    // context); 24 MiB covers three times that plus the one-shot module-load
-                    // transient.
-                    if (impl->tp != 1) { return 24ULL * kMiB; }
+                [&](GraphExecutionProfile profile) -> std::size_t {
+                    // Per device; tp 2 uses its measured class allowance (see
+                    // kTp2DFlash2GraphClassAllowance: 18.0 / 12.0 MiB over the five classes on the
+                    // two ranks, 3.6 MiB per class with rank 0 also holding the drafter).
+                    if (impl->tp != 1) { return kTp2DFlash2GraphClassAllowance; }
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + impl->draft_window + 1ULL);
@@ -1294,8 +1304,9 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                 "DFlash graph allowance");
             // Forward retains the draft's topology classes; finish has one small executable
             // per exact B, independently of context length. At tp 2 both families' classes are
-            // dual-device, so they take the same per-rank budget.
-            const std::size_t finish_allowance = impl->tp == 1 ? 8ULL * kMiB : 24ULL * kMiB;
+            // dual-device, so they take the same measured per-rank class allowance.
+            const std::size_t finish_allowance =
+                impl->tp == 1 ? 8ULL * kMiB : kTp2DFlash2GraphClassAllowance;
             impl->graph_allowance_bytes =
                 checked_mul(per_batch_allowance + finish_allowance, impl->max_concurrency,
                             "DFlash exact-b graph allowance");
