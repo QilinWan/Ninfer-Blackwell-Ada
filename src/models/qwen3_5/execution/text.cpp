@@ -2303,11 +2303,12 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
 // all-reduce leaves the identical BF16 residual on both ranks, which keeps both ranks' MTP KV pages
 // and the next call's inputs in agreement.
 
-void TextContext::target_verify_batch(
+template <class Tap>
+void TextContext::target_verify_batch_tp2_impl(
     const RankTensors& ids, const RankTensors& cache_positions, const RankTensors& rope_positions,
     const RankTensors& valid_columns, const RankTensors& kv_table_rows,
     const RankTensors& linear_state_source_slots, ops::CausalAttentionExecutionEnvelope envelope,
-    const RankTensors& hidden, const RankTensors& logits, Tensor& target_tokens) {
+    const RankTensors& hidden, const RankTensors& logits, Tensor& target_tokens, Tap& tap) {
     if (!tp2()) {
         throw std::invalid_argument("rank-pair target verification requires tensor parallelism");
     }
@@ -2374,8 +2375,13 @@ void TextContext::target_verify_batch(
             ops::embedding(flat_ids, rank_parameters(rank).text.token_embedding, x[r],
                            rank_stream(rank));
         });
-        NullTap tap;
+        // A DFlash feature tap reads rank 0's residual after each layer's all-reduce, which holds
+        // the complete hidden state, and scatters it into rank 0's pending features.
+        if constexpr (Tap::enabled) { tap.begin(x[0]); }
         run_layers_tp2(x, Phase::Verify, staging, tap);
+        if constexpr (requires { tap.capture_positions(cache_positions[0], ctx_.stream); }) {
+            tap.capture_positions(cache_positions[0], ctx_.stream);
+        }
 
         RankTensors flat_hidden;
         for (std::size_t r = 0; r < 2; ++r) { flat_hidden[r] = hidden[r].view({H, columns}); }
@@ -2395,6 +2401,30 @@ void TextContext::target_verify_batch(
     }
     work_.reset();
     tp_->work->reset();
+}
+
+void TextContext::target_verify_batch(
+    const RankTensors& ids, const RankTensors& cache_positions, const RankTensors& rope_positions,
+    const RankTensors& valid_columns, const RankTensors& kv_table_rows,
+    const RankTensors& linear_state_source_slots, ops::CausalAttentionExecutionEnvelope envelope,
+    const RankTensors& hidden, const RankTensors& logits, Tensor& target_tokens) {
+    NullTap tap;
+    target_verify_batch_tp2_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
+                                 linear_state_source_slots, envelope, hidden, logits, target_tokens,
+                                 tap);
+}
+
+void TextContext::target_verify_batch(const RankTensors& ids, const RankTensors& cache_positions,
+                                      const RankTensors& rope_positions,
+                                      const RankTensors& valid_columns,
+                                      const RankTensors& kv_table_rows,
+                                      const RankTensors& linear_state_source_slots,
+                                      ops::CausalAttentionExecutionEnvelope envelope,
+                                      const RankTensors& hidden, const RankTensors& logits,
+                                      Tensor& target_tokens, DFlashFeatureSink& sink) {
+    target_verify_batch_tp2_impl(ids, cache_positions, rope_positions, valid_columns, kv_table_rows,
+                                 linear_state_source_slots, envelope, hidden, logits, target_tokens,
+                                 sink);
 }
 
 void TextContext::mtp_forward_stem_tp2(const Tensor& ids, const RankTensors& hidden, RankTensors& x,

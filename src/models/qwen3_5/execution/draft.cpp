@@ -3,6 +3,7 @@
 #include <cmath>
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/execution_context.h"
+#include "models/qwen3_5/program/program_impl.h"
 #include "models/qwen3_5/execution/workspace.h"
 
 #include "core/nvtx.h"
@@ -38,6 +39,13 @@
 
 namespace ninfer::models::qwen3_5::execution {
 namespace {
+
+// One rank's DFlash2 verification frame view. `primary` selects rank 0's sampling config and
+// feature sink; the peer view carries neither (the drafter and the acceptance are rank 0's).
+[[nodiscard]] TargetVerifyFrameView
+dflash_verify_view(qwen3_5::DFlashDecodeState& frame, std::int32_t batch_size,
+                   const GdnReplayRecords* replay_records, bool primary,
+                   DFlashFeatureSink* sink);
 
 using detail::DFlashPersistentState;
 
@@ -574,10 +582,31 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
         state.execution.work.reset();
         qwen3_5::DFlashDecodeState& frame = state.frame;
         const std::int32_t width          = static_cast<std::int32_t>(k) + 1;
+        const cudaStream_t stream = state.execution.device.stream;
         if (phase == SpeculativePhase::Forward) {
             CUDA_CHECK(cudaMemcpyAsync(frame.ingress.data, &state.host_ingress,
                                        sizeof(qwen3_5::DFlashDecodeIngress), cudaMemcpyHostToDevice,
-                                       state.execution.device.stream));
+                                       stream));
+        }
+
+        // Tensor-parallel width 2: the drafter runs on rank 0 alone, and rank 1 only verifies. It
+        // receives its own upload of the same ingress record, pulls rank 0's draft tokens and
+        // derives its verification inputs from them with the same Op; acceptance is rank 0's, and
+        // target_accept copies its accepted counts to rank 1. Rank 1 never samples, so the
+        // record's sampling configs are never read there.
+        const TpExecution* tp      = state.execution.tp;
+        const DeviceContext* rank1 = tp != nullptr ? &*tp->execution->dev[1] : nullptr;
+        if (tp != nullptr) {
+            if (state.peer_frame == nullptr || state.peer_continuation_hidden_store == nullptr ||
+                tp->replay_records == nullptr) {
+                throw std::logic_error("tensor-parallel DFlash decode requires rank 1's frame");
+            }
+            if (phase == SpeculativePhase::Forward) {
+                const detail::ScopedCurrentDevice scope(rank1->device);
+                CUDA_CHECK(cudaMemcpyAsync(state.peer_frame->ingress.data, &state.host_ingress,
+                                           sizeof(qwen3_5::DFlashDecodeIngress),
+                                           cudaMemcpyHostToDevice, rank1->stream));
+            }
         }
 
         Tensor anchors            = frame.anchors.slice(0, 0, batch_size);
@@ -630,7 +659,27 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                 state.drafts_ready.record(state.execution.device.stream);
             }
             ops::speculative_prepare_verify_inputs(anchors, drafts, frontiers, extents, verify_ids,
-                                                   target_positions, state.execution.device.stream);
+                                                   target_positions, stream);
+            if (tp != nullptr) {
+                // The pull is ordered after the proposal on rank 0's stream by a cross-device
+                // event, as the collectives' transfers are; nothing writes rank 0's drafts again
+                // this round. Rank 1 derives its verification inputs from the pulled drafts.
+                const ops::PeerEvents& events = *tp->events;
+                CUDA_CHECK(cudaEventRecord(events.inputs_ready(0), stream));
+                const detail::ScopedCurrentDevice scope(rank1->device);
+                CUDA_CHECK(cudaStreamWaitEvent(rank1->stream, events.inputs_ready(0), 0));
+                qwen3_5::DFlashDecodeState& peer = *state.peer_frame;
+                Tensor peer_drafts               = peer.draft_tokens.slice(1, 0, batch_size);
+                Tensor peer_verify_ids           = peer.verify_ids.slice(1, 0, batch_size);
+                Tensor peer_positions            = peer.verify_positions.slice(1, 0, batch_size);
+                CUDA_CHECK(cudaMemcpyAsync(peer_drafts.data, drafts.data, drafts.bytes(),
+                                           cudaMemcpyDeviceToDevice, rank1->stream));
+                ops::speculative_prepare_verify_inputs(
+                    peer.anchors.slice(0, 0, batch_size), peer_drafts,
+                    peer.execution_frontiers.slice(0, 0, batch_size),
+                    peer.proposal_extents.slice(0, 0, batch_size), peer_verify_ids, peer_positions,
+                    rank1->stream);
+            }
         }
 
 
@@ -671,15 +720,65 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                 .sampling        = frame.sampling,
                 .feature_sink    = &sink,
             };
+            // Tensor-parallel width 2: rank 1 verifies with its own view, which carries no feature
+            // sink and no proposal distribution (the drafter and the acceptance are rank 0's).
+            const TargetVerifyFrameView peer_verify =
+                tp != nullptr ? dflash_verify_view(*state.peer_frame, batch_size,
+                                                   tp->replay_records, false, nullptr)
+                              : TargetVerifyFrameView{};
             if (phase == SpeculativePhase::Forward) {
-                target_verify_forward(state.execution, card, verify, target_envelope);
+                if (tp != nullptr) {
+                    target_verify_forward(state.execution, card, verify, peer_verify,
+                                          target_envelope);
+                } else {
+                    target_verify_forward(state.execution, card, verify, target_envelope);
+                }
                 return;
             }
-            target_accept(state.execution, state.continuation_hidden_store, verify);
+            if (tp != nullptr) {
+                target_accept(state.execution, state.continuation_hidden_store, verify, peer_verify,
+                              *state.peer_continuation_hidden_store);
+            } else {
+                target_accept(state.execution, state.continuation_hidden_store, verify);
+            }
         }
         CUDA_CHECK(cudaMemcpyAsync(&state.host_egress, frame.egress.data,
                                    sizeof(qwen3_5::DFlashDecodeEgress), cudaMemcpyDeviceToHost,
                                    state.execution.device.stream));
+    };
+}
+
+TargetVerifyFrameView dflash_verify_view(qwen3_5::DFlashDecodeState& frame, std::int32_t batch_size,
+                                         const GdnReplayRecords* replay_records, bool primary,
+                                         DFlashFeatureSink* sink) {
+    return TargetVerifyFrameView{
+        .ids                     = frame.verify_ids.slice(1, 0, batch_size),
+        .cache_positions         = frame.verify_positions.slice(1, 0, batch_size),
+        .rope_positions          = frame.target_rope_positions.slice(1, 0, batch_size),
+        .valid_columns           = frame.target_valid_columns.slice(0, 0, batch_size),
+        .kv_table_rows           = frame.text_kv_table_rows.slice(0, 0, batch_size),
+        .state_source_slots      = frame.state_source_slots.slice(0, 0, batch_size),
+        .state_destination_slots = frame.state_destination_slots.slice(0, 0, batch_size),
+        .target_hidden           = frame.target_hidden.slice(2, 0, batch_size),
+        .target_logits           = frame.target_logits.slice(2, 0, batch_size),
+        .target_tokens           = frame.target_argmax.slice(1, 0, batch_size),
+        .drafts                  = frame.draft_tokens.slice(1, 0, batch_size),
+        .current_extents         = frame.proposal_extents.slice(0, 0, batch_size),
+        .candidate_ids           = primary && frame.candidate_ids.data != nullptr
+                                       ? frame.candidate_ids.slice(2, 0, batch_size)
+                                       : Tensor{},
+        .proposal_q              = primary && frame.proposal_q.data != nullptr
+                                       ? frame.proposal_q.slice(2, 0, batch_size)
+                                       : Tensor{},
+        .frontiers               = frame.execution_frontiers.slice(0, 0, batch_size),
+        .anchors                 = frame.anchors.slice(0, 0, batch_size),
+        .licensed_tokens         = frame.licensed_tokens.slice(1, 0, batch_size),
+        .licensed_counts         = frame.licensed_counts.slice(0, 0, batch_size),
+        .accepted_drafts         = frame.accepted_drafts.slice(0, 0, batch_size),
+        .selected_hidden         = frame.target_continuation_hidden.slice(1, 0, batch_size),
+        .replay_records          = replay_records,
+        .sampling                = primary ? frame.sampling : nullptr,
+        .feature_sink            = sink,
     };
 }
 

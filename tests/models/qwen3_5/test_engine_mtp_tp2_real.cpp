@@ -371,21 +371,16 @@ int exercise_prefix_reuse(ninfer::Engine& engine, const char* label) {
         const ninfer::RuntimeStats after = engine.runtime_stats();
         print_run(label, leg, result,
                   after.computed_prefill_tokens - before.computed_prefill_tokens);
-        std::cout << "  selections endpoint "
-                  << after.private_endpoint_selections - before.private_endpoint_selections
-                  << " turn-closure "
-                  << after.private_turn_closure_selections - before.private_turn_closure_selections
-                  << " anchor "
-                  << after.private_long_anchor_selections - before.private_long_anchor_selections
-                  << " shared "
-                  << after.shared_stable_prefix_selections - before.shared_stable_prefix_selections
-                  << "; evicted private "
-                  << after.pressure_private_owners_evicted - before.pressure_private_owners_evicted
-                  << " shared "
-                  << after.pressure_shared_owners_evicted - before.pressure_shared_owners_evicted
-                  << " checkpoints dropped "
-                  << after.pressure_checkpoints_dropped - before.pressure_checkpoints_dropped
-                  << '\n';
+        // This tree counts selections coarsely (root vs checkpoint) and reports context pressure as
+        // spilled pages plus live occupancy: the donor's per-reuse-path and per-owner eviction
+        // counters do not exist here, so the evidence line names what this build observes.
+        std::cout << "  selections checkpoint "
+                  << after.checkpoint_selections - before.checkpoint_selections
+                  << " reused tokens " << after.reused_prompt_tokens - before.reused_prompt_tokens
+                  << "; state forks " << after.state_forks - before.state_forks << " moves "
+                  << after.state_moves - before.state_moves << "; pressure spill pages "
+                  << after.pressure_spill_pages - before.pressure_spill_pages
+                  << "; device state slots occupied " << after.device_state_occupied_slots << '\n';
         return result;
     };
     // The cold leg runs last: it prefills the whole prompt into pages of its own, and on this

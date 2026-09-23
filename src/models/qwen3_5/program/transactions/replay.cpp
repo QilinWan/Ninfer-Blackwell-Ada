@@ -288,8 +288,14 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                 Tensor token = io.mtp->target_input_ids.slice(0, 0, 1);
                 CUDA_CHECK(cudaMemcpyAsync(token.data, sequence.ledger.data() + cursor,
                                            sizeof(TokenId), cudaMemcpyHostToDevice, device.stream));
-                execution::mtp_bridge_and_propose(context, token, sequence.tail_hidden,
-                                                  bridge.position, rope, false);
+                // Tensor-parallel width 2: rank 1 bridges from its own retained copy of the
+                // previous target hidden (the same StateImage slot of its mirror pool).
+                const Tensor peer_previous_hidden =
+                    peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
+                execution::mtp_bridge_and_propose(
+                    context, token, sequence.tail_hidden,
+                    peer_retains_hidden() ? &peer_previous_hidden : nullptr, bridge.position, rope,
+                    false);
             }
             sequence.mtp_kv_valid = cursor;
             commit_sequence_kv(sequence, sequence.text_kv_valid, cursor);

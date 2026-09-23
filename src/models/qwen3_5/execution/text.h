@@ -69,12 +69,13 @@ class VisionPrefillSession;
 
 // One Text call over the rank-0 operands, and with a non-null `tp` over both ranks of a
 // two-device Model (tp.h). A null `tp` is the single-device schedule, unchanged. With `tp`, the
-// text prefill chunk (with its MTP prompt alignment), ordinary decode, speculative target
-// verification, the MTP decode-round forwards and proposals, the MTP bridge and their logits run
-// split through the rank-array overloads below; the single-rank MTP and verification entries,
-// DFlash feature capture in verification and multimodal prefill are rejected with
-// std::invalid_argument. The constructor rejects the MoE FFN, paired input projections, KV caches
-// the head-local attention does not support (only BF16 and INT8-G64) and incomplete MTP bindings.
+// text prefill chunk (with its MTP prompt alignment or DFlash feature capture), ordinary decode,
+// speculative target verification (with or without DFlash feature capture), the MTP decode-round
+// forwards and proposals, the MTP bridge and their logits run split through the rank-array
+// overloads below; the single-rank MTP and verification entries and multimodal prefill are
+// rejected with std::invalid_argument. The constructor rejects the MoE FFN, paired
+// input projections, KV caches the head-local attention does not support (only BF16 and INT8-G64)
+// and incomplete MTP bindings.
 class TextContext {
 public:
     // Rank 0's operand then rank 1's, each resident on that rank's device.
@@ -195,6 +196,16 @@ public:
                              ops::CausalAttentionExecutionEnvelope envelope,
                              const RankTensors& hidden, const RankTensors& logits,
                              Tensor& target_tokens);
+    // The same verification with rank 0's DFlash drafter capturing its target features: `sink`
+    // reads rank 0's residual after each captured layer's all-reduce (the complete hidden state)
+    // on rank 0's stream. Rank 1 captures nothing.
+    void target_verify_batch(const RankTensors& ids, const RankTensors& cache_positions,
+                             const RankTensors& rope_positions, const RankTensors& valid_columns,
+                             const RankTensors& kv_table_rows,
+                             const RankTensors& linear_state_source_slots,
+                             ops::CausalAttentionExecutionEnvelope envelope,
+                             const RankTensors& hidden, const RankTensors& logits,
+                             Tensor& target_tokens, DFlashFeatureSink& sink);
     void mtp_forward_decode_batch(const Tensor& ids, const RankTensors& hidden,
                                   const RankTensors& cache_positions,
                                   const RankTensors& rope_positions,
@@ -271,6 +282,15 @@ private:
     void mlp_tail_tp2(const RankBlocks& weights, RankTensors& x, const RankTensors& staging);
     template <class Tap>
     void run_layers_tp2(RankTensors& x, Phase phase, const RankTensors& staging, Tap& tap);
+    template <class Tap>
+    void target_verify_batch_tp2_impl(const RankTensors& ids, const RankTensors& cache_positions,
+                                      const RankTensors& rope_positions,
+                                      const RankTensors& valid_columns,
+                                      const RankTensors& kv_table_rows,
+                                      const RankTensors& linear_state_source_slots,
+                                      ops::CausalAttentionExecutionEnvelope envelope,
+                                      const RankTensors& hidden, const RankTensors& logits,
+                                      Tensor& target_tokens, Tap& tap);
     // Vocabulary-split head: each rank projects its half of the vocabulary from its final hidden
     // columns, and the row gather assembles the complete [V, C] logits in rank 0's `logits` and
     // in `peer_logits`, or in rank 1's arena when it is null.
