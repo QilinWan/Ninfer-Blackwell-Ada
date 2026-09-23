@@ -83,6 +83,22 @@ const char* node_type_name(cudaGraphNodeType type) noexcept {
     }
 }
 
+// Where a memcpy operand lives: "device N", "host", "managed" or "unregistered host".
+std::string pointer_residence(const void* pointer) {
+    if (pointer == nullptr) { return "array"; }
+    cudaPointerAttributes attributes{};
+    if (cudaPointerGetAttributes(&attributes, pointer) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return "unknown";
+    }
+    switch (attributes.type) {
+    case cudaMemoryTypeDevice: return "device " + std::to_string(attributes.device);
+    case cudaMemoryTypeHost: return "host";
+    case cudaMemoryTypeManaged: return "managed";
+    default: return "unregistered host";
+    }
+}
+
 // ", <label> node <type>[ memset dst 0x.. width W height H]" for a node the update named, or
 // nothing when it named none. Diagnostic only: a failing query is reported, never thrown.
 std::string describe_node(const char* label, cudaGraphNode_t node) {
@@ -94,6 +110,26 @@ std::string describe_node(const char* label, cudaGraphNode_t node) {
         return text + "of unknown type";
     }
     text += node_type_name(type);
+    if (type == cudaGraphNodeTypeMemcpy) {
+        cudaMemcpy3DParms params{};
+        const cudaError_t status = cudaGraphMemcpyNodeGetParams(node, &params);
+        if (status == cudaSuccess) {
+            const void* source      = params.srcArray != nullptr ? nullptr : params.srcPtr.ptr;
+            const void* destination = params.dstArray != nullptr ? nullptr : params.dstPtr.ptr;
+            char buffer[256];
+            std::snprintf(buffer, sizeof(buffer),
+                          " (src %p on %s, dst %p on %s, extent %zux%zux%zu, pitch %zu/%zu, "
+                          "kind %d)",
+                          source, pointer_residence(source).c_str(), destination,
+                          pointer_residence(destination).c_str(), params.extent.width,
+                          params.extent.height, params.extent.depth, params.srcPtr.pitch,
+                          params.dstPtr.pitch, static_cast<int>(params.kind));
+            text += buffer;
+        } else {
+            (void)cudaGetLastError();
+            text += std::string(" (params unavailable: ") + cudaGetErrorName(status) + ")";
+        }
+    }
     if (type == cudaGraphNodeTypeMemset) {
         cudaMemsetParams params{};
         if (cudaGraphMemsetNodeGetParams(node, &params) == cudaSuccess) {

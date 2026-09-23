@@ -133,6 +133,9 @@ struct DecodeGraphProfile {
     std::uint32_t max_execution_frontier = 0;
     std::uint32_t topology_class         = 0;
     DecodeGraphDefinition definition;
+    // Set once cudaGraphExecUpdate has refused to swap this profile into its topology's
+    // executable, so the warning is printed once per profile, not at every swap.
+    bool update_rejected = false;
 };
 
 struct DecodeGraphTopology {
@@ -145,8 +148,17 @@ struct DecodeGraphFamily {
     std::vector<DecodeGraphProfile> profiles;
     std::vector<DecodeGraphTopology> topologies;
     DecodeGraphProfile& select(std::uint32_t batch_size, std::uint32_t frontier);
-    DecodeGraphExecutable& install(DecodeGraphProfile& profile);
+    // Makes `profile` the executable of its topology class, through the family's one swap rule
+    // (install_graph_definition); `label` names the family in the one-shot warning.
+    DecodeGraphExecutable& install(DecodeGraphProfile& profile, const char* label);
 };
+
+// Makes profile `profile_index` of `family` the one `topology` executes: an in-place
+// cudaGraphExecUpdate, or, when the update is rejected, a fresh instantiation of the profile's
+// definition (warned once per profile). Load (prepare_graphs) and every decode round that crosses
+// into another profile of the class go through here, so a family has one swap rule.
+void install_graph_definition(DecodeGraphFamily& family, DecodeGraphTopology& topology,
+                              std::size_t profile_index, const char* label);
 
 // A Forward stage publishes these IDs before target execution finishes. Program owns the
 // pinned storage and external event together; both outlive the graphs that reference them.

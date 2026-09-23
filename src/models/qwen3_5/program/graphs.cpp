@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -72,22 +73,7 @@ void instantiate_graph_family(DecodeGraphFamily& family, const char* label, Devi
     }
 
     const auto install_and_upload = [&](DecodeGraphTopology& topology, std::size_t profile_index) {
-        DecodeGraphProfile& profile = family.profiles[profile_index];
-        if (topology.installed_profile != profile_index) {
-            // Every profile of a topology class is captured from one body, so the update is
-            // expected to succeed. It has been seen to fail intermittently at tp 2 (MTP with the
-            // optimized proposal head, cudaGraphExecUpdateErrorParametersChanged, only late in a
-            // long ctest run); a fresh instantiation of the same definition costs time, not
-            // memory, so the rejection is reported and the profile installed that way.
-            std::string diagnostic;
-            if (!topology.executable.update_or_reinstantiate(profile.definition, diagnostic)) {
-                std::fprintf(stderr,
-                             "warning: cuda graphs | %s profile %zu: exec update failed (%s) "
-                             "-- re-instantiating\n",
-                             label, profile_index, diagnostic.c_str());
-            }
-            topology.installed_profile = profile_index;
-        }
+        install_graph_definition(family, topology, profile_index, label);
         topology.executable.upload(device.stream);
         synchronize();
     };
@@ -128,17 +114,36 @@ DecodeGraphProfile& DecodeGraphFamily::select(std::uint32_t batch_size, std::uin
     return *it;
 }
 
-DecodeGraphExecutable& DecodeGraphFamily::install(DecodeGraphProfile& profile) {
+void install_graph_definition(DecodeGraphFamily& family, DecodeGraphTopology& topology,
+                              std::size_t profile_index, const char* label) {
+    if (topology.installed_profile == profile_index) { return; }
+    DecodeGraphProfile& profile = family.profiles.at(profile_index);
+    // Try the in-place update first and fall back to instantiation, rather than instantiating
+    // every tp 2 swap outright. Every profile of a class is captured from one body, and at tp 1
+    // and in most tp 2 runs every swap updates in place, which costs microseconds against the
+    // milliseconds of an instantiation; a rejected attempt costs one failed update more. The
+    // rejections seen so far are tp 2 only (MTP, cudaGraphExecUpdateErrorParametersChanged on a
+    // memcpy node, only late in a full ctest run), so they are handled where they occur.
+    std::string diagnostic;
+    if (!topology.executable.update_or_reinstantiate(profile.definition, diagnostic) &&
+        !profile.update_rejected) {
+        profile.update_rejected = true;
+        std::fprintf(stderr,
+                     "warning: cuda graphs | %s profile %zu: exec update failed (%s) "
+                     "-- re-instantiating\n",
+                     label, profile_index, diagnostic.c_str());
+    }
+    topology.installed_profile = profile_index;
+}
+
+DecodeGraphExecutable& DecodeGraphFamily::install(DecodeGraphProfile& profile, const char* label) {
     const auto it =
         std::find_if(topologies.begin(), topologies.end(), [&](const DecodeGraphTopology& t) {
             return t.topology_class == profile.topology_class;
         });
     if (it == topologies.end()) { throw std::logic_error("CUDA Graph topology is unavailable"); }
-    const auto index = static_cast<std::size_t>(&profile - profiles.data());
-    if (it->installed_profile != index) {
-        it->executable.update(profile.definition);
-        it->installed_profile = index;
-    }
+    install_graph_definition(*this, *it, static_cast<std::size_t>(&profile - profiles.data()),
+                             label);
     return it->executable;
 }
 
@@ -547,7 +552,7 @@ void ProgramImpl::prepare_graphs() {
             auto& forward     = speculative_forward_graphs.profiles[*topology.installed_profile];
             auto& finish      = speculative_finish_graphs.select(forward.batch_size,
                                                                  forward.min_execution_frontier);
-            auto& finish_exec = speculative_finish_graphs.install(finish);
+            auto& finish_exec = speculative_finish_graphs.install(finish, "speculative finish");
             prepare_representative(forward.min_execution_frontier, forward.batch_size);
             synchronize_devices();
             topology.executable.launch(device.stream);
