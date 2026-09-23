@@ -169,7 +169,8 @@ mathematics.
 
 - `ninfer/ops/allreduce.h` owns the cross-device collectives: `allreduce_sum` (row-parallel
   partial sums) and `allgather_rows` (vocabulary-split logits), ordered by `PeerEvents` on each
-  device's own stream.
+  device's own stream. Captured single-request all-reduces may exchange through an attached
+  `PeerMailbox` (`ninfer/ops/peer_mailbox.h`) with bit-identical results.
 - `<op>_column_parallel` splits the output rows: each rank reads the replicated activation and its
   weight-row shard and writes its own output block, with no communication.
   `<op>_row_parallel` splits the input rows: each rank computes a full-width partial from its

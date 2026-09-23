@@ -23,6 +23,8 @@
 // expressed through the API that CUDA graph capture accepts.
 #include "ninfer/ops/allreduce.h"
 
+#include "ninfer/ops/peer_mailbox.h"
+
 #include "ops/launcher/residual_add.h" // detail::residual_add_launch
 
 #include <cstddef>
@@ -30,6 +32,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace ninfer::ops {
 namespace {
@@ -87,6 +90,35 @@ public:
 private:
     int previous_ = 0;
 };
+
+// CAPTURED MAILBOX SELECTION. Returns the mailbox attached to `events` when every predicate holds:
+//
+//   * the mailbox serves this ExecutionContext's device pair;
+//   * the payload is whole 16-byte vectors within one slot, at 16-byte aligned addresses (the
+//     exchange kernel's vector contract);
+//   * BOTH ranks' streams are capturing, into the SAME capture. The exchange has no host reset
+//     point and no event ordering: its two kernels must be nodes of one graph that every launch
+//     runs on both devices. A rank whose stream is not in that capture would run its half
+//     eagerly, spin without a partner and report a hang.
+//
+// Every predicate the mailbox fails is a collective that runs the staged path, unchanged. Leaves
+// the current device changed; the caller holds a CurrentDeviceGuard.
+PeerMailbox* captured_mailbox(const std::array<Tensor, 2>& buffer, std::size_t bytes,
+                              const ExecutionContext& ec, const PeerEvents& events) {
+    PeerMailbox* mailbox = events.mailbox();
+    if (mailbox == nullptr || !mailbox->serves(ec)) { return nullptr; }
+    if ((bytes % 16) != 0 || bytes > mailbox->slot_bytes()) { return nullptr; }
+    unsigned long long capture[2] = {0, 0};
+    for (int rank = 0; rank < 2; ++rank) {
+        if ((reinterpret_cast<std::uintptr_t>(buffer[rank].data) % 16) != 0) { return nullptr; }
+        const DeviceContext& local = *ec.dev[rank];
+        CurrentDeviceGuard::set(local.device);
+        cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamGetCaptureInfo(local.stream, &status, &capture[rank]));
+        if (status != cudaStreamCaptureStatusActive) { return nullptr; }
+    }
+    return capture[0] == capture[1] ? mailbox : nullptr;
+}
 
 #ifndef NDEBUG
 // Debug-only residency and aliasing predicates. These cost a driver round trip per pointer, so
@@ -175,9 +207,10 @@ PeerEvents::~PeerEvents() {
 }
 
 PeerEvents::PeerEvents(PeerEvents&& other) noexcept
-    : inputs_ready_(other.inputs_ready_), pull_done_(other.pull_done_) {
+    : inputs_ready_(other.inputs_ready_), pull_done_(other.pull_done_), mailbox_(other.mailbox_) {
     other.inputs_ready_ = {nullptr, nullptr};
     other.pull_done_    = {nullptr, nullptr};
+    other.mailbox_      = nullptr;
 }
 
 PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
@@ -185,6 +218,7 @@ PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
     // held, in exactly one place.
     inputs_ready_.swap(other.inputs_ready_);
     pull_done_.swap(other.pull_done_);
+    std::swap(mailbox_, other.mailbox_);
     return *this;
 }
 
@@ -221,6 +255,19 @@ void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor,
 #endif
 
     const CurrentDeviceGuard guard;
+
+    // MAILBOX TRANSPORT (see captured_mailbox()): one exchange kernel per device. Both ranks
+    // publish their partial into their own pinned host slot, release an epoch flag, wait for the
+    // peer's, and combine locally with the same arithmetic as residual_add_launch below.
+    if (PeerMailbox* mailbox = captured_mailbox(buffer, bytes, ec, events)) {
+        const int slot = mailbox->take_capture_slot();
+        for (int rank = 0; rank < 2; ++rank) {
+            const DeviceContext& local = *ec.dev[rank];
+            CurrentDeviceGuard::set(local.device);
+            mailbox->enqueue_exchange_sum(rank, slot, buffer[rank].data, bytes, local.stream);
+        }
+        return;
+    }
 
     // Phase A: publish "my operand is complete" on each stream, before any wait observes it.
     for (int rank = 0; rank < 2; ++rank) {

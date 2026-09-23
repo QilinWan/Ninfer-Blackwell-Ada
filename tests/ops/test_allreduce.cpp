@@ -7,12 +7,18 @@
 // Oracles:
 //   allreduce_sum - independent FP64 elementwise sum of the two represented BF16 inputs. The
 //     Op's observable output is BF16, so the comparison allows one BF16 ulp of output storage
-//     rounding (relative 3.95e-3 >= 2^-8); the oracle itself performs no rounding.
+//     rounding (relative 3.95e-3 >= 2^-8); the oracle itself performs no rounding. The two ranks'
+//     results must also be bit-identical.
 //   allgather_rows - exact: the Op only relocates rows, so every destination byte is compared
 //     bit-for-bit against the concatenated source halves.
+//
+// Both transports are qualified: the staged path eagerly and inside a two-device CUDA Graph, and
+// the PeerMailbox exchange inside a graph replayed several times with fresh inputs.
 #include "ninfer/ops/allreduce.h"
+#include "ninfer/ops/peer_mailbox.h"
 #include "ops/op_tester.h"
 
+#include "core/decode_graph.h"
 #include "core/device.h"
 
 #include <algorithm>
@@ -20,6 +26,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -358,6 +365,208 @@ int run_microbenchmark(const ExecutionContext& ec, const ops::PeerEvents& events
     return failures;
 }
 
+// Captures `body` into ONE two-device graph: rank 1's stream is forked into rank 0's capture.
+void capture_two_devices(const ExecutionContext& ec, const DecodeGraphPeerBridge& bridge,
+                         DecodeGraphDefinition& definition, const std::function<void()>& body) {
+    set_device(ec, 0);
+    definition.capture(
+        ec.dev[0]->stream,
+        [&] {
+            body();
+            set_device(ec, 0);
+        },
+        DecodeGraphPeerCapture{.bridge = &bridge, .stream = ec.dev[1]->stream});
+}
+
+void launch_two_devices(const ExecutionContext& ec, DecodeGraphExecutable& executable) {
+    set_device(ec, 0);
+    executable.launch(ec.dev[0]->stream);
+    synchronize_both(ec);
+}
+
+// Captured replay, the decode route. `sites` all-reduces of one [ne0, ne1] buffer per rank are
+// captured once into a two-device graph and the executable is launched kReplays times, each with
+// fresh random inputs and no host step between launches other than the input upload. After the
+// first site both ranks hold bf16(a + b); every later site doubles it exactly, so the oracle is
+// 2^(sites-1) * (a + b) in FP64 with the one-ulp criterion.
+//
+// Stale operands are made observable: a captured memset of kSkewBytes on rank 1 runs before the
+// first site, so rank 0 reaches every exchange long before rank 1 has republished. An exchange
+// that accepted the previous replay's publication (the ABA hazard of a flag that is not reset or
+// advanced between launches) would combine the previous inputs and miss the oracle.
+//
+// kBackToBack further launches are then issued with no host synchronization between them, as a
+// serving loop may, and must double the value 'sites' times each. One eager call afterwards
+// checks that the staged path composes with the captured history on the same buffers and events.
+//
+// `mailbox` names the mailbox attached to `events`, or null. The node count proves the selected
+// transport: the mailbox exchange is one kernel node per device per site, the staged path at
+// least two per device per site.
+int run_captured_case(const char* label, std::int32_t ne0, std::int32_t ne1, int sites,
+                      bool expect_mailbox, const ExecutionContext& ec,
+                      const ops::PeerEvents& events, const ops::PeerMailbox* mailbox) {
+    constexpr int kReplays           = 4;
+    constexpr int kBackToBack        = 3;
+    constexpr std::size_t kSkewBytes = 64u << 20;
+
+    const std::size_t count = static_cast<std::size_t>(ne0) * static_cast<std::size_t>(ne1);
+    const std::size_t bytes = count * sizeof(std::uint16_t);
+
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(bytes), staging_0(bytes);
+    staging_0.fill(0);
+    set_device(ec, 1);
+    GuardedDeviceBuffer buffer_1(bytes), staging_1(bytes);
+    staging_1.fill(0);
+    DeviceBuffer skew(kSkewBytes);
+
+    const std::array<Tensor, 2> buffer{Tensor(buffer_0.data(), DType::BF16, {ne0, ne1}),
+                                       Tensor(buffer_1.data(), DType::BF16, {ne0, ne1})};
+    const std::array<Tensor, 2> staging{Tensor(staging_0.data(), DType::BF16, {ne0, ne1}),
+                                        Tensor(staging_1.data(), DType::BF16, {ne0, ne1})};
+    retire_staging(ec);
+
+    const DecodeGraphPeerBridge bridge(ec.dev[0]->device, ec.dev[1]->device);
+    DecodeGraphDefinition definition;
+    capture_two_devices(ec, bridge, definition, [&] {
+        set_device(ec, 1);
+        cuda_check(cudaMemsetAsync(skew.p, 0, skew.bytes, ec.dev[1]->stream), "skew memset");
+        for (int site = 0; site < sites; ++site) {
+            ops::allreduce_sum(buffer, staging, ec, events);
+        }
+    });
+
+    int failures                = 0;
+    const std::size_t nodes     = definition.node_count();
+    const std::size_t exchanges = 1 + 2 * static_cast<std::size_t>(sites);
+    if (expect_mailbox ? nodes != exchanges : nodes <= exchanges) {
+        std::cerr << label << ": " << nodes << " graph nodes do not match the "
+                  << (expect_mailbox ? "mailbox" : "staged") << " transport\n";
+        ++failures;
+    }
+
+    DecodeGraphExecutable executable;
+    executable.instantiate(definition);
+    const double scale = std::ldexp(1.0, sites - 1);
+    std::vector<float> a(count), b(count);
+    std::vector<double> expected(count);
+    for (int replay = 0; replay < kReplays; ++replay) {
+        const std::uint32_t seed = 301u + 2u * static_cast<std::uint32_t>(replay);
+        fill_uniform(a, seed, -8.0f, 8.0f);
+        fill_uniform(b, seed + 1, -8.0f, 8.0f);
+        round_to_bf16(a);
+        round_to_bf16(b);
+        const auto sum = allreduce_sum_oracle(a, b);
+        for (std::size_t i = 0; i < count; ++i) { expected[i] = scale * sum[i]; }
+        const auto a_bits = encode_bf16(a);
+        const auto b_bits = encode_bf16(b);
+        set_device(ec, 0);
+        buffer_0.copy_from_host(a_bits.data(), bytes);
+        set_device(ec, 1);
+        buffer_1.copy_from_host(b_bits.data(), bytes);
+        retire_staging(ec);
+
+        launch_two_devices(ec, executable);
+
+        const std::string replay_label = std::string(label) + " replay " + std::to_string(replay);
+        set_device(ec, 0);
+        const auto bits_0 = from_device<std::uint16_t>(buffer_0.data(), count);
+        failures += verify_pointwise((replay_label + " device 0").c_str(),
+                                     from_device_bf16(buffer_0.data(), count), expected,
+                                     allreduce_sum_bf16_criterion());
+        set_device(ec, 1);
+        failures += verify_exact((replay_label + " device 1 equals device 0").c_str(),
+                                 from_device<std::uint16_t>(buffer_1.data(), count), bits_0);
+    }
+
+    // Back-to-back launches: every site doubles the exact power-of-two multiple of bf16(a + b).
+    const double back_to_back = std::ldexp(1.0, kBackToBack * sites);
+    for (double& value : expected) { value *= back_to_back; }
+    set_device(ec, 0);
+    for (int launch = 0; launch < kBackToBack; ++launch) { executable.launch(ec.dev[0]->stream); }
+    synchronize_both(ec);
+    const std::string chained_label = std::string(label) + " back-to-back launches";
+    set_device(ec, 0);
+    const auto chained_0 = from_device<std::uint16_t>(buffer_0.data(), count);
+    failures += verify_pointwise((chained_label + " device 0").c_str(),
+                                 from_device_bf16(buffer_0.data(), count), expected,
+                                 allreduce_sum_bf16_criterion());
+    set_device(ec, 1);
+    failures += verify_exact((chained_label + " device 1 equals device 0").c_str(),
+                             from_device<std::uint16_t>(buffer_1.data(), count), chained_0);
+
+    // Eager, staged, after the captured history: exactly doubles the last launch's result.
+    for (double& value : expected) { value *= 2.0; }
+    ops::allreduce_sum(buffer, staging, ec, events);
+    synchronize_both(ec);
+    const std::string eager_label = std::string(label) + " eager after replays";
+    set_device(ec, 0);
+    failures += verify_pointwise((eager_label + " device 0").c_str(),
+                                 from_device_bf16(buffer_0.data(), count), expected,
+                                 allreduce_sum_bf16_criterion());
+    failures += buffer_0.verify_guards("captured buffer device 0");
+    failures += staging_0.verify_guards("captured staging device 0");
+    set_device(ec, 1);
+    failures += verify_pointwise((eager_label + " device 1").c_str(),
+                                 from_device_bf16(buffer_1.data(), count), expected,
+                                 allreduce_sum_bf16_criterion());
+    failures += buffer_1.verify_guards("captured buffer device 1");
+    failures += staging_1.verify_guards("captured staging device 1");
+    if (mailbox != nullptr && mailbox->hang_reported()) {
+        std::cerr << label << ": a mailbox exchange reported a hang\n";
+        ++failures;
+    }
+    return failures;
+}
+
+// Informative replay cost of the decode token's 128 all-reduces of one [5120] row, per transport:
+// one graph of kSites all-reduces replayed kReplays times, reported per all-reduce. Inputs are
+// zero, so the values stay bounded.
+void run_captured_microbenchmark(const char* label, const ExecutionContext& ec,
+                                 const ops::PeerEvents& events) {
+    constexpr std::int32_t n = 5120;
+    constexpr int kSites     = 128;
+    constexpr int kWarmup    = 5;
+    constexpr int kReplays   = 50;
+    const std::size_t bytes  = static_cast<std::size_t>(n) * sizeof(std::uint16_t);
+
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(bytes), staging_0(bytes);
+    buffer_0.fill(0);
+    staging_0.fill(0);
+    set_device(ec, 1);
+    GuardedDeviceBuffer buffer_1(bytes), staging_1(bytes);
+    buffer_1.fill(0);
+    staging_1.fill(0);
+    const std::array<Tensor, 2> buffer{Tensor(buffer_0.data(), DType::BF16, {n}),
+                                       Tensor(buffer_1.data(), DType::BF16, {n})};
+    const std::array<Tensor, 2> staging{Tensor(staging_0.data(), DType::BF16, {n}),
+                                        Tensor(staging_1.data(), DType::BF16, {n})};
+    retire_staging(ec);
+
+    const DecodeGraphPeerBridge bridge(ec.dev[0]->device, ec.dev[1]->device);
+    DecodeGraphDefinition definition;
+    capture_two_devices(ec, bridge, definition, [&] {
+        for (int site = 0; site < kSites; ++site) {
+            ops::allreduce_sum(buffer, staging, ec, events);
+        }
+    });
+    DecodeGraphExecutable executable;
+    executable.instantiate(definition);
+    for (int i = 0; i < kWarmup; ++i) { launch_two_devices(ec, executable); }
+
+    const auto started = std::chrono::steady_clock::now();
+    set_device(ec, 0);
+    for (int i = 0; i < kReplays; ++i) { executable.launch(ec.dev[0]->stream); }
+    synchronize_both(ec);
+    const std::chrono::duration<double, std::micro> elapsed =
+        std::chrono::steady_clock::now() - started;
+    std::cout << "allreduce captured replay (" << label << "): " << bytes << " B bf16, "
+              << elapsed.count() / (static_cast<double>(kReplays) * kSites)
+              << " us per all-reduce over " << kReplays << " replays of " << kSites
+              << " (informative)\n";
+}
+
 } // namespace
 
 int main() {
@@ -400,7 +609,30 @@ int main() {
     failures += run_allgather_case("allgather_rows [7,2] minimal", 1, 1, 7, 204u, ec, events);
 
     failures += run_chained_case(ec, events);
+
+    // Captured transports. The mailbox slot holds the MTP-3 verification activation [5120, 4];
+    // the [5120, 8] case exceeds it and must stay staged inside the same kind of graph.
+    ops::PeerMailbox mailbox(ec, 5120 * 4 * sizeof(std::uint16_t));
+    ops::PeerEvents mailbox_events(ec);
+    mailbox_events.attach_mailbox(&mailbox);
+    failures += run_captured_case("captured staged [5120]", 5120, 1, 5, false, ec, events, nullptr);
+    failures +=
+        run_captured_case("captured staged [5120,4]", 5120, 4, 5, false, ec, events, nullptr);
+    failures += run_captured_case("captured mailbox [5120]", 5120, 1, 5, true, ec, mailbox_events,
+                                  &mailbox);
+    failures += run_captured_case("captured mailbox [5120,4]", 5120, 4, 5, true, ec, mailbox_events,
+                                  &mailbox);
+    failures += run_captured_case("captured mailbox [8,1] minimal", 8, 1, 3, true, ec,
+                                  mailbox_events, &mailbox);
+    failures += run_captured_case("captured oversized [5120,8] stays staged", 5120, 8, 3, false, ec,
+                                  mailbox_events, &mailbox);
+    // Unaligned vector count: 5121 elements are not whole 16-byte vectors.
+    failures += run_captured_case("captured [5121] stays staged", 5121, 1, 3, false, ec,
+                                  mailbox_events, &mailbox);
+
     failures += run_microbenchmark(ec, events);
+    run_captured_microbenchmark("staged", ec, events);
+    run_captured_microbenchmark("mailbox", ec, mailbox_events);
 
     std::cout << (failures ? "FAIL" : "OK") << " allreduce\n";
     return failures ? 1 : 0;

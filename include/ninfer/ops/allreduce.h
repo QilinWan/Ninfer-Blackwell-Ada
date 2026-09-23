@@ -22,6 +22,12 @@
 // stream capture region (cudaErrorStreamCaptureUnsupported), which would make the whole
 // tensor-parallel decode program uncapturable. See src/ops/common/allreduce.cu's pull_peer().
 //
+// CAPTURED MAILBOX. A PeerEvents instance may carry a PeerMailbox (PeerEvents::attach_mailbox,
+// ops/peer_mailbox.h). An allreduce_sum call recorded while BOTH ranks' streams belong to one
+// capture, whose payload is whole aligned 16-byte vectors within one mailbox slot, then becomes
+// one exchange kernel per device that publishes through pinned host memory instead of the staged
+// choreography below; its result is bit-identical. Every other call keeps the staged path.
+//
 // ORDERING. Every transfer is a PULL: rank r reads the peer's source into storage that rank r
 // alone owns, on rank r's own stream. Nothing a rank owns is ever written by the peer's stream, so
 // the classic push hazard -- the peer overwriting a staging buffer that this rank has not finished
@@ -30,7 +36,7 @@
 //   stream(r):  ...producer of the rank-r inputs...
 //               record(inputs_ready[r])
 //               wait(inputs_ready[1-r])              // peer's source is complete
-//               memcpyPeer(peer source -> rank-r storage)
+//               cudaMemcpyAsync(peer source -> rank-r storage)
 //               record(pull_done[r])
 //               wait(pull_done[1-r])                 // peer has finished reading MY source
 //               ...local combine, for allreduce_sum...
@@ -84,6 +90,8 @@
 
 namespace ninfer::ops {
 
+class PeerMailbox; // see ops/peer_mailbox.h
+
 // Probes cudaDeviceCanAccessPeer in both directions and enables peer access on both devices only
 // when both directions report support; a device that already had peer access enabled is left
 // alone. Returns true when direct P2P is active for the pair, false when the driver denies it and
@@ -107,6 +115,10 @@ bool enable_peer_access(const ExecutionContext& ec);
 // call's waits before the next call's records, so one instance serves an unbounded number of
 // sequential calls. Instances are not thread-safe: one instance belongs to one stream pair. A
 // moved-from instance holds no events and must not be passed to a collective (the ops reject it).
+//
+// An instance also names the stream pair's captured transport: null (the staged path for every
+// call) until attach_mailbox() installs a PeerMailbox, which the caller keeps alive for as long as
+// this instance is used and every graph captured through it exists.
 class PeerEvents {
 public:
     explicit PeerEvents(const ExecutionContext& ec);
@@ -131,9 +143,18 @@ public:
                pull_done_[0] != nullptr && pull_done_[1] != nullptr;
     }
 
+    // Selects `mailbox` (null: none) as the transport of this pair's captured all-reduces. It must
+    // serve the ExecutionContext these events were created for. Captures already recorded keep
+    // the transport they were recorded with.
+    void attach_mailbox(PeerMailbox* mailbox) noexcept { mailbox_ = mailbox; }
+
+    // Mutable through a const instance: a captured call claims the mailbox's next slot.
+    [[nodiscard]] PeerMailbox* mailbox() const noexcept { return mailbox_; }
+
 private:
     std::array<cudaEvent_t, 2> inputs_ready_{nullptr, nullptr};
     std::array<cudaEvent_t, 2> pull_done_{nullptr, nullptr};
+    PeerMailbox* mailbox_ = nullptr;
 };
 
 /**

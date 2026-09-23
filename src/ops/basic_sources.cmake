@@ -1,6 +1,7 @@
 target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/weight_input.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/common/allreduce.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/common/peer_mailbox.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/add_bias.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/argmax.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/cast.cu"
