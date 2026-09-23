@@ -174,11 +174,12 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                 .layers          = dimension(config.linear_attention_layers),
                 .record_capacity = static_cast<std::int32_t>(plan.max_concurrency),
                 .width           = static_cast<std::int32_t>(plan.draft_window + 1U),
-                .conv_channels   = (config.gdn ? dimension(config.gdn->conv_channels()) : 0),
-                .qk_heads        = (config.gdn ? dimension(config.gdn->linear_num_key_heads) : 0),
-                .value_heads     = (config.gdn ? dimension(config.gdn->linear_num_value_heads) : 0),
-                .key_dim         = (config.gdn ? dimension(config.gdn->linear_key_head_dim) : 0),
-                .value_dim       = (config.gdn ? dimension(config.gdn->linear_value_head_dim) : 0),
+                // One rank's key/value heads and convolution channels, as for the StateImages.
+                .conv_channels = (rank.gdn ? dimension(rank.gdn->conv_channels()) : 0),
+                .qk_heads      = (rank.gdn ? dimension(rank.gdn->linear_num_key_heads) : 0),
+                .value_heads   = (rank.gdn ? dimension(rank.gdn->linear_num_value_heads) : 0),
+                .key_dim       = (rank.gdn ? dimension(rank.gdn->linear_key_head_dim) : 0),
+                .value_dim     = (rank.gdn ? dimension(rank.gdn->linear_value_head_dim) : 0),
             });
     }
     {
@@ -278,28 +279,39 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
 }
 
 // One rank's transient workspace at tensor-parallel width 2, following the allocation order of
-// TextContext's split schedule (execution/text.cpp: prefill_impl_tp2, ordinary_decode_batch_tp2,
+// TextContext's split schedule (execution/text.cpp: prefill_impl_tp2 with its MTP prompt
+// alignment, ordinary_decode_batch_tp2, target verification, the MTP forwards and proposals,
 // run_layers_tp2 and logits_tp2). Per-layer stages use the rank's share of the config and the
 // rank's shard Parameters; the call roots (ids, positions, residual, all-reduce staging) keep the
 // replicated hidden width. Both ranks allocate this capacity: where the ranks differ (rank 1's
-// complete gather destination and last hidden column, rank 0's sampling), the plan covers both.
+// complete gather destination and last hidden column, rank 0's sampling, token embedding and
+// optimized proposal head), the plan covers both. It is built from rank 0's Parameters, whose
+// shard shapes equal rank 1's except for the heads only rank 0 holds.
 WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan) {
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
     const TextConfig shard = execution::shard_text_config(config, plan.tp);
     if (plan.causal_scoring || plan.features.vision ||
-        plan.speculative_backend != SpeculativeBackend::None) {
+        (plan.speculative_backend != SpeculativeBackend::None &&
+         plan.speculative_backend != SpeculativeBackend::Mtp)) {
         throw std::invalid_argument(
-            "tensor-parallel workspace supports ordinary text generation only");
+            "tensor-parallel workspace supports ordinary and MTP text generation only");
+    }
+    const bool mtp = plan.speculative_backend == SpeculativeBackend::Mtp;
+    if (mtp && (!parameters.mtp || !shard.attention)) {
+        throw std::invalid_argument("tensor-parallel MTP workspace requires the MTP parameters");
     }
 
     const std::uint32_t chunk_u32 = std::min(plan.prefill_chunk, plan.capacity);
     if (chunk_u32 == 0 ||
-        chunk_u32 > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        chunk_u32 > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
+        plan.draft_window >= static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("sequence workspace dimensions are invalid");
     }
     const auto chunk  = static_cast<std::int32_t>(chunk_u32);
     const auto hidden = dimension(config.hidden_size);
+    const auto drafts = static_cast<std::int32_t>(plan.draft_window);
+    const auto verify = drafts + 1;
     const ops::CausalAttentionExecutionEnvelope text_envelope{1, plan.capacity};
     const std::int32_t public_tokens = dimension(parameters.model.resources().public_token_count);
 
@@ -311,15 +323,32 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         (void)layout.alloc_bytes(bytes);
     };
     const auto finish = [](const WorkspaceLayoutBuilder& layout) { return layout.peak_bytes(1); };
+    const auto linear_scratch = [&](WorkspaceLayoutBuilder& layout,
+                                    const execution::LinearParameters& p, int first, int last) {
+        scratch(layout, ops::linear_workspace_capacity_bytes(p.weight.qtype, p.weight.n, p.weight.k,
+                                                             p.policy, first, last));
+    };
     const auto row_parallel_scratch = [&](WorkspaceLayoutBuilder& layout,
                                           const execution::LinearParameters& p, int first,
                                           int last) {
         scratch(layout, ops::linear_add_row_parallel_workspace_capacity_bytes(
                             p.weight.qtype, p.weight.n, p.weight.k, p.policy, first, last));
     };
+    const auto attention_scratch = [&](WorkspaceLayoutBuilder& layout, std::int32_t batch_size,
+                                       std::int32_t min_width, std::int32_t max_width) {
+        scratch(layout, ops::causal_softmax_attention_workspace_capacity_bytes(
+                            {dimension(shard.attention->head_dim),
+                             dimension(shard.attention->num_attention_heads),
+                             dimension(shard.attention->num_key_value_heads)},
+                            plan.kv_storage, text_envelope, batch_size, min_width, max_width,
+                            DeviceExecutionView{nullptr, plan.multiprocessor_count}));
+    };
+    // `record` selects the ReplaySSM record projection of speculative verification instead of the
+    // in-place snapshot of ordinary decode.
     const auto target_body = [&](WorkspaceLayoutBuilder& layout, std::int32_t first,
-                                 std::int32_t last, TextPhase phase, std::int32_t batch_size,
-                                 std::int32_t min_width, std::int32_t max_width) {
+                                 std::int32_t last, TextPhase phase, bool record,
+                                 std::int32_t batch_size, std::int32_t min_width,
+                                 std::int32_t max_width) {
         for (const auto& block : parameters.text.layers) {
             {
                 auto stage = layout.scope();
@@ -329,13 +358,7 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                     scratch(layout, execution::attention_projection_split_workspace_bytes(
                                         *attention, first, last));
                     (void)workspace::text_attention_results(layout, shard, last);
-                    scratch(layout,
-                            ops::causal_softmax_attention_workspace_capacity_bytes(
-                                {dimension(shard.attention->head_dim),
-                                 dimension(shard.attention->num_attention_heads),
-                                 dimension(shard.attention->num_key_value_heads)},
-                                plan.kv_storage, text_envelope, batch_size, min_width, max_width,
-                                DeviceExecutionView{nullptr, plan.multiprocessor_count}));
+                    attention_scratch(layout, batch_size, min_width, max_width);
                     row_parallel_scratch(layout, attention->output, first, last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
@@ -344,8 +367,10 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                                                                                  first, last));
                     (void)workspace::gdn_projection(layout, shard, last);
                     if (phase == TextPhase::Verify) {
-                        scratch(layout, execution::gdn_snapshot_split_workspace_bytes(
-                                            gdn, batch_size, min_width, max_width));
+                        scratch(layout, record ? execution::gdn_record_split_workspace_bytes(
+                                                     gdn, batch_size, min_width, max_width)
+                                               : execution::gdn_snapshot_split_workspace_bytes(
+                                                     gdn, batch_size, min_width, max_width));
                     } else {
                         (void)workspace::gdn_prefill_conv(layout, shard, last);
                         scratch(layout,
@@ -375,34 +400,154 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         (void)workspace::tp_logits(layout, config, head.weight.n, columns, true);
         scratch(layout, execution::output_head_split_workspace_bytes(head, columns, columns));
     };
+    // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, or the
+    // vocabulary-split output head (rank 1's gather destination in its arena when the caller has
+    // none).
+    const auto proposal = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
+        auto call = layout.scope();
+        if (plan.proposal_head == ProposalHead::Optimized) {
+            matrix(layout, DType::BF16, dimension(parameters.proposal->rows), columns);
+            linear_scratch(layout, parameters.proposal->head, columns, columns);
+        } else {
+            split_logits(layout, columns);
+        }
+    };
+    // TextContext::mtp_forward_core_tp2 over `tokens` columns, as `batch_size` rows of `width`.
+    const auto mtp_core = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens,
+                              std::int32_t batch_size, std::int32_t width) {
+        const execution::MtpParameters& p = *parameters.mtp;
+        auto core                         = layout.scope();
+        (void)workspace::tp_call_roots(layout, config, tokens);
+        (void)workspace::mtp_stem_split(layout, config, tokens, true);
+        linear_scratch(layout, p.input_projection, tokens, tokens);
+        (void)workspace::mtp_attention_projection(layout, shard, tokens);
+        scratch(layout,
+                execution::mtp_projection_split_workspace_bytes(p.projection, tokens, tokens));
+        (void)workspace::mtp_attention_results(layout, shard, tokens);
+        attention_scratch(layout, batch_size, width, width);
+        (void)workspace::mtp_post_attention(layout, config, tokens);
+        linear_scratch(layout, p.output, tokens, tokens);
+        scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, tokens, tokens));
+    };
+    // TextContext::mtp_prefill_chunk_tp2 over a `tokens`-column chunk, the prompt's last one when
+    // `last_chunk`.
+    const auto mtp_prefill_chunk = [&](WorkspaceLayoutBuilder& layout, std::int32_t tokens,
+                                       bool last_chunk) {
+        const execution::MtpParameters& p = *parameters.mtp;
+        const auto key_width              = dimension(shard.attention->key_width());
+        const auto query_width            = dimension(shard.attention->query_width());
+        auto call                         = layout.scope();
+        (void)workspace::tp_call_roots(layout, config, tokens);
+        if (last_chunk) {
+            for (int i = 0; i < 3; ++i) { matrix(layout, DType::BF16, hidden, 1); }
+        }
+        {
+            auto bulk = layout.scope();
+            (void)workspace::mtp_stem_split(layout, config, tokens, true);
+            linear_scratch(layout, p.input_projection, tokens, tokens);
+            matrix(layout, DType::BF16, key_width, tokens);
+            matrix(layout, DType::BF16, key_width, tokens);
+            scratch(layout, execution::mtp_kv_split_workspace_bytes(p.projection, *shard.attention,
+                                                                    tokens, tokens));
+            matrix(layout, DType::BF16, key_width, tokens);
+        }
+        if (!last_chunk) { return; }
+        matrix(layout, DType::BF16, query_width, 1);
+        matrix(layout, DType::BF16, query_width, 1);
+        scratch(layout, execution::mtp_query_gate_split_workspace_bytes(p.projection,
+                                                                        *shard.attention, 1, 1));
+        matrix(layout, DType::BF16, query_width, 1);
+        matrix(layout, DType::BF16, query_width, 1);
+        matrix(layout, DType::BF16, hidden, 1);
+        matrix(layout, DType::BF16, hidden, 1);
+        attention_scratch(layout, 1, 1, 1);
+        linear_scratch(layout, p.output, 1, 1);
+        scratch(layout, execution::mtp_ffn_split_workspace_bytes(p.ffn, 1, 1));
+        proposal(layout, 1);
+    };
 
     WorkspacePlan out;
-    {
-        WorkspaceLayoutBuilder layout;
+    // The text prefill chunk up to its sampled token; the MTP prompt alignment continues from it.
+    const auto text_prefill = [&](WorkspaceLayoutBuilder& layout) {
         // A text chunk continuing a multimodal prefix carries a one-axis RoPE offset; rank 1
         // holds its own copy of the delta.
         (void)workspace::text_prefill_roots(layout, config, chunk, 1, 0);
         (void)workspace::tp_call_roots(layout, config, chunk);
         (void)layout.alloc(DType::I32, {1});
-        target_body(layout, 1, chunk, TextPhase::Prefill, 1, 1, chunk);
+        target_body(layout, 1, chunk, TextPhase::Prefill, false, 1, 1, chunk);
         matrix(layout, DType::BF16, hidden, 1);
         split_logits(layout, 1);
         scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, 1, 1));
+    };
+    {
+        WorkspaceLayoutBuilder layout;
+        text_prefill(layout);
         out.text_prefill = finish(layout);
     }
-    for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
-         ++batch) {
-        WorkspaceLayoutBuilder layout;
-        matrix(layout, DType::BF16, hidden, batch);
-        (void)workspace::tp_call_roots(layout, config, batch);
-        target_body(layout, batch, batch, TextPhase::Verify, batch, 1, 1);
-        matrix(layout, DType::BF16, hidden, batch);
-        split_logits(layout, batch);
-        scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, batch, batch));
-        out.ordinary_round = std::max(out.ordinary_round, finish(layout));
+    if (!mtp) {
+        for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
+             ++batch) {
+            WorkspaceLayoutBuilder layout;
+            matrix(layout, DType::BF16, hidden, batch);
+            (void)workspace::tp_call_roots(layout, config, batch);
+            target_body(layout, batch, batch, TextPhase::Verify, false, batch, 1, 1);
+            matrix(layout, DType::BF16, hidden, batch);
+            split_logits(layout, batch);
+            scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, batch, batch));
+            out.ordinary_round = std::max(out.ordinary_round, finish(layout));
+        }
+    } else {
+        {
+            WorkspaceLayoutBuilder layout;
+            text_prefill(layout);
+            matrix(layout, DType::I32, 1, chunk);
+            {
+                auto final_chunk = layout.scope();
+                mtp_prefill_chunk(layout, chunk, true);
+            }
+            // The prompt proposal steps after the final chunk: the next hidden, the rope
+            // positions and rank 1's delta, one MTP column and its proposal.
+            for (std::int32_t step = 1; step < drafts; ++step) {
+                auto ar_step = layout.scope();
+                matrix(layout, DType::BF16, hidden, 1);
+                matrix(layout, DType::I32, 1, 1);
+                matrix(layout, DType::I32, 1, 1);
+                mtp_core(layout, 1, 1, 1);
+                proposal(layout, 1);
+            }
+            out.mtp_prefill = finish(layout);
+        }
+        for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
+             ++batch) {
+            const std::int32_t aggregate = batch * verify;
+            WorkspaceLayoutBuilder target;
+            matrix(target, DType::BF16, hidden, aggregate);
+            (void)workspace::tp_call_roots(target, config, aggregate);
+            target_body(target, aggregate, aggregate, TextPhase::Verify, true, batch, verify,
+                        verify);
+            {
+                auto logits = target.scope();
+                (void)workspace::tp_logits(target, config, parameters.text.output_head.weight.n,
+                                           aggregate, false);
+                scratch(target, execution::output_head_split_workspace_bytes(
+                                    parameters.text.output_head, aggregate, aggregate));
+            }
+            WorkspaceLayoutBuilder alignment;
+            mtp_core(alignment, aggregate, batch, verify);
+            WorkspaceLayoutBuilder ar;
+            mtp_core(ar, batch, batch, 1);
+            WorkspaceLayoutBuilder proposals;
+            proposal(proposals, batch);
+            const std::size_t accept =
+                ops::speculative_accept_greedy_drafts_workspace_capacity_bytes(
+                    public_tokens, drafts, drafts, batch, batch);
+            out.mtp_round = std::max({out.mtp_round, finish(target), finish(alignment), finish(ar),
+                                      finish(proposals), accept});
+        }
     }
-    out.general_capacity = std::max(out.text_prefill, out.ordinary_round);
-    out.capacity         = out.general_capacity;
+    out.general_capacity =
+        std::max({out.text_prefill, out.ordinary_round, out.mtp_prefill, out.mtp_round});
+    out.capacity = out.general_capacity;
     return out;
 }
 
@@ -981,13 +1126,14 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 "tensor-parallel planning requires rank 0 Parameters of a two-device Model");
         }
-        // The split schedule implements prefill and the ordinary decode round of the dense Text
-        // model (TextContext); everything else runs on one device only.
+        // The split schedule implements prefill, the ordinary decode round and the MTP round of
+        // the dense Text model (TextContext); everything else runs on one device only.
         if (options.purpose != EnginePurpose::Generation ||
-            options.speculative.backend != SpeculativeBackend::None || options.enable_vision) {
-            throw std::invalid_argument("tensor-parallel execution supports ordinary text "
-                                        "generation only (no speculative decoding, Vision or "
-                                        "causal scoring)");
+            (options.speculative.backend != SpeculativeBackend::None &&
+             options.speculative.backend != SpeculativeBackend::Mtp) ||
+            options.enable_vision) {
+            throw std::invalid_argument("tensor-parallel execution supports ordinary and MTP text "
+                                        "generation only (no DFlash, Vision or causal scoring)");
         }
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
             options.kv_cache != KvCacheStorage::Int8Group64) {
@@ -1053,13 +1199,17 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
                 checked_mul(per_batch, impl->max_concurrency, "ordinary exact-b graph allowance");
         } else if (impl->speculative_backend == SpeculativeBackend::Mtp) {
             const auto profiles = mtp_graph_profiles(impl->capacity, impl->draft_window);
+            // Per device. At tp 2 each rank holds its half of one dual-device graph per class,
+            // whose collectives add nodes on both devices; it doubles the class allowance as for
+            // ordinary rounds. Not yet measured for the two-device MTP round.
+            const std::uint64_t tp_scale          = impl->tp == 1 ? 1ULL : 2ULL;
             const std::size_t per_batch_allowance = graph_topology_allowance(
                 profiles,
                 [&](GraphExecutionProfile profile) {
                     const std::uint64_t final_visible = std::min<std::uint64_t>(
                         impl->capacity,
                         static_cast<std::uint64_t>(profile.max) + 2ULL * impl->draft_window);
-                    return (final_visible <= 4096 ? 12ULL : 82ULL) * kMiB;
+                    return (final_visible <= 4096 ? 12ULL : 82ULL) * tp_scale * kMiB;
                 },
                 "MTP graph allowance");
             impl->graph_allowance_bytes = checked_mul(per_batch_allowance, impl->max_concurrency,

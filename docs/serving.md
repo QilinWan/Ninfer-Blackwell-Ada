@@ -974,9 +974,25 @@ extra slot costs one StateImage per rank (about 73 MiB for Qwen3.8-27B); agentic
 multi-conversation servers should set `--device-state-slots 12` to `16`. The startup log prints one
 line per rank and a `tensor parallel` capacity line with the Device checkpoint pool.
 
-Tensor parallelism currently covers ordinary decoding with `bf16` or `int8` KV. `--spec`,
-`--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV types are rejected at
-startup.
+MTP speculative decoding works at `--tp 2` with the same options as on one GPU:
+
+```bash
+./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
+  --tp 2 --devices 0,1 \
+  --max-context 32768 --kv-capacity auto \
+  --max-concurrency 2 --kv-dtype int8 \
+  --spec mtp --draft-tokens 3
+```
+
+The MTP head is split across the ranks like a Text layer, verification and the recurrent-state
+commit run on both, and acceptance and sampling run on rank 0; `--lm-head-draft` keeps the
+optimized proposal head on rank 0 alone. With `--spec mtp` a request never resumes from a retained
+prefix: the MTP bridge needs a retained hidden that only rank 0 keeps, so admission re-prefills
+from the root instead, and prefix reuse saves no prompt work.
+
+Tensor parallelism covers ordinary decoding and `--spec mtp` with `bf16` or `int8` KV.
+`--spec dflash|dflash2`, `--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV
+types are rejected at startup.
 
 Serve writes human-readable operational records to stderr using
 `YYYY-MM-DD HH:MM:SS.mmm  LEVEL  message`. Normal output covers material startup milestones,

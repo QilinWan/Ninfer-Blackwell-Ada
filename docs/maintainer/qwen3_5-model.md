@@ -260,8 +260,8 @@ width and vocabulary ([`sharding.h`](../../src/models/qwen3_5/load/sharding.h));
 `execution::Parameters(model, r)`. The hidden/residual axis is replicated. `TextContext` runs the
 split schedule when it is given a `TpExecution`
 ([`tp.h`](../../src/models/qwen3_5/execution/tp.h)) naming rank 1's parameters, arena, GDN state
-pool, KV cache, prefill KV row and ordinary decode control; without one it runs the single-device
-schedule unchanged.
+pool, KV caches, prefill KV rows, ordinary decode control and, under MTP, its prefill frames and
+ReplaySSM records; without one it runs the single-device schedule unchanged.
 
 Each block issues one rank's work on that device's stream:
 
@@ -286,17 +286,52 @@ reads its KV row from `TpExecution::text_kv_table_row`; ordinary decode reads
 `TpExecution::ordinary`, which the Program uploads from the same host ingress record as rank 0's.
 KV page and row bookkeeping stay on rank 0 and are mirrored to rank 1 at the same indices.
 
-The split path covers text prefill, ordinary decode and their logits. It rejects MTP, speculative
-verification, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV
-caches other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no
-per-rank override.
+The split path covers text prefill, ordinary decode, the MTP round and their logits. It rejects
+DFlash, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV caches
+other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no per-rank
+override.
+
+MTP runs the same pattern over its one layer, with the MTP's own shards and KV pages:
+
+```text
+rank 0: e = offset_rmsnorm(embed(ids), embedding_norm)
+rank 1: h = offset_rmsnorm(target_hidden, hidden_norm)
+x       = all_reduce(fc_0 e + fc_1 h)                    fc split by input columns
+q|k|gate|v_r = mtp_split_attn_in(packed_r offset_rmsnorm(x, input_norm))
+x      += all_reduce(o_r gated_attention_r)              plain linear, then the residual add
+x      += all_reduce(down_r silu(gate_r) * up_r)         gate|up split by rows
+out     = offset_rmsnorm(x, final_norm)                  replicated
+```
+
+Rank 0's column half of the input projection contracts the normalized embedding and rank 1's the
+normalized hidden, so the packed input is never formed and only rank 0 embeds tokens. The
+attention input is the packed Q|K|Gate|V shard parent on every call (a rank's
+`MtpProjectionParameters::packed`, [7168,5120] for the 27B), split by `mtp_split_attn_in`; the
+separate `rows` projections the single-device prompt path uses are not read, so the KV-only and
+query-only prompt projections compute and discard the other sections. The full proposal head is
+the vocabulary-split output head, gathered before rank 0's argmax; the optimized proposal head is
+loaded on rank 0 only and its proposal runs there, so rank 1's `MtpParameters::output_head` is empty
+and unused. The Q8 MTP weights of the official artifacts use the registered Q8 halves
+(`[5120,5120]`, `[7168,5120]`, `[5120,3072]`, `[17408,5120]`, `[5120,8704]`).
+
+Verification runs the Text layers over K+1 columns with masked columns and records the ReplaySSM
+inputs of each rank's own GDN heads (the 8/24-head fold geometry); the Program folds the accepted
+prefix into both ranks' state with the same rows. Only rank 0 computes the target argmax and the
+acceptance. Rank 1 receives the accepted counts, anchors, frontiers and licensed counts by
+device-to-device copies ordered by a cross-device event, and derives everything else from its
+own upload of the same round ingress with the same Ops. The prompt MTP alignment runs on both
+ranks from each rank's final-normed chunk; rank 1 keeps its whole chunk in its own
+`prefill_hidden`. The MTP bridge, which resumes the head from a hidden only rank 0 retains, is not
+split: admission declines every non-Root reuse at width 2 with a speculative backend.
 
 The Program plans one per-rank layout (`SequencePlanImpl::tp`): KV heads and GDN state halved,
 and a workspace sized from the split schedule's own allocation order with the rank's
-`shard_text_config` extents, the all-reduce staging and the vocabulary-split logits. Rank 1
-allocates the same layout; its KV pages, execution tables and StateImages are mirrors of rank 0's.
-Every `ExecutionCore` carries the `TpExecution`, so prompt prefill, forced tokens and ordinary
-decode (eager and captured) run on both ranks.
+`shard_text_config` extents, the all-reduce staging and the vocabulary-split logits; the ReplaySSM
+records hold one rank's heads. Rank 1 allocates the same layout; its Text and MTP KV pages,
+execution tables and StateImages are mirrors of rank 0's. Every `ExecutionCore` carries the
+`TpExecution` (a prefill call's copy names the sequence's rank 1 MTP row), so prompt prefill,
+forced tokens, ordinary decode and MTP rounds (eager and captured as one two-device graph) run on
+both ranks.
 
 ## Vision and multimodal positions
 

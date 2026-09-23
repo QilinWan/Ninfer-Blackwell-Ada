@@ -108,7 +108,8 @@ std::string usage_text(const char* argv0) {
            "media sources may be local paths, HTTP(S) URLs, or base64 data URIs.\n"
            "--vision enables image/video input and loads the fixed Vision GPU allocations.\n"
            "--tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A);\n"
-           "tensor parallelism supports ordinary decoding with bf16 or int8 KV only.\n"
+           "tensor parallelism supports ordinary and --spec mtp decoding with bf16 or int8 KV "
+           "only.\n"
            "--thinking-budget caps model-origin thinking tokens; inserted control tokens count "
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
