@@ -201,6 +201,10 @@ void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor,
  *
  * Requires `ec.tp == 2` and a live `events`. Consecutive calls sharing the same arguments need no
  * host synchronization between them.
+ *
+ * Test-only, kept for symmetry with allreduce_sum: no model path calls it since the two-device
+ * logits are assembled on rank 0 alone (output_logits_split_rank0 in
+ * src/models/qwen3_5/execution/tp.h); the all-reduce and output-head split suites exercise it.
  */
 void allgather_rows(const std::array<Tensor, 2>& destination, const std::array<Tensor, 2>& part,
                     const ExecutionContext& ec, const PeerEvents& events);

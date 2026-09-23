@@ -366,11 +366,11 @@ consumed per rank on two RTX 5070 Ti at 32K context and concurrency 1: 2 MiB ord
 server logs observed against allowance per rank and warns on an overrun.
 
 The collectives have two transports ([`allreduce.h`](../../include/ninfer/ops/allreduce.h)). The
-staged transport serves every eager call, every `allgather_rows` and every payload wider than a
-mailbox slot: each rank pulls the peer's operand with a stream-ordered `cudaMemcpyAsync`, which
-the driver stages through host memory without peer access, ordered by the Program's
-`PeerEvents`, then combines locally; in a graph the events become edges. With CUDA Graphs the
-Program also owns a `PeerMailbox` ([`peer_mailbox.h`](../../include/ninfer/ops/peer_mailbox.h))
+staged transport serves every eager call and every payload wider than a mailbox slot: each rank
+pulls the peer's operand with a stream-ordered `cudaMemcpyAsync`, which the driver stages through
+host memory without peer access, ordered by the Program's `PeerEvents`, then combines locally;
+in a graph the events become edges. With CUDA Graphs the Program also owns a
+`PeerMailbox` ([`peer_mailbox.h`](../../include/ninfer/ops/peer_mailbox.h))
 attached to its `PeerEvents`, unless `EngineOptions::tp_mailbox` is false. An `allreduce_sum`
 captured with both ranks' streams in one capture and a payload within a slot (`hidden x (K+1)`
 BF16: every single-request decode, MTP-head and verification all-reduce) becomes one exchange
