@@ -8,6 +8,7 @@
 // the CTA reduces FP32 partials in shared memory. Output owns physical row/token addressing; an
 // optional caller epilogue may instead consume the FP32 tile.
 
+#include "core/shared_window.cuh"
 #include "ops/common/mma.cuh"
 #include "ops/common/memory.cuh"
 #include "ops/linear/q8/q8_ksplit_config.h"
@@ -16,6 +17,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -69,6 +71,17 @@ union alignas(16) Q8KSplitSharedStorage {
     float partial[Schedule::kKWarps * (Schedule::kTileTokens / 8) * 32 * 4];
 };
 
+// Shared staging capacity of the k-split contraction. Routes whose staging union exceeds the
+// 48 KB static window take it from the dynamic window instead, which is what makes the same
+// schedule usable on Ada as well as Blackwell. Launchers pass kBytes as the dynamic shared memory
+// size, so both allocations address identical storage.
+template <class Schedule>
+struct Q8KSplitSharedWindow {
+    static constexpr std::size_t kStorageBytes = sizeof(Q8KSplitSharedStorage<Schedule>);
+    static constexpr std::size_t kBytes =
+        kStorageBytes > 48 * 1024 ? kStorageBytes : std::size_t{0};
+};
+
 struct Q8KSplitIdentityColumns {
     __device__ __forceinline__ int operator()(int column) const { return column; }
 };
@@ -104,7 +117,7 @@ q8_ksplit_mma(const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restric
 
     using SharedStorage = Q8KSplitSharedStorage<Schedule>;
 
-    constexpr bool kDynamicShared = TiledColumns && ActiveCols > 64;
+    constexpr bool kDynamicShared = Q8KSplitSharedWindow<Schedule>::kBytes != 0;
     __shared__ __align__(
         16) unsigned char static_shared[kDynamicShared ? 1 : sizeof(SharedStorage)];
     extern __shared__ __align__(16) unsigned char dynamic_shared[];
@@ -389,6 +402,19 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void q8_ksplit_
     Epilogue epilogue = {}, RowPolicy row_policy = {}, std::int32_t columns = ActiveCols) {
     q8_ksplit_mma<Geometry, ActiveCols, Schedule, Output, Epilogue, RowPolicy, DirectPairEpilogue,
                   TiledColumns>(x, codes, scales, output, epilogue, row_policy, columns);
+}
+
+// Resolves a k-split instantiation to the function pointer the launcher shares with its
+// triple-chevron launch. nvcc cannot take the address while the trailing template parameters are
+// defaulted, so the cast names the resulting signature.
+template <class Geometry, int ActiveCols, class Schedule, class Output = Q8ContiguousOutput,
+          class Epilogue = Q8KSplitStoreEpilogue, class RowPolicy = Q8KSplitIdentityRows,
+          bool DirectPairEpilogue = false, bool TiledColumns = false>
+[[nodiscard]] constexpr auto q8_ksplit_kernel() noexcept {
+    return static_cast<void (*)(const __nv_bfloat16*, const std::uint8_t*, const std::uint8_t*,
+                                Output, Epilogue, RowPolicy, std::int32_t)>(
+        &q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Output, Epilogue, RowPolicy,
+                              DirectPairEpilogue, TiledColumns>);
 }
 
 } // namespace ninfer::ops::detail

@@ -41,14 +41,11 @@ void tiled_projection(const Tensor& x, const Weight& weight, Tensor& out, cudaSt
     using Geometry            = Q8LinearGeometry<kRows, InputRows>;
     using Schedule            = Q8KSplitSchedule<Warps, TileColumns, Warps == 8 ? 2 : 3,
                                                  Q8KSplitScaleAccess::Shared, Activation>;
-    constexpr int SharedBytes = TileColumns > 64 ? sizeof(Q8KSplitSharedStorage<Schedule>) : 0;
-    if constexpr (SharedBytes > 0) {
-        static const cudaError_t attribute = cudaFuncSetAttribute(
-            q8_ksplit_mma_kernel<Geometry, TileColumns, Schedule, Q8ContiguousOutput,
-                                 Q8KSplitStoreEpilogue, Q8KSplitIdentityRows, false, true>,
-            cudaFuncAttributeMaxDynamicSharedMemorySize, SharedBytes);
-        CUDA_CHECK(attribute);
-    }
+    constexpr std::size_t SharedBytes = Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto SharedKernel =
+        q8_ksplit_kernel<Geometry, TileColumns, Schedule, Q8ContiguousOutput,
+                         Q8KSplitStoreEpilogue, Q8KSplitIdentityRows, false, true>();
+    NINFER_REQUEST_SHARED_WINDOW(SharedBytes, SharedKernel);
     const int columns = x.ne[1];
     Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), kRows};
     const dim3 grid(kRows / 16, (columns + TileColumns - 1) / TileColumns);

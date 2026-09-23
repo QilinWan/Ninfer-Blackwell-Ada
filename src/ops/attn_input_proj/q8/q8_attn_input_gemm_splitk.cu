@@ -37,8 +37,13 @@ void launch_output(const Tensor& x, const Weight& weight, Output output, cudaStr
                                                 : 48;
     using Geometry         = Q8LinearGeometry<Rows, kHidden>;
     using Schedule         = Q8KSplitDefaultSchedule<TileCols, ActiveCols>;
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule>
-        <<<Rows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        <<<Rows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output);
@@ -88,8 +93,13 @@ void launch_target_medium_cols(const Tensor& x, const Weight& weight, Tensor& q,
     const TargetOutput output{
         static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
         static_cast<__nv_bfloat16*>(gate.data), static_cast<__nv_bfloat16*>(v.data)};
+    constexpr std::size_t grouped_shared_bytes =
+        Q8GroupedSharedWindow<kHidden, TileCols, KSplits, NGroups>::kBytes;
+    [[maybe_unused]] constexpr auto grouped_shared_kernel =
+        q8_ksplit_grouped_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, TargetOutput>();
+    NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
     q8_ksplit_grouped_mma_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<kTargetRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+        <<<kTargetRows / kRowsPerCta, KSplits * NGroups * 32, grouped_shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);
@@ -102,8 +112,13 @@ void launch_companion_medium_cols(const Tensor& x, const Weight& weight, Tensor&
     const CompanionOutput output{static_cast<__nv_bfloat16*>(q.data),
                                  static_cast<__nv_bfloat16*>(k.data),
                                  static_cast<__nv_bfloat16*>(v.data)};
+    constexpr std::size_t grouped_shared_bytes =
+        Q8GroupedSharedWindow<kHidden, TileCols, KSplits, NGroups>::kBytes;
+    [[maybe_unused]] constexpr auto grouped_shared_kernel =
+        q8_ksplit_grouped_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, CompanionOutput>();
+    NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
     q8_ksplit_grouped_mma_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<kCompanionRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+        <<<kCompanionRows / kRowsPerCta, KSplits * NGroups * 32, grouped_shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);

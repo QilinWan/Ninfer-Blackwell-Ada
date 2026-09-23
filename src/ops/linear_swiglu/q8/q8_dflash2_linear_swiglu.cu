@@ -34,8 +34,15 @@ void launch_tile(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_
     const Q8SwiGluDirectEpilogue epilogue{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const RowPolicy row_policy{};
     constexpr int kBlocks = kIntermediate / RowPolicy::kOutputRowsPerCta;
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, Capacity, Schedule, Q8ContiguousOutput, Q8SwiGluDirectEpilogue,
+                         RowPolicy, true, true>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, Capacity, Schedule, Q8ContiguousOutput, Q8SwiGluDirectEpilogue,
-                         RowPolicy, true, true><<<kBlocks, Schedule::kThreads, 0, stream>>>(
+                                    RowPolicy, true, true>
+        <<<kBlocks, Schedule::kThreads, shared_bytes, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
         static_cast<const std::uint8_t*>(weight.scales), ignored_output, epilogue, row_policy,
         x.ne[1]);

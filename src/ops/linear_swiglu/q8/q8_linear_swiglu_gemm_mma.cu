@@ -13,9 +13,15 @@ void launch_variant(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t 
     const Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), out.ne[0]};
     const dim3 grid(out.ne[0] / (Schedule::BM / 2),
                     static_cast<unsigned>(div_up(x.ne[1], Schedule::BN)), 1u);
+    constexpr std::size_t shared_bytes =
+        Q8RowSplitSharedWindow<Schedule, Q8Epilogue::SwiGluSplitHalf>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_rowsplit_kernel<Schedule, Full, Q8Epilogue::SwiGluSplitHalf>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_rowsplit_gemm_mma_kernel<Schedule, Full, Q8Epilogue::SwiGluSplitHalf>
-        <<<grid, Schedule::THREADS, 0, stream>>>(static_cast<const __nv_bfloat16*>(x.data),
-                                                 static_cast<const std::uint8_t*>(w.qdata),
+        <<<grid, Schedule::THREADS, shared_bytes, stream>>>(
+            static_cast<const __nv_bfloat16*>(x.data),
+            static_cast<const std::uint8_t*>(w.qdata),
                                                  static_cast<const std::uint8_t*>(w.scales), output,
                                                  w.n, w.k, x.ne[1], w.padded_shape[1]);
 }

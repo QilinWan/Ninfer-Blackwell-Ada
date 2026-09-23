@@ -8,6 +8,7 @@
 // shared tile; x uses a two-stage cp.async pipeline. Tensor Cores execute
 // m16n8k16 BF16 MMA with FP32 accumulation.
 
+#include "core/shared_window.cuh"
 #include "ops/common/mma.cuh"
 #include "ops/common/math.cuh"
 #include "ops/common/memory.cuh"
@@ -83,6 +84,32 @@ __device__ __forceinline__ int q8_g32_swz64(int row, int col) {
     return (((col >> 3) ^ (row & 7)) << 3) | (col & 7);
 }
 
+// Staging layout of the row-split GEMM. Blackwell declares it statically inside the kernel; Ada
+// reaches the identical layout through the dynamic window, so the capacity is visible to launchers.
+template <class Cfg, Q8Epilogue Epilogue>
+struct Q8RowSplitSharedWindow {
+    static constexpr int BM = Cfg::BM;
+    static constexpr int BN = Cfg::BN;
+    static constexpr int BK = Cfg::BK;
+
+    struct OperandStorage {
+        alignas(16) __nv_bfloat16 weights[BM * BK];
+        alignas(16) __nv_bfloat16 activations[Cfg::ACTIVATION_STAGES][BN * BK];
+        alignas(16) std::uint8_t codes[BM * BK];
+        alignas(16) std::uint8_t scales[BM * Cfg::SCALE_CACHE_BYTES];
+    };
+
+    union Storage {
+        OperandStorage operands;
+        float projected[Epilogue == Q8Epilogue::Residual ? BM * BN : 1];
+    };
+
+    static_assert(sizeof(Storage) <= 99 * 1024, "per-CTA shared memory limit");
+    static constexpr std::size_t kStorageBytes = sizeof(Storage);
+    static constexpr std::size_t kBytes =
+        kStorageBytes > 48 * 1024 ? kStorageBytes : std::size_t{0};
+};
+
 template <class Cfg, bool Full, Q8Epilogue Epilogue = Q8Epilogue::Store,
           class Output = Q8ContiguousOutput>
 __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void q8_rowsplit_gemm_mma_kernel(
@@ -103,20 +130,15 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void q8_rowsplit_gem
     static_assert(!kSwiGlu || Cfg::WARPS_M == 1 || Cfg::WARPS_M == 2,
                   "SwiGLU supports warp-local or shared-memory row pairing");
 
-    struct OperandStorage {
-        alignas(16) __nv_bfloat16 weights[BM * BK];
-        alignas(16) __nv_bfloat16 activations[Cfg::ACTIVATION_STAGES][BN * BK];
-        alignas(16) std::uint8_t codes[BM * BK];
-        alignas(16) std::uint8_t scales[BM * Cfg::SCALE_CACHE_BYTES];
-    };
-
-    union SharedStorage {
-        OperandStorage operands;
-        float projected[Epilogue == Q8Epilogue::Residual ? BM * BN : 1];
-    };
-
-    static_assert(sizeof(SharedStorage) <= 99 * 1024);
-    __shared__ __align__(16) SharedStorage shared;
+    using SharedWindow            = Q8RowSplitSharedWindow<Cfg, Epilogue>;
+    using SharedStorage           = typename SharedWindow::Storage;
+    constexpr bool kDynamicShared = SharedWindow::kBytes != 0;
+    extern __shared__ __align__(16) unsigned char dynamic_shared[];
+    constexpr std::size_t kStaticBytes =
+        kDynamicShared ? std::size_t{1} : SharedWindow::kStorageBytes;
+    __shared__ __align__(16) unsigned char static_shared[kStaticBytes];
+    auto& shared =
+        *reinterpret_cast<SharedStorage*>(kDynamicShared ? dynamic_shared : static_shared);
     auto& As = shared.operands.weights;
     auto& Bs = shared.operands.activations;
     auto& Cr = shared.operands.codes;
@@ -521,6 +543,15 @@ __global__ __launch_bounds__(Cfg::THREADS, Cfg::MIN_BLOCKS) void q8_rowsplit_gem
             }
         }
     }
+}
+
+// See q8_ksplit_kernel: names the signature so the shared-window request can take the address.
+template <class Cfg, bool Full, Q8Epilogue Epilogue = Q8Epilogue::Store,
+          class Output = Q8ContiguousOutput>
+[[nodiscard]] constexpr auto q8_rowsplit_kernel() noexcept {
+    return static_cast<void (*)(const __nv_bfloat16*, const std::uint8_t*, const std::uint8_t*,
+                                Output, std::int32_t, std::int32_t, std::int32_t, std::int32_t)>(
+        &q8_rowsplit_gemm_mma_kernel<Cfg, Full, Epilogue, Output>);
 }
 
 } // namespace ninfer::ops::detail

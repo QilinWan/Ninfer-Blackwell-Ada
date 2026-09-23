@@ -75,8 +75,15 @@ void launch_active_cols(const Tensor& x, const Weight& first_weight, const Weigh
     const Q8ContiguousOutput ignored{static_cast<__nv_bfloat16*>(first_out.data), kRows};
     const Q8PairExactTEpilogue epilogue{static_cast<__nv_bfloat16*>(first_out.data),
                                         static_cast<__nv_bfloat16*>(second_out.data)};
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput, Q8PairExactTEpilogue,
+                         Q8PairExactTRows>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput, Q8PairExactTEpilogue,
-                         Q8PairExactTRows><<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+                                    Q8PairExactTRows>
+        <<<kRows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), first_codes, first_scales, ignored, epilogue,
         Q8PairExactTRows{});
 }
@@ -102,8 +109,13 @@ void launch_medium(const Tensor& x, const Weight& first_weight, const Weight& se
     }
     const PairOutput output{static_cast<__nv_bfloat16*>(first_out.data),
                             static_cast<__nv_bfloat16*>(second_out.data)};
+    constexpr std::size_t grouped_shared_bytes =
+        Q8GroupedSharedWindow<kHidden, TileCols, KSplits, NGroups>::kBytes;
+    [[maybe_unused]] constexpr auto grouped_shared_kernel =
+        q8_ksplit_grouped_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, PairOutput>();
+    NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
     q8_ksplit_grouped_mma_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<(2 * kRows) / 16, KSplits * NGroups * 32, 0, stream>>>(
+        <<<(2 * kRows) / 16, KSplits * NGroups * 32, grouped_shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), first_codes, first_scales, output, x.ne[1]);
 }
 

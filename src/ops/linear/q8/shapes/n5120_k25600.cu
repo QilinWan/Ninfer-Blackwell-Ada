@@ -21,7 +21,12 @@ void launch_tiled(const Tensor& x, const Weight& weight, Tensor& out, cudaStream
     using Schedule = Q8RowSplitMmaGemmSchedule<Rows, 64, 16, 16, 1, 2, 128, 1>;
     const dim3 grid(weight.n / Rows, (x.ne[1] + 63) / 64);
     const Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), weight.n};
-    q8_rowsplit_gemm_mma_kernel<Schedule, false><<<grid, Schedule::THREADS, 0, stream>>>(
+    constexpr std::size_t shared_bytes =
+        Q8RowSplitSharedWindow<Schedule, Q8Epilogue::Store>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_rowsplit_kernel<Schedule, false>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
+    q8_rowsplit_gemm_mma_kernel<Schedule, false><<<grid, Schedule::THREADS, shared_bytes, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
         static_cast<const std::uint8_t*>(weight.scales), output, weight.n, weight.k, x.ne[1],
         weight.padded_shape[1]);

@@ -14,8 +14,15 @@ void launch(const Tensor& x, const Weight& w, Tensor& residual, cudaStream_t str
     constexpr int kTokenGroups = 4;
     const dim3 grid(5120 / 16, div_up(x.ne[1], kColumns));
     const Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(residual.data), 5120};
+    constexpr std::size_t grouped_shared_bytes =
+        Q8GroupedSharedWindow<K, kColumns, kSplits, kTokenGroups>::kBytes;
+    [[maybe_unused]] constexpr auto grouped_shared_kernel =
+        q8_ksplit_grouped_kernel<K, kColumns, kSplits, kTokenGroups, 1, Q8ContiguousOutput, true,
+                                 true>();
+    NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
     q8_ksplit_grouped_mma_kernel<K, kColumns, kSplits, kTokenGroups, 1, Q8ContiguousOutput, true,
-                                 true><<<grid, kSplits * kTokenGroups * 32, 0, stream>>>(
+                                 true><<<grid, kSplits * kTokenGroups * 32, grouped_shared_bytes,
+                                         stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
         static_cast<const std::uint8_t*>(w.scales), output, x.ne[1]);
     CUDA_CHECK(cudaGetLastError());

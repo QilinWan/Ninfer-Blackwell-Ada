@@ -13,9 +13,28 @@
 
 namespace ninfer::ops::detail {
 
+constexpr std::size_t q8_round16(std::size_t bytes) noexcept {
+    return (bytes + 15U) & ~static_cast<std::size_t>(15U);
+}
+
+// Staging capacity of the grouped K-split kernel. Blackwell declares these two buffers statically;
+// Ada reaches the same layout through the dynamic window, so the size is visible to host launchers.
+template <int Hidden, int TileCols, int KSplits, int NGroups>
+struct Q8GroupedSharedWindow {
+    static constexpr int kTileK             = 64;
+    static constexpr int kMmaRows           = 16;
+    static constexpr int kGroupK            = KSplits * kTileK;
+    static constexpr int kKernelWarps       = KSplits * NGroups;
+    static constexpr int kWarpCols          = TileCols / NGroups;
+    static constexpr std::size_t kCodeBytes = q8_round16(kMmaRows * kGroupK);
+    static constexpr std::size_t kFullBytes =
+        kCodeBytes + q8_round16(kKernelWarps * kWarpCols * kTileK * sizeof(__nv_bfloat16));
+    static constexpr std::size_t kBytes = kFullBytes > 48 * 1024 ? kFullBytes : std::size_t{0};
+};
+
 template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks, class Output,
           bool AddResidual = false, bool TiledColumns = false>
-__global__ __launch_bounds__(KSplits* NGroups * 32, MinBlocks) void q8_ksplit_grouped_mma_kernel(
+__global__ __launch_bounds__(KSplits * NGroups * 32, MinBlocks) void q8_ksplit_grouped_mma_kernel(
     const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restrict__ codes,
     const std::uint8_t* __restrict__ scales, Output output, int active_cols) {
     constexpr int kTileK       = 64;
@@ -31,16 +50,25 @@ __global__ __launch_bounds__(KSplits* NGroups * 32, MinBlocks) void q8_ksplit_gr
     static_assert(TileCols % NGroups == 0 && kWarpCols % 8 == 0);
     static_assert(Hidden % kGroupK == 0 && kKernelWarps <= 32);
 
-    __shared__ __align__(16) std::uint8_t code_shared[kMmaRows][kGroupK];
-    __shared__ __align__(16) __nv_bfloat16 b_shared[kKernelWarps][kWarpCols * kTileK];
+    using SharedWindow            = Q8GroupedSharedWindow<Hidden, TileCols, KSplits, NGroups>;
+    constexpr bool kDynamicShared = SharedWindow::kBytes != 0;
+    using CodeRow                 = std::uint8_t[kGroupK];
+    using ActivationRow           = __nv_bfloat16[kWarpCols * kTileK];
+    extern __shared__ __align__(16) unsigned char dynamic_shared[];
+    __shared__ __align__(
+        16) unsigned char static_shared[kDynamicShared ? 1 : SharedWindow::kFullBytes];
+    unsigned char* const shared_base = kDynamicShared ? dynamic_shared : static_shared;
+    CodeRow* const code_shared       = reinterpret_cast<CodeRow*>(shared_base);
+    ActivationRow* const b_shared =
+        reinterpret_cast<ActivationRow*>(shared_base + SharedWindow::kCodeBytes);
 
-    const int tid        = static_cast<int>(threadIdx.x);
-    const int warp       = tid >> 5;
-    const int lane       = tid & 31;
-    const int n_group    = warp / KSplits;
-    const int k_split    = warp - n_group * KSplits;
-    const int gid        = lane >> 2;
-    const int lid        = lane & 3;
+    const int tid         = static_cast<int>(threadIdx.x);
+    const int warp        = tid >> 5;
+    const int lane        = tid & 31;
+    const int n_group     = warp / KSplits;
+    const int k_split     = warp - n_group * KSplits;
+    const int gid         = lane >> 2;
+    const int lid         = lane & 3;
     const int n_base      = n_group * kWarpCols;
     const int token_tiles = TiledColumns ? static_cast<int>(gridDim.y) : 1;
     const int linear_block =
@@ -237,6 +265,16 @@ __global__ __launch_bounds__(KSplits* NGroups * 32, MinBlocks) void q8_ksplit_gr
             }
         }
     }
+}
+
+// See q8_ksplit_kernel: names the signature so the shared-window request can take the address.
+template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks, class Output,
+          bool AddResidual = false, bool TiledColumns = false>
+[[nodiscard]] constexpr auto q8_ksplit_grouped_kernel() noexcept {
+    return static_cast<void (*)(const __nv_bfloat16*, const std::uint8_t*, const std::uint8_t*,
+                                Output, int)>(
+        &q8_ksplit_grouped_mma_kernel<Hidden, TileCols, KSplits, NGroups, MinBlocks, Output,
+                                      AddResidual, TiledColumns>);
 }
 
 } // namespace ninfer::ops::detail

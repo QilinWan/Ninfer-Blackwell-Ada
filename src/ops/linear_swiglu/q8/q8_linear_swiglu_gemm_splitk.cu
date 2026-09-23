@@ -38,9 +38,16 @@ void launch_active_cols(const Tensor& x, const Weight& w, Tensor& out, cudaStrea
     const Q8ContiguousOutput ignored_output{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const Q8SwiGluDirectEpilogue epilogue{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const RowPolicy row_policy{};
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput,
+                         Q8SwiGluDirectEpilogue, RowPolicy, true>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput, Q8SwiGluDirectEpilogue,
-                         RowPolicy, true>
-        <<<kIntermediate / RowPolicy::kOutputRowsPerCta, Schedule::kThreads, 0, stream>>>(
+                                    RowPolicy, true>
+        <<<kIntermediate / RowPolicy::kOutputRowsPerCta, Schedule::kThreads, shared_bytes,
+                stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
             static_cast<const std::uint8_t*>(w.scales), ignored_output, epilogue, row_policy);
 }

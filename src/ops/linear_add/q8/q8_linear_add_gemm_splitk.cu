@@ -41,9 +41,15 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& residual_
     static_assert((kRows % kRowsPerCta) == 0);
     auto* residual = static_cast<__nv_bfloat16*>(residual_out.data);
     const Q8ContiguousOutput output{residual, kRows};
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput,
+                         Q8KSplitResidualEpilogue>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Q8ContiguousOutput,
                          Q8KSplitResidualEpilogue>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        <<<kRows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, Q8KSplitResidualEpilogue{});
@@ -64,8 +70,15 @@ template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks>
 void launch_medium(const Tensor& x, Tensor& residual_out, const Weight& weight,
                    cudaStream_t stream) {
     const Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(residual_out.data), kRows};
+    constexpr std::size_t grouped_shared_bytes =
+        Q8GroupedSharedWindow<Hidden, TileCols, KSplits, NGroups>::kBytes;
+    [[maybe_unused]] constexpr auto grouped_shared_kernel =
+        q8_ksplit_grouped_kernel<Hidden, TileCols, KSplits, NGroups, MinBlocks, Q8ContiguousOutput,
+                                 true>();
+    NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
     q8_ksplit_grouped_mma_kernel<Hidden, TileCols, KSplits, NGroups, MinBlocks, Q8ContiguousOutput,
-                                 true><<<kRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+                                 true><<<kRows / kRowsPerCta, KSplits * NGroups * 32,
+                                         grouped_shared_bytes, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
         static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);
 }

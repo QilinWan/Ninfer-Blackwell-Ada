@@ -43,9 +43,15 @@ void launch_small(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k, T
     const Output output{static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
                         static_cast<__nv_bfloat16*>(v.data)};
     constexpr int kBlocks = Geometry::kOutputRows / Schedule::kRowsPerCta;
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, Columns, Schedule, Output, Q8KSplitStoreEpilogue,
+                         Q8KSplitIdentityRows, false, !Exact>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, Columns, Schedule, Output, Q8KSplitStoreEpilogue,
-                         Q8KSplitIdentityRows, false, !Exact>
-        <<<kBlocks, Schedule::kThreads, 0, stream>>>(
+                                    Q8KSplitIdentityRows, false, !Exact>
+        <<<kBlocks, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, Q8KSplitStoreEpilogue{},
@@ -72,8 +78,13 @@ void launch_mma_slice(const Tensor& x, const Weight& weight, Tensor& q, Tensor& 
                         static_cast<__nv_bfloat16*>(v.data)};
     const dim3 grid(Geometry::kOutputRows / Schedule::BM,
                     static_cast<unsigned>(div_up(x.ne[1], Schedule::BN)), 1u);
+    constexpr std::size_t shared_bytes =
+        Q8RowSplitSharedWindow<Schedule, Q8Epilogue::Store>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_rowsplit_kernel<Schedule, Full, Q8Epilogue::Store, Output>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_rowsplit_gemm_mma_kernel<Schedule, Full, Q8Epilogue::Store, Output>
-        <<<grid, Schedule::THREADS, 0, stream>>>(
+        <<<grid, Schedule::THREADS, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, Geometry::kOutputRows,

@@ -282,8 +282,13 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& qkv, Tens
     using Schedule = Q8KSplitDefaultSchedule<TileCols, ActiveCols>;
     static_assert((8192 % kRowsPerCta) == 0 && (4096 % kRowsPerCta) == 0);
     const Output output{static_cast<__nv_bfloat16*>(qkv.data), static_cast<__nv_bfloat16*>(z.data)};
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        <<<kRows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output);
@@ -321,8 +326,14 @@ void launch_active_cols_conv(const Tensor& x, const Weight& weight, const Tensor
         },
         static_cast<__nv_bfloat16*>(z.data),
     };
+    constexpr std::size_t shared_bytes =
+        Q8KSplitSharedWindow<Schedule>::kBytes;
+    [[maybe_unused]] constexpr auto shared_kernel =
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule, Output,
+                         Q8GdnSplitKConvEpilogue<Publish>>();
+    NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
     q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Output, Q8GdnSplitKConvEpilogue<Publish>>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        <<<kRows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), ignored_output, epilogue);
