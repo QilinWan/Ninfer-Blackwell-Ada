@@ -224,12 +224,13 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     out.stats_.host_object_count     = plan.host_objects.size();
     // A shard's plane alignment gaps are bytes no copy writes; they read as zero, like the
     // padding of a stored parent, so a device holding a shard gets a ZeroFill::Yes arena, whose
-    // zeroing completes before the constructor returns (as every arena did before). A
-    // stream-ordered memset on the transfer stream was tried instead and broke the tp 2 MTP
-    // Engine with the optimized proposal head: its CUDA Graph family failed
-    // cudaGraphExecUpdate with cudaGraphExecUpdateErrorParametersChanged (result 5), while
-    // reverting to the completed zeroing passed. Which dependent needs the completed zeroing is
-    // not yet identified; keep it until it is.
+    // zeroing completes before the constructor returns, exactly as every arena did before the
+    // opt-in zero fill. A stream-ordered memset on the transfer stream was tried instead; the
+    // tp 2 MTP Engine failure that appeared at the same time (cudaGraphExecUpdate rejecting a
+    // memcpy node with cudaGraphExecUpdateErrorParametersChanged) later turned out to be
+    // intermittent and unrelated, and is now handled by re-instantiating the rejected profile
+    // (see DecodeGraphExecutable::update_or_reinstantiate). The constructor path is kept because
+    // it is the simplest way to guarantee the zeroed padding before any shard upload starts.
     std::array<bool, kMaximumDevices> holds_shard{};
     for (const auto& placement : plan.device_objects) {
         if (is_sharded(placement.axis) && placement.device >= 0 &&
