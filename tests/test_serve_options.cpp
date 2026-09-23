@@ -453,6 +453,23 @@ int main() {
                                                   "--devices", "0,1", "--no-tp-mailbox"})
                                                .tp_mailbox,
                       "--no-tp-mailbox did not disable the captured mailbox transport");
+    const ServeOptions vision =
+        parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1", "--vision",
+               "--vision-device", "1", "--max-vision-tokens", "4096"});
+    failures += check(vision.enable_vision && vision.vision_device == 1 &&
+                          vision.max_vision_tokens == 4096U && !split.vision_device &&
+                          !split.max_vision_tokens,
+                      "--vision-device and --max-vision-tokens were not parsed");
+    failures += check(rejects({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1",
+                               "--vision", "--vision-device", "2"}),
+                      "--vision-device outside --devices was accepted");
+    failures += check(rejects({"ninfer-serve", "model.ninfer", "--vision-device", "0"}),
+                      "--vision-device was accepted without --vision");
+    failures += check(
+        rejects({"ninfer-serve", "model.ninfer", "--vision", "--max-vision-tokens", "63"}) &&
+            rejects({"ninfer-serve", "model.ninfer", "--vision", "--max-vision-tokens", "16385"}) &&
+            !rejects({"ninfer-serve", "model.ninfer", "--vision", "--max-vision-tokens", "64"}),
+        "--max-vision-tokens accepted a value outside [64,16384]");
 
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

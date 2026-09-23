@@ -170,5 +170,22 @@ int main() {
                                           "2", "--devices", "1,0", "--no-tp-mailbox"})
                                        .tp_mailbox,
               "--no-tp-mailbox did not disable the captured mailbox transport");
+    const ninfer::cli::Options vision =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp", "2", "--devices", "1,0",
+               "--vision", "--vision-device", "0", "--max-vision-tokens", "1024"});
+    failures += check(vision.vision_device == 0 && vision.max_vision_tokens == 1024U &&
+                          !split.vision_device && !split.max_vision_tokens,
+                      "--vision-device and --max-vision-tokens were not parsed");
+    failures +=
+        check(rejects([] {
+                  (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp", "2",
+                               "--devices", "0,1", "--vision", "--vision-device", "3"});
+              }),
+              "--vision-device outside --devices was accepted");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--max-vision-tokens", "1024"});
+                      }),
+                      "--max-vision-tokens was accepted without --vision");
     return failures == 0 ? 0 : 1;
 }

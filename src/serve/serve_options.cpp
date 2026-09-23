@@ -2,6 +2,7 @@
 #include "product/speculative_options.h"
 #include "runtime/contract/yarn.h"
 #include "product/tensor_parallel_options.h"
+#include "product/vision_options.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -133,7 +134,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--rope-yarn-factor F] [--rope-original-max-position N] "
-           "[--vision] [--no-cuda-graph] [--no-tp-mailbox] [--no-prefix-reuse] "
+           "[--vision] [--vision-device N] [--max-vision-tokens N] [--no-cuda-graph] "
+           "[--no-tp-mailbox] [--no-prefix-reuse] "
            "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
            "[--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
@@ -153,6 +155,12 @@ std::string serve_usage_text(const char* argv0) {
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
+           "       --vision-device selects the CUDA device that holds the Vision tower and encodes "
+           "(default: rank 0's); with --tp 2 it must be one of --devices, and the other GPU only "
+           "receives the encoded embeddings\n"
+           "       --max-vision-tokens caps the merged Vision tokens of one image or video item "
+           "(64-16384, default 16384): larger media are resized and the encode workspace is "
+           "planned for N\n"
            "       --kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
@@ -332,6 +340,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.default_thinking_budget = static_cast<std::uint32_t>(budget);
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-device") {
+            options.vision_device = product::parse_device_id(require_value("--vision-device"));
+        } else if (arg == "--max-vision-tokens") {
+            options.max_vision_tokens =
+                product::parse_max_vision_tokens(require_value("--max-vision-tokens"));
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-tp-mailbox") {
@@ -407,6 +420,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     product::resolve_tensor_parallel_devices(options.tp, options.devices, options.device,
                                              device_explicit);
+    product::validate_vision_options(options.enable_vision, options.vision_device,
+                                     options.max_vision_tokens, options.devices);
     if (options.tp == 2) {
         // Rank 1's KV pages and StateImages have no Host tier: a tensor-parallel server keeps every
         // checkpoint in Device StateImages. This tree's single Host budget knob is the one that must

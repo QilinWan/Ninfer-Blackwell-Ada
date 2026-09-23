@@ -317,6 +317,8 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_options.prefill_chunk            = options_.prefill_chunk;
     engine_options.kv_cache                 = options_.kv_cache;
     engine_options.enable_vision            = options_.enable_vision;
+    engine_options.vision_device            = options_.vision_device;
+    engine_options.max_vision_tokens        = options_.max_vision_tokens;
     engine_options.use_cuda_graph           = options_.use_cuda_graph;
     engine_options.tp_mailbox               = options_.tp_mailbox;
     engine_options.speculative              = options_.speculative;

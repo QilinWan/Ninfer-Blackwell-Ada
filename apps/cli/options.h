@@ -36,6 +36,9 @@ struct Options {
     SpeculativeOptions speculative;
     YarnOptions yarn;
     bool enable_vision  = false;
+    // `--vision-device` / `--max-vision-tokens` (product/vision_options.h validates both).
+    std::optional<int> vision_device;
+    std::optional<std::uint32_t> max_vision_tokens;
     bool use_cuda_graph = true;
     bool tp_mailbox     = true;
 

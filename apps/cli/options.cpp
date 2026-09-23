@@ -2,6 +2,7 @@
 #include "runtime/contract/yarn.h"
 #include "product/speculative_options.h"
 #include "product/tensor_parallel_options.h"
+#include "product/vision_options.h"
 
 #include <cerrno>
 #include <cmath>
@@ -99,7 +100,8 @@ std::string usage_text(const char* argv0) {
            "       [--grammar-file FILE | --json-object | --json-schema-file FILE |\n"
            "        --regex PATTERN | --choice TEXT ...]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
-           "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
+           "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max]\n"
+           "       [--vision] [--vision-device N] [--max-vision-tokens N]\n"
            "       [--no-cuda-graph] [--no-tp-mailbox]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "\n"
@@ -107,9 +109,13 @@ std::string usage_text(const char* argv0) {
            "Structured message content accepts text, image/image_url, and video/video_url parts;\n"
            "media sources may be local paths, HTTP(S) URLs, or base64 data URIs.\n"
            "--vision enables image/video input and loads the fixed Vision GPU allocations.\n"
+           "--vision-device N places the Vision tower and its encoder on GPU N (default: rank 0);\n"
+           "with --tp 2 it must be one of --devices.\n"
+           "--max-vision-tokens N (64-16384, default 16384) caps one image or video item's Vision\n"
+           "tokens: larger media are resized and the encode workspace is planned for N.\n"
            "--tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A);\n"
            "tensor parallelism supports ordinary, --spec mtp and --spec dflash2 --lm-head-draft "
-           "decoding with bf16 or int8 KV only.\n"
+           "decoding, with or without --vision, with bf16 or int8 KV only.\n"
            "--no-tp-mailbox keeps the captured --tp 2 all-reduces on cross-device copies.\n"
            "--thinking-budget caps model-origin thinking tokens; inserted control tokens count "
            "toward --max-new.\n"
@@ -194,6 +200,10 @@ Options parse_options(int argc, char** argv) {
             options.reasoning_effort = parse_reasoning_effort(value(arg));
         } else if (arg == "--vision") {
             options.enable_vision = true;
+        } else if (arg == "--vision-device") {
+            options.vision_device = product::parse_device_id(value(arg));
+        } else if (arg == "--max-vision-tokens") {
+            options.max_vision_tokens = product::parse_max_vision_tokens(value(arg));
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--no-tp-mailbox") {
@@ -251,6 +261,8 @@ Options parse_options(int argc, char** argv) {
     }
     product::resolve_tensor_parallel_devices(options.tp, options.devices, options.device,
                                              device_explicit);
+    product::validate_vision_options(options.enable_vision, options.vision_device,
+                                     options.max_vision_tokens, options.devices);
 
     const bool has_prompt   = !options.prompt.empty();
     const bool has_messages = !options.messages_path.empty();

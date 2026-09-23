@@ -488,7 +488,8 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
 
     if (service.options().enable_vision) {
         const ninfer::MediaCacheSummary media = service.media_cache_summary();
-        logger_->info("media | {} preprocess workers | cache {} | live {}",
+        logger_->info("media | Vision on device {} | {} preprocess workers | cache {} | live {}",
+                      service.options().vision_device.value_or(service.options().device),
                       media.preprocess_threads, product::format_pretty_bytes(media.capacity_bytes),
                       product::format_pretty_bytes(media.live_capacity_bytes));
     }
