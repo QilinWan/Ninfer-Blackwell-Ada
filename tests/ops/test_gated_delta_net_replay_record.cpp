@@ -42,14 +42,13 @@ int verify_equal(const std::string& label, const std::vector<std::uint16_t>& lhs
     return 1;
 }
 
-int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
-             std::vector<std::int32_t> valid_columns, std::uint32_t seed) {
-    constexpr std::int32_t kQkHeads = 16;
+int run_case(std::int32_t qk_heads, std::int32_t value_heads, std::int32_t width,
+             std::int32_t batch, std::vector<std::int32_t> valid_columns, std::uint32_t seed) {
     const bool dense                = valid_columns.empty();
     if (dense) { valid_columns.assign(static_cast<std::size_t>(batch), width); }
     const std::int32_t columns       = width * batch;
     const std::int32_t slots         = 8;
-    const std::size_t qk_elements    = static_cast<std::size_t>(kStateDim) * kQkHeads * columns;
+    const std::size_t qk_elements    = static_cast<std::size_t>(kStateDim) * qk_heads * columns;
     const std::size_t value_elements = static_cast<std::size_t>(kStateDim) * value_heads * columns;
     const std::size_t gate_elements  = static_cast<std::size_t>(value_heads) * columns;
     const std::size_t state_elements =
@@ -101,8 +100,8 @@ int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
     value_record.fill(0xff);
     gate_record.fill(0xff);
 
-    Tensor q(device_q.p, DType::BF16, {kStateDim, kQkHeads, width, batch});
-    Tensor k(device_k.p, DType::BF16, {kStateDim, kQkHeads, width, batch});
+    Tensor q(device_q.p, DType::BF16, {kStateDim, qk_heads, width, batch});
+    Tensor k(device_k.p, DType::BF16, {kStateDim, qk_heads, width, batch});
     Tensor v(device_v.p, DType::BF16, {kStateDim, value_heads, width, batch});
     Tensor g_tensor(device_g.p, DType::FP32, {value_heads, width, batch});
     Tensor beta_tensor(device_beta.p, DType::FP32, {value_heads, width, batch});
@@ -116,7 +115,7 @@ int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
     Tensor initial(device_initial.p, DType::I32, {batch});
     Tensor reference_output(reference_out.p, DType::BF16, {kStateDim, value_heads, width, batch});
     Tensor record_output(record_out.p, DType::BF16, {kStateDim, value_heads, width, batch});
-    Tensor key_record_tensor(key_record.p, DType::BF16, {kStateDim, kQkHeads, width, batch});
+    Tensor key_record_tensor(key_record.p, DType::BF16, {kStateDim, qk_heads, width, batch});
     Tensor value_record_tensor(value_record.p, DType::BF16, {kStateDim, value_heads, width, batch});
     Tensor gate_record_tensor(gate_record.p, DType::FP32, {2, value_heads, width, batch});
 
@@ -131,10 +130,10 @@ int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
             const std::int32_t valid_extent = valid_columns[static_cast<std::size_t>(row)];
             Tensor q_row                    = q.slice(3, row, 1)
                                .slice(2, 0, valid_extent)
-                               .view({kStateDim, kQkHeads, valid_extent});
+                               .view({kStateDim, qk_heads, valid_extent});
             Tensor k_row = k.slice(3, row, 1)
                                .slice(2, 0, valid_extent)
-                               .view({kStateDim, kQkHeads, valid_extent});
+                               .view({kStateDim, qk_heads, valid_extent});
             Tensor v_row = v.slice(3, row, 1)
                                .slice(2, 0, valid_extent)
                                .view({kStateDim, value_heads, valid_extent});
@@ -214,9 +213,9 @@ int run_case(std::int32_t value_heads, std::int32_t width, std::int32_t batch,
         for (std::int32_t token = 0; token < width; ++token) {
             const std::int64_t column = static_cast<std::int64_t>(row) * width + token;
             const bool active         = token < valid_extent;
-            for (std::int32_t head = 0; head < kQkHeads; ++head) {
+            for (std::int32_t head = 0; head < qk_heads; ++head) {
                 const std::size_t base =
-                    static_cast<std::size_t>((column * kQkHeads + head) * kStateDim);
+                    static_cast<std::size_t>((column * qk_heads + head) * kStateDim);
                 for (std::int32_t dim = 0; dim < kStateDim; ++dim) {
                     const std::uint16_t expected = active ? k_bits[base + dim] : kBf16Poison;
                     if (key_bits_after[base + dim] != expected) {
@@ -285,16 +284,20 @@ int main() {
     }
 
     int failures = 0;
-    failures += run_case(32, 2, 1, {}, 1701U);
-    failures += run_case(32, 16, 1, {7}, 1711U);
-    failures += run_case(32, 6, 8, {6, 5, 4, 3, 2, 1, 6, 2}, 1721U);
+    failures += run_case(16, 32, 2, 1, {}, 1701U);
+    failures += run_case(16, 32, 16, 1, {7}, 1711U);
+    failures += run_case(16, 32, 6, 8, {6, 5, 4, 3, 2, 1, 6, 2}, 1721U);
     for (int width = 2; width <= 16; ++width) {
-        failures += run_case(48, width, 1, {}, 1730U + width);
+        failures += run_case(16, 48, width, 1, {}, 1730U + width);
         std::vector<std::int32_t> valid(8);
         for (int b = 0; b < 8; ++b) valid[b] = b == 0 ? width : 1 + (3 * b) % width;
-        failures += run_case(48, width, 8, valid, 1760U + width);
+        failures += run_case(16, 48, width, 8, valid, 1760U + width);
     }
-    failures += run_case(48, 5, 3, {5, 3, 1}, 1791U);
+    failures += run_case(16, 48, 5, 3, {5, 3, 1}, 1791U);
+    // One rank's 8/24 shard of 16/48 under two-device tensor parallelism, at the MTP verify widths.
+    failures += run_case(8, 24, 4, 1, {}, 1801U);
+    failures += run_case(8, 24, 6, 8, {6, 5, 4, 3, 2, 1, 6, 2}, 1811U);
+    failures += run_case(8, 24, 16, 3, {16, 9, 1}, 1821U);
     std::cout << (failures == 0 ? "OK" : "FAIL") << " gated_delta_net_replay_record\n";
     return failures == 0 ? 0 : 1;
 }

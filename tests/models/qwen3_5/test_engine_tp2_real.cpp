@@ -47,10 +47,9 @@ ninfer::EngineOptions engine_options(const char* artifact) {
     options.prefill_chunk        = 1024;
     options.max_concurrency      = 2;
     options.max_pending_requests = 4;
-    // Rank 1's KV and StateImages have no Host tier; the Device StateImage and private catalog
-    // floors come from the Engine's tp 2 defaults.
-    options.context_cache.host_state_slots       = 0;
-    options.context_cache.host_kv_capacity_bytes = 0;
+    // Rank 1's KV and StateImages have no Host copy, so the Host budget must be zero; the Device
+    // checkpoint pool floor comes from the Engine's tp 2 default (max(2 * concurrency, 8)).
+    options.context_cache.host_capacity_bytes = 0;
     return options;
 }
 
@@ -105,10 +104,11 @@ int exercise_load(const ninfer::Engine& engine) {
         return 1;
     }
     const ninfer::EngineOptions& options = engine.options();
-    if (options.context_cache.host_state_slots != 0 ||
-        options.context_cache.host_kv_capacity_bytes != 0 ||
-        options.context_cache.device_state_slots.value_or(0) < 8 ||
-        options.context_cache.max_private_continuations.value_or(0) < 8) {
+    // This tree exposes a Device state pool and one Host budget; the donor's separate Host-state,
+    // Host-KV and private-catalog knobs do not exist here. The tp 2 defaults this tree applies are
+    // the max(2 * concurrency, 8) Device checkpoint pool and a zero Host budget.
+    if (options.context_cache.host_capacity_bytes.value_or(0) != 0 ||
+        options.context_cache.device_state_slots.value_or(0) < 8) {
         std::cerr << "tp 2 context-cache defaults were not applied\n";
         return 1;
     }
@@ -158,8 +158,9 @@ int exercise_prefix_reuse(ninfer::Engine& engine) {
     const auto conversation = [] {
         ninfer::PromptInput input = user_prompt(
             "Tieni a mente il codice 4817 e il colore verde. Per ora rispondi soltanto: OK.");
+        // A named session lineage whose index advances on each turn is this tree's live-session
+        // retention: `session_key` plus the default `update_session_index`.
         input.context_cache.session_key = "tp2-real";
-        input.context_cache.retention   = ninfer::CacheRetentionHint::LiveSession;
         return input;
     };
     const ninfer::GenerationResult first =
@@ -220,21 +221,21 @@ std::string long_document() {
 }
 
 void print_cache_stats(const ninfer::RuntimeStats& before, const ninfer::RuntimeStats& after) {
+    // This tree reports context-cache selections coarsely (root vs checkpoint) and expresses context
+    // pressure as spilled pages plus live occupancy: the donor's per-reuse-path selection counters
+    // and per-owner eviction counters do not exist here, so the tensor-parallel evidence line names
+    // what this build actually observes.
     std::cerr << "  captures completed " << after.active_captures_completed << " aborted "
               << after.active_captures_aborted << "; selections root "
-              << after.root_selections - before.root_selections << " endpoint "
-              << after.private_endpoint_selections - before.private_endpoint_selections
-              << " turn-closure "
-              << after.private_turn_closure_selections - before.private_turn_closure_selections
-              << " anchor "
-              << after.private_long_anchor_selections - before.private_long_anchor_selections
-              << " shared "
-              << after.shared_stable_prefix_selections - before.shared_stable_prefix_selections
-              << "; computed prefill "
+              << after.root_selections - before.root_selections << " checkpoint "
+              << after.checkpoint_selections - before.checkpoint_selections << " reused tokens "
+              << after.reused_prompt_tokens - before.reused_prompt_tokens << "; computed prefill "
               << after.computed_prefill_tokens - before.computed_prefill_tokens
-              << "; evicted private " << after.pressure_private_owners_evicted << " shared "
-              << after.pressure_shared_owners_evicted << " checkpoints dropped "
-              << after.pressure_checkpoints_dropped << '\n';
+              << "; pressure spill pages "
+              << after.pressure_spill_pages - before.pressure_spill_pages << "; state forks "
+              << after.state_forks - before.state_forks << " moves "
+              << after.state_moves - before.state_moves << "; device state slots occupied "
+              << after.device_state_occupied_slots << '\n';
 }
 
 int exercise_long_prefix_reuse(ninfer::Engine& engine, const char* label) {

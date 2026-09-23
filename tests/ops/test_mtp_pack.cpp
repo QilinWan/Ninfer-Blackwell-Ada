@@ -68,28 +68,32 @@ int pack_case(std::int32_t hidden, std::int32_t tokens) {
     return failures;
 }
 
-int split_case(std::int32_t tokens) {
-    constexpr std::int32_t kInputRows = 14336;
-    constexpr std::int32_t kQueryRows = 6144;
-    constexpr std::int32_t kKvRows    = 1024;
-    const auto input = bit_pattern(static_cast<std::size_t>(kInputRows) * tokens, 0x2468'ace0u);
-    std::vector<std::uint16_t> expected_query(static_cast<std::size_t>(kQueryRows) * tokens);
-    std::vector<std::uint16_t> expected_key(static_cast<std::size_t>(kKvRows) * tokens);
-    std::vector<std::uint16_t> expected_gate(static_cast<std::size_t>(kQueryRows) * tokens);
-    std::vector<std::uint16_t> expected_value(static_cast<std::size_t>(kKvRows) * tokens);
+// `shard` selects one rank's two-device shard [7168,T] (12 query/gate and 2 KV heads) instead of
+// the whole projection [14336,T].
+int split_case(std::int32_t tokens, bool shard) {
+    const std::int32_t input_rows = shard ? 7168 : 14336;
+    const std::int32_t query_rows = shard ? 3072 : 6144;
+    const std::int32_t kv_rows    = shard ? 512 : 1024;
+    const std::int32_t q_heads    = shard ? 12 : 24;
+    const std::int32_t kv_heads   = shard ? 2 : 4;
+    const auto input = bit_pattern(static_cast<std::size_t>(input_rows) * tokens, 0x2468'ace0u);
+    std::vector<std::uint16_t> expected_query(static_cast<std::size_t>(query_rows) * tokens);
+    std::vector<std::uint16_t> expected_key(static_cast<std::size_t>(kv_rows) * tokens);
+    std::vector<std::uint16_t> expected_gate(static_cast<std::size_t>(query_rows) * tokens);
+    std::vector<std::uint16_t> expected_value(static_cast<std::size_t>(kv_rows) * tokens);
     for (std::int32_t token = 0; token < tokens; ++token) {
-        const std::size_t input_base = static_cast<std::size_t>(token) * kInputRows;
-        for (std::int32_t row = 0; row < kQueryRows; ++row) {
-            expected_query[static_cast<std::size_t>(token) * kQueryRows + row] =
+        const std::size_t input_base = static_cast<std::size_t>(token) * input_rows;
+        for (std::int32_t row = 0; row < query_rows; ++row) {
+            expected_query[static_cast<std::size_t>(token) * query_rows + row] =
                 input[input_base + row];
-            expected_gate[static_cast<std::size_t>(token) * kQueryRows + row] =
-                input[input_base + kQueryRows + kKvRows + row];
+            expected_gate[static_cast<std::size_t>(token) * query_rows + row] =
+                input[input_base + query_rows + kv_rows + row];
         }
-        for (std::int32_t row = 0; row < kKvRows; ++row) {
-            expected_key[static_cast<std::size_t>(token) * kKvRows + row] =
-                input[input_base + kQueryRows + row];
-            expected_value[static_cast<std::size_t>(token) * kKvRows + row] =
-                input[input_base + kQueryRows + kKvRows + kQueryRows + row];
+        for (std::int32_t row = 0; row < kv_rows; ++row) {
+            expected_key[static_cast<std::size_t>(token) * kv_rows + row] =
+                input[input_base + query_rows + row];
+            expected_value[static_cast<std::size_t>(token) * kv_rows + row] =
+                input[input_base + query_rows + kv_rows + query_rows + row];
         }
     }
 
@@ -104,16 +108,17 @@ int split_case(std::int32_t tokens) {
     device_gate.fill(0xcd);
     device_value.fill(0xcd);
 
-    Tensor input_tensor(device_input.data(), DType::BF16, {kInputRows, tokens});
-    Tensor query_tensor(device_query.data(), DType::BF16, {256, 24, tokens});
-    Tensor key_tensor(device_key.data(), DType::BF16, {256, 4, tokens});
-    Tensor gate_tensor(device_gate.data(), DType::BF16, {256, 24, tokens});
-    Tensor value_tensor(device_value.data(), DType::BF16, {256, 4, tokens});
+    Tensor input_tensor(device_input.data(), DType::BF16, {input_rows, tokens});
+    Tensor query_tensor(device_query.data(), DType::BF16, {256, q_heads, tokens});
+    Tensor key_tensor(device_key.data(), DType::BF16, {256, kv_heads, tokens});
+    Tensor gate_tensor(device_gate.data(), DType::BF16, {256, q_heads, tokens});
+    Tensor value_tensor(device_value.data(), DType::BF16, {256, kv_heads, tokens});
     ops::mtp_split_attn_in(input_tensor, query_tensor, key_tensor, gate_tensor, value_tensor,
                            nullptr);
     cuda_synchronize();
 
-    const std::string label = "mtp_split_attn_in T=" + std::to_string(tokens);
+    const std::string label =
+        std::string("mtp_split_attn_in ") + (shard ? "shard " : "") + "T=" + std::to_string(tokens);
     int failures            = 0;
     failures += verify_exact((label + " query").c_str(),
                              from_device<std::uint16_t>(device_query.data(), expected_query.size()),
@@ -152,9 +157,11 @@ int main() {
     failures += pack_case(2048, 1);
     failures += pack_case(2048, 6);
     failures += pack_case(2048, 48);
-    failures += split_case(1);
-    failures += split_case(6);
-    failures += split_case(48);
+    for (const bool shard : {false, true}) {
+        failures += split_case(1, shard);
+        failures += split_case(6, shard);
+        failures += split_case(48, shard);
+    }
     std::cout << (failures ? "FAIL" : "OK") << " mtp_pack\n";
     return failures ? 1 : 0;
 }

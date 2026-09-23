@@ -39,6 +39,12 @@ void mtp_pack_fc_input(const Tensor& embedding_norm, const Tensor& hidden_norm, 
  * Logical shapes:
  *   attn_in [14336,T]; q/gate [256,24,T]; k/v [256,4,T], all contiguous BF16.
  *
+ *   The two-device (tp == 2) shard of the same projection is also registered, selected by
+ *   attn_in's row count: attn_in [7168,T] with rows [0,3072) Q, [3072,3584) K, [3584,6656) Gate
+ *   and [6656,7168) V, and q/gate [256,12,T], k/v [256,2,T]. That is one rank's half of each of
+ *   the four sections in the parent's order, the layout of a rank's Q|K|Gate|V shard parent; the
+ *   head indices are rank-local.
+ *
  * Numeric:
  *   Exact BF16 element copies with only an index remap.
  *

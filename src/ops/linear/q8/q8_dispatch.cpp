@@ -31,6 +31,10 @@ constexpr std::array kShapes{
     shape<Q8N12288K2048>(select_q8_n12288_k2048), shape<Q8N12288K2560>(select_q8_n12288_k2560),
     shape<Q8N14336K5120>(select_q8_n14336_k5120), shape<Q8N16384K2560>(select_q8_n16384_k2560),
     shape<Q8N34816K5120>(select_q8_n34816_k5120), shape<Q8N248320K5120>(select_q8_n248320_k5120),
+    // Two-device halves of the MTP projections, inheriting their parents' schedules.
+    shape<Q8N5120K3072>(select_q8_n5120_k3072),   shape<Q8N5120K5120>(select_q8_n5120_k5120),
+    shape<Q8N5120K8704>(select_q8_n5120_k8704),   shape<Q8N7168K5120>(select_q8_n7168_k5120),
+    shape<Q8N17408K5120>(select_q8_n17408_k5120),
 };
 } // namespace
 

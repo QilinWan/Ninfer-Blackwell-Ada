@@ -55,17 +55,25 @@ void mtp_split_attn_in(const Tensor& attn_in, Tensor& q, Tensor& k, Tensor& gate
     require_bf16_contiguous_nonnull(v, op, "v");
     const std::int32_t tokens = attn_in.ne[1];
     if (tokens <= 0) { throw std::invalid_argument("mtp_split_attn_in: T must be positive"); }
-    require_shape(attn_in, 14336, tokens, op, "attn_in");
-    if (q.ne[0] != 256 || q.ne[1] != 24 || q.ne[2] != tokens || q.ne[3] != 1) {
+    // The whole projection [14336,T] with 24 query/gate and 4 KV heads, or one rank's two-device
+    // shard [7168,T] with 12 and 2.
+    const bool shard = attn_in.ne[0] == 7168;
+    if (attn_in.ne[0] != 14336 && !shard) {
+        throw std::invalid_argument("mtp_split_attn_in: unregistered attn_in row geometry");
+    }
+    const std::int32_t q_heads  = shard ? 12 : 24;
+    const std::int32_t kv_heads = shard ? 2 : 4;
+    require_shape(attn_in, attn_in.ne[0], tokens, op, "attn_in");
+    if (q.ne[0] != 256 || q.ne[1] != q_heads || q.ne[2] != tokens || q.ne[3] != 1) {
         throw std::invalid_argument("mtp_split_attn_in: invalid shape for q");
     }
-    if (k.ne[0] != 256 || k.ne[1] != 4 || k.ne[2] != tokens || k.ne[3] != 1) {
+    if (k.ne[0] != 256 || k.ne[1] != kv_heads || k.ne[2] != tokens || k.ne[3] != 1) {
         throw std::invalid_argument("mtp_split_attn_in: invalid shape for k");
     }
-    if (gate.ne[0] != 256 || gate.ne[1] != 24 || gate.ne[2] != tokens || gate.ne[3] != 1) {
+    if (gate.ne[0] != 256 || gate.ne[1] != q_heads || gate.ne[2] != tokens || gate.ne[3] != 1) {
         throw std::invalid_argument("mtp_split_attn_in: invalid shape for gate");
     }
-    if (v.ne[0] != 256 || v.ne[1] != 4 || v.ne[2] != tokens || v.ne[3] != 1) {
+    if (v.ne[0] != 256 || v.ne[1] != kv_heads || v.ne[2] != tokens || v.ne[3] != 1) {
         throw std::invalid_argument("mtp_split_attn_in: invalid shape for v");
     }
 

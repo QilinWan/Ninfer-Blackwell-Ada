@@ -452,6 +452,10 @@ struct FoldGeometry {
 
 using FoldGeometry48x48 = FoldGeometry<48, 16, 48, 10240>;
 using FoldGeometry30x32 = FoldGeometry<30, 16, 32, 8192>;
+// One rank's shard of FoldGeometry48x48 under two-device tensor parallelism: 8 key heads, 24 value
+// heads and their 5120 convolution channels. The split keeps every group of three value heads with
+// its key head, so the value-to-key head map is the parent's restricted to the rank.
+using FoldGeometry48x24 = FoldGeometry<48, 8, 24, 5120>;
 
 template <class Geometry>
 struct FoldAccess {

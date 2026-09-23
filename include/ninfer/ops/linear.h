@@ -86,8 +86,9 @@ enum class LinearPolicy : std::uint8_t {
  * register the seven non-vocabulary FP8 geometries — the five parents plus the shards
  * `[17408,5120]` and `[5120,8704]` — and accept every positive T. Q8 and BF16 register the exact
  * physical N/K problems in their format-owned shape registries; the BF16 registry includes the
- * two-device shards `[7168,5120]` and `[5120,3072]`. Text/MTP problems accept every positive column
- * extent T. Registered Vision problems accept raw-patch P in
+ * two-device shards `[7168,5120]` and `[5120,3072]`, and the Q8 registry includes the MTP halves
+ * `[5120,5120]`, `[7168,5120]`, `[17408,5120]`, `[5120,3072]` and `[5120,8704]`. Text/MTP problems
+ * accept every positive column extent T. Registered Vision problems accept raw-patch P in
  * `{4,8,...,131072}` or merged-token V in `[1,32768]`; a matrix column does not inherently
  * represent a text token. FP32 is unsupported.
  *
