@@ -1,8 +1,24 @@
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-  libavformat libavcodec libavutil libswscale)
+if(NINFER_ENABLE_VISION)
+  # The media decoder uses the FFmpeg 6 packet side-data API (av_packet_side_data_get). Ubuntu
+  # 22.04 and Debian 11 ship FFmpeg 4/5, where decode.cpp fails to compile; require the floor at
+  # configure time and point at the option instead.
+  pkg_check_modules(FFMPEG IMPORTED_TARGET
+    libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7)
+  if(NOT FFMPEG_FOUND)
+    if(FFMPEG_libavcodec_VERSION)
+      set(NINFER_FFMPEG_FOUND "found libavcodec ${FFMPEG_libavcodec_VERSION}")
+    else()
+      set(NINFER_FFMPEG_FOUND "no libavcodec >= 60 was reported by pkg-config")
+    endif()
+    message(FATAL_ERROR
+      "NINFER_ENABLE_VISION=ON needs FFmpeg 6 or newer development packages (${NINFER_FFMPEG_FOUND})."
+      " Install libavformat-dev/libavcodec-dev/libswscale-dev from Ubuntu 24.04 or newer, or"
+      " configure with -DNINFER_ENABLE_VISION=OFF for a text-only engine.")
+  endif()
+endif()
 
 # Repository-pinned header dependencies. No configure-time downloads.
 add_library(ninfer::json INTERFACE IMPORTED GLOBAL)

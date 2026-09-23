@@ -18,6 +18,11 @@ project(ninfer LANGUAGES C CXX CUDA)
 option(NINFER_BUILD_APPS "Build the NInfer CLI, server and perplexity evaluator" ON)
 option(BUILD_TESTING "Build NInfer tests" OFF)
 option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
+# Media decoding (image/video input for the vision encoder) links FFmpeg. Downstream
+# users who only run text generation can configure without the FFmpeg development
+# packages; the vision route then fails with an explicit message instead of a
+# configure-time dependency error.
+option(NINFER_ENABLE_VISION "Build the FFmpeg-backed media decoder" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
