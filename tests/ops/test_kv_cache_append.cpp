@@ -368,7 +368,20 @@ void encode_full_group(const std::vector<float>& source, std::size_t source_base
         scale_bits;
 }
 
+// An Ada build contains no FP4 append kernel at all (cmake/Sm89Compat.cmake), so a case that asks
+// for an FP4 KV layout reports itself as not applicable instead of reaching a route that cannot
+// exist here. Every sweep in this file goes through this one entry point.
+[[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
+#ifdef NINFER_SM89
+    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
+#else
+    static_cast<void>(storage);
+    return true;
+#endif
+}
+
 int full_append_case(int kv_heads, KvCacheStorage storage, int tokens = 3) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const TestCacheLayout layout = test_cache_layout(storage);
     const int first_position     = tokens >= 128 ? 61 : 63;
     const int logical_pages      = (first_position + tokens + kPage - 1) / kPage;
@@ -1394,13 +1407,8 @@ int main(int argc, char** argv) {
         failures += full_append_case(kv_heads, KvCacheStorage::BFloat16);
         failures += full_append_case(kv_heads, KvCacheStorage::Int8Group64);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8E4M3Row256);
-#ifdef NINFER_SM89
-        // No FP4 append kernel exists in an Ada build; the --nvfp4-only/--k8v4-only entries are
-        // disabled for it in tests/CMakeLists.txt, and the default sweep skips them here.
-#else
         failures += full_append_case(kv_heads, KvCacheStorage::Nvfp4Group16);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8KeyNvfp4Value);
-#endif
     }
     failures += full_append_case(2, KvCacheStorage::Int8Group64, 129);
     failures += full_append_case(2, KvCacheStorage::Fp8E4M3Row256, 129);

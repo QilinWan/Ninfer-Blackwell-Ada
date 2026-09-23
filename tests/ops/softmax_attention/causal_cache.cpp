@@ -1730,6 +1730,7 @@ void inject_codec_edges(const Geometry& geometry, std::int32_t tokens, std::vect
 
 int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const AttentionCase& test_case,
                 MappingPattern mapping) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -1829,6 +1830,7 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
 
 int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const AttentionCase& test_case,
                 MappingPattern mapping) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -1943,6 +1945,7 @@ int verify_invalid_columns_zero(const std::string& label, std::span<const std::u
 
 int run_batch_case(const Geometry& geometry, KvCacheStorage storage,
                    const BatchAttentionCase& test_case) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const int batch = test_case.contexts.size(), width = test_case.width;
     const int pool_rows = std::max(
         batch, *std::max_element(test_case.table_rows.begin(), test_case.table_rows.end()) + 1);
@@ -2181,7 +2184,6 @@ int run_dflash2_cases() {
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
-        if (!kv_storage_supported(storage)) { continue; }
         const auto run = [&](int width, int batch, int base, bool graph) {
             BatchAttentionCase c{width,
                                  {},
@@ -2226,7 +2228,6 @@ int run_batch_cases() {
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
-        if (!kv_storage_supported(storage)) { continue; }
         failures += run_batch_case(kGeometries[0], storage,
                                    {16, {0}, {0}, {0}, MappingPattern::Fragmented, 1501u});
         failures += run_batch_case(kGeometries[0], storage,
