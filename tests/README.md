@@ -170,11 +170,13 @@ NINFER_TEST_ARTIFACT=$PWD/out/qwen3_6_35b_a3b.ninfer \
 The two-device tests need two CUDA devices and split the artifact across devices 0 and 1. The MTP
 test compares MTP (K=3) answers with the same tp 2 model without speculation, checks the draft
 acceptance and runs two-lane MTP rounds; its `optimized_real` variant selects the optimized
-proposal head:
+proposal head. The DFlash2 test (K=4, optimized proposal head) requires answers identical to the
+tp 2 model without speculation on three short prompts, a nonzero acceptance, two-lane DFlash2
+rounds and prefix reuse across two turns:
 
 ```bash
 NINFER_TEST_ARTIFACT=$PWD/out/qwen3_8_27b_nvfp4.ninfer \
-  ctest --test-dir build -R 'ninfer_qwen3_5_engine_(mtp_)?tp2' --output-on-failure
+  ctest --test-dir build -R 'ninfer_qwen3_5_engine_((mtp|dflash2)_)?tp2' --output-on-failure
 ```
 
 Without `NINFER_TEST_ARTIFACT`, CTest marks these real Engine tests as skipped. Real-artifact targets
