@@ -107,17 +107,23 @@ std::size_t free_device_bytes(int device) {
     return free_bytes;
 }
 
-// The bottleneck rank's free bytes; one rank at width 1.
-std::size_t free_runtime_bytes(const DeviceContext& primary, const ExecutionContext* execution) {
-    std::size_t free_bytes = free_device_bytes(primary.device);
+// Each rank's free device bytes, indexed by rank; one rank at width 1.
+std::vector<std::size_t> rank_free_bytes(const DeviceContext& primary,
+                                         const ExecutionContext* execution) {
+    std::vector<std::size_t> free_bytes{free_device_bytes(primary.device)};
     if (execution != nullptr) {
         for (int rank = 1; rank < execution->tp; ++rank) {
-            free_bytes =
-                std::min(free_bytes,
-                         free_device_bytes(execution->dev[static_cast<std::size_t>(rank)]->device));
+            free_bytes.push_back(
+                free_device_bytes(execution->dev[static_cast<std::size_t>(rank)]->device));
         }
     }
     return free_bytes;
+}
+
+// The bottleneck rank's free bytes.
+std::size_t free_runtime_bytes(const DeviceContext& primary, const ExecutionContext* execution) {
+    const auto free_bytes = rank_free_bytes(primary, execution);
+    return *std::min_element(free_bytes.begin(), free_bytes.end());
 }
 
 void synchronize_ranks(const DeviceContext& primary, const ExecutionContext* execution) {
@@ -258,13 +264,7 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
     auto planner = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
     // Every rank reserves the same per-rank layout and addresses the same KV pages, so one page
     // count is resolved against the tightest rank's own free memory.
-    std::vector<std::size_t> rank_budgets{free_device_bytes(device.device)};
-    if (execution != nullptr) {
-        for (int rank = 1; rank < execution->tp; ++rank) {
-            rank_budgets.push_back(
-                free_device_bytes(execution->dev[static_cast<std::size_t>(rank)]->device));
-        }
-    }
+    std::vector<std::size_t> rank_budgets = rank_free_bytes(device, execution);
     auto resolution =
         resolve_kv_capacity_symmetric(options.kv_capacity, planner.capacity_curve(), rank_budgets);
     auto sequence = std::move(planner).finalize(resolution.main_page_groups);
