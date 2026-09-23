@@ -30,8 +30,9 @@ jobs:
             image: nvidia/cuda:13.1.2-devel-ubuntu24.04
             arch: "89"
             vision: "OFF"
+          # 12.8 is the floor for the Ada build: <cuda_fp4.h> arrives with CUDA 12.8.
           - name: sm89-cuda12-full
-            image: nvidia/cuda:12.6.3-devel-ubuntu24.04
+            image: nvidia/cuda:12.8.1-devel-ubuntu24.04
             arch: "89"
             vision: "ON"
           - name: sm120a-cuda13-upstream-path
@@ -78,4 +79,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build the reproducible Ada image
-        run: docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 .
+        run: docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04 .

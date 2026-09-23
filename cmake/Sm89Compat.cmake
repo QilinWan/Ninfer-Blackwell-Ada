@@ -18,6 +18,16 @@ if(NOT NINFER_SM89_BUILD)
   return()
 endif()
 
+# The Ada build keeps the FP4 *decode* routes that run as SIMT on Ada, and those translation units
+# include <cuda_fp4.h>, which the CUDA toolkit only ships from 12.8. Say so here rather than letting
+# the build fail as a wall of "cuda_fp4.h: No such file or directory".
+if(CUDAToolkit_VERSION VERSION_LESS "12.8")
+  message(FATAL_ERROR
+    "The sm_89 build needs CUDA 12.8 or newer (found ${CUDAToolkit_VERSION}): <cuda_fp4.h>, which "
+    "the retained FP4 decode paths include, was added in CUDA 12.8. Either upgrade the toolkit or "
+    "build the upstream sm_120a target.")
+endif()
+
 set(NINFER_SM89_DROPPED_PATTERNS
   "/nvfp4/.*w4a4.*\\.cu$"
   "/nvfp4/shapes/.*\\.cu$"
