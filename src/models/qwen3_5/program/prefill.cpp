@@ -73,7 +73,8 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
     TextContext card(state.execution.device, state.execution.parameters, state.execution.work,
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
-                     state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
+                     state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache,
+                     state.execution.tp);
     configure_text_card(card, state.execution, state.sampling, state.state_source_slot,
                         state.state_destination_slot, state.mtp_proposal_extent);
     card.set_prefill_gpu_timer(state.prefill_gpu_timer);
@@ -98,7 +99,8 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
     TextContext card(state.execution.device, state.execution.parameters, state.execution.work,
                      state.text_kv, state.execution.linear_attention, state.execution.io,
                      state.execution.prefill_hidden, state.execution.prefill_chunk,
-                     state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache);
+                     state.text_kv_base, state.mtp_kv, &state.text_cache, state.mtp_cache,
+                     state.execution.tp);
     configure_text_card(card, state.execution, state.sampling, state.state_source_slot,
                         state.state_destination_slot, state.mtp_proposal_extent);
     card.set_prefill_gpu_timer(state.prefill_gpu_timer);
@@ -153,6 +155,12 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
 
 void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_t absolute_position,
                         std::int32_t purpose) {
+    if (state.execution.tp != nullptr) {
+        // Rank 0 holds half of the vocabulary-split output head. Admission declines every
+        // zero-suffix reuse at tensor-parallel width 2, so this is a backstop.
+        throw std::logic_error(
+            "sampling from a retained hidden is not implemented at tensor-parallel width 2");
+    }
     if (hidden.dtype != DType::BF16 ||
         hidden.ne[0] != dimension(state.execution.parameters.model.config().text.hidden_size) ||
         hidden.ne[1] != 1 || hidden.ne[2] != 1 || hidden.ne[3] != 1 || hidden.data == nullptr) {
@@ -208,6 +216,8 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle handle,
         set_device_i32(io.backend_kv_table_row,
                        backend_kv_addresses->bound_row(*state.kv->backend));
     }
+    // Every prefill step publishes its own rows on every rank.
+    publish_peer_kv_rows(state);
     grammar_dead_positions[0] = 0;
     if (requests[lane].prefill && permit.main_frontier >= requests[lane].prefill->prompt_tokens &&
         masks && masks->constrained(0)) {
@@ -413,12 +423,12 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
         }
 
         timing.begin_wait();
-        device.synchronize();
+        synchronize_devices();
         timing.end_wait();
         work.reset();
     } catch (...) {
         try {
-            device.synchronize();
+            synchronize_devices();
         } catch (...) {}
         work.reset();
         clear_execution_failure_lanes(lanes);
@@ -514,7 +524,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         execution::PrefillContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, tp_binding(), graph_peer_bridge()},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,
@@ -714,7 +724,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                                        cudaMemcpyDeviceToHost, device.stream));
         }
         timing.begin_wait();
-        device.synchronize();
+        synchronize_devices();
         timing.end_wait();
         staged.elapsed_seconds += std::chrono::duration<double>(Clock::now() - started).count();
         const double vision_seconds = staged.retired_vision_seconds +
@@ -766,7 +776,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
     } catch (...) {
         timing.begin_wait();
         try {
-            device.synchronize();
+            synchronize_devices();
         } catch (...) {}
         timing.end_wait();
         const std::uint32_t lane = sequence.lane;

@@ -38,6 +38,11 @@ struct ExecutionCore {
     Tensor& prefill_hidden;
     std::uint32_t prefill_chunk;
     ProposalHead proposal_head;
+    // Tensor-parallel width 2 only: rank 1's operands, which every Text call built from this core
+    // (prefill, forced tokens, ordinary decode) drives in lockstep, and the bridge that enrolls
+    // rank 1's stream in a decode-graph capture.
+    const TpExecution* tp                     = nullptr;
+    const DecodeGraphPeerBridge* graph_bridge = nullptr;
 };
 
 struct PrefillContext {
@@ -66,6 +71,8 @@ struct OrdinaryBatchContext {
     const qwen3_5::OrdinaryDecodeIngress& host_ingress;
     qwen3_5::OrdinaryDecodeEgress& host_egress;
     Tensor& continuation_hidden_store;
+    // Tensor-parallel width 2 only: rank 1's frame, which receives the same host ingress record.
+    qwen3_5::OrdinaryDecodeState* peer_frame = nullptr;
 };
 
 struct MtpBatchContext {

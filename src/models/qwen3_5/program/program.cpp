@@ -319,4 +319,27 @@ std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
     return std::unique_ptr<Program>(new Program(std::move(impl)));
 }
 
+std::unique_ptr<Program> create_program(const execution::Parameters& parameters,
+                                        const execution::Parameters& peer_parameters,
+                                        SequencePlan&& plan, ExecutionContext& execution,
+                                        const StartupObserver& startup_observer) {
+    if (plan.impl_ == nullptr) { throw std::invalid_argument("sequence plan is empty"); }
+    if (plan.impl_->parameters != &parameters) {
+        throw std::invalid_argument("sequence plan belongs to another model instance");
+    }
+    if (execution.tp != 2 || plan.impl_->tp != 2 || !execution.dev[0] || !execution.dev[1]) {
+        throw std::invalid_argument("tensor-parallel Program requires a two-device plan and "
+                                    "ExecutionContext");
+    }
+    // The plan is frozen against the device it runs on, at both ranks' widths: rank 0 executes on
+    // execution.dev[0], so its SM count must match the plan's, exactly as in the one-device seam.
+    if (plan.impl_->multiprocessor_count != execution.dev[0]->multiprocessor_count()) {
+        throw std::invalid_argument("sequence plan device capacity does not match execution");
+    }
+    auto impl = std::make_unique<detail::ProgramImpl>(
+        parameters, *plan.impl_, *execution.dev[0], startup_observer, &execution, &peer_parameters);
+    plan.impl_.reset();
+    return std::unique_ptr<Program>(new Program(std::move(impl)));
+}
+
 } // namespace ninfer::models::qwen3_5

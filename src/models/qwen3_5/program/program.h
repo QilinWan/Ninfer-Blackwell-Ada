@@ -14,7 +14,8 @@
 
 namespace ninfer {
 struct DeviceContext;
-}
+struct ExecutionContext;
+} // namespace ninfer
 
 namespace ninfer::models::qwen3_5 {
 namespace execution {
@@ -74,6 +75,9 @@ private:
 
     friend std::unique_ptr<Program> create_program(const execution::Parameters&, SequencePlan&&,
                                                    DeviceContext&, const StartupObserver&);
+    friend std::unique_ptr<Program> create_program(const execution::Parameters&,
+                                                   const execution::Parameters&, SequencePlan&&,
+                                                   ExecutionContext&, const StartupObserver&);
 };
 
 class SequencePlanner {
@@ -496,10 +500,20 @@ private:
     std::unique_ptr<detail::ProgramImpl> impl_;
     friend std::unique_ptr<Program> create_program(const execution::Parameters&, SequencePlan&&,
                                                    DeviceContext&, const StartupObserver&);
+    friend std::unique_ptr<Program> create_program(const execution::Parameters&,
+                                                   const execution::Parameters&, SequencePlan&&,
+                                                   ExecutionContext&, const StartupObserver&);
 };
 
 [[nodiscard]] SequencePlanner make_sequence_planner(const execution::Parameters&, DeviceContext&,
                                                     const EngineOptions&);
 [[nodiscard]] std::unique_ptr<Program> create_program(const execution::Parameters&, SequencePlan&&,
                                                       DeviceContext&, const StartupObserver&);
+
+// Tensor-parallel width 2: the two Parameters are Parameters(model, 0) and Parameters(model, 1) of
+// one two-device Model; rank r executes on execution.dev[r]. The plan must come from a planner
+// configured with tp 2.
+[[nodiscard]] std::unique_ptr<Program> create_program(const execution::Parameters&,
+                                                      const execution::Parameters&, SequencePlan&&,
+                                                      ExecutionContext&, const StartupObserver&);
 } // namespace ninfer::models::qwen3_5

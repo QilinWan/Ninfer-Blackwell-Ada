@@ -171,6 +171,9 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
         set_device_i32(io.backend_kv_table_row,
                        sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend)
                                             : 0);
+        // Each replay chunk prefills through the row scalars; publish this lane's rows on every
+        // rank.
+        publish_peer_kv_rows(sequence);
 
         const std::uint32_t cursor        = request.replay_cursor;
         const std::uint32_t prompt_tokens = request.base->summary.prompt_tokens;

@@ -2,8 +2,11 @@
 #include "models/qwen3_5/program/internal.h"
 
 #include "core/arena.h"
+#include "core/device.h"
+#include "core/device_scope.h" // ninfer::ScopedCurrentDevice (rank 1 allocation and uploads)
 #include "core/gdn_replay_records.h"
 #include "core/host_kv_arena.h"
+#include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
@@ -17,6 +20,7 @@
 #include "models/qwen3_5/program/prefix_identity.h"
 #include "core/host_context_arena.h"
 #include "models/qwen3_5/execution/text.h"
+#include "models/qwen3_5/execution/tp.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_prefill.h"
 
@@ -253,8 +257,11 @@ struct ResumeStateImpl {
 
 class ProgramImpl {
 public:
+    // `execution_in` and `peer_parameters_in` are null at tensor-parallel width 1. At width 2
+    // `device` is execution_in->dev[0] and `peer_parameters_in` is Parameters(model, 1).
     ProgramImpl(const execution::Parameters&, const SequencePlanImpl&, DeviceContext&,
-                const StartupObserver&);
+                const StartupObserver&, ExecutionContext* execution_in = nullptr,
+                const execution::Parameters* peer_parameters_in = nullptr);
     ~ProgramImpl() noexcept;
     [[nodiscard]] RequestBasePlan plan_request(PreparedPromptData&&,
                                                const runtime::ResolvedExecutionOptions&);
@@ -352,6 +359,46 @@ public:
     const std::size_t kv_payload_bytes;
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;
+
+    // Tensor-parallel rank 1 (width 2 only). It holds the same persistent and workspace layout as
+    // rank 0 on ExecutionContext::dev[1]; its KV page pool, KV execution tables and StateImages
+    // are mirrors that rank 0's pools drive, so rank 0's bookkeeping names both ranks' storage.
+    // Only the Text KV, the GDN/hidden StateImages, the prefill KV row and the ordinary decode
+    // frame are read on rank 1. Declared before rank 0's storage so it is destroyed after it:
+    // rank 0's execution tables hold rank 1's row leases until they are destroyed, and rank 0's
+    // graphs hold rank 1 nodes and events.
+    struct PeerRuntime {
+        PeerRuntime(DeviceContext& device, const SequencePlanImpl& plan);
+
+        DeviceContext& device;
+        DeviceArena persistent;
+        DeviceArena workspace_storage;
+        WorkspaceArena work;
+        std::unique_ptr<qwen3_5::DecoderState> decoder;
+        std::unique_ptr<qwen3_5::StateImageDevicePool> state_images;
+        qwen3_5::RoundState io;
+        execution::OrdinaryPeerFrame ordinary;
+    };
+
+    ExecutionContext* execution_context          = nullptr;
+    const execution::Parameters* peer_parameters = nullptr;
+    std::unique_ptr<PeerRuntime> peer;
+    std::optional<ops::PeerEvents> peer_events;
+    std::optional<DecodeGraphPeerBridge> graph_bridge;
+    std::optional<execution::TpExecution> tp_execution;
+
+    [[nodiscard]] bool tensor_parallel() const noexcept { return peer != nullptr; }
+
+    [[nodiscard]] const execution::TpExecution* tp_binding() const noexcept {
+        return tp_execution ? &*tp_execution : nullptr;
+    }
+
+    [[nodiscard]] const DecodeGraphPeerBridge* graph_peer_bridge() const noexcept {
+        return graph_bridge ? &*graph_bridge : nullptr;
+    }
+
+    // Waits for rank 1 and then rank 0; at width 1 only rank 0.
+    void synchronize_devices() const;
 
     DeviceArena persistent;
     DeviceArena workspace_storage;
@@ -568,6 +615,12 @@ public:
     void install_sampling(SequenceState& sequence, RequestControl& request,
                           const ops::SamplingConfig& config);
     void set_device_i32(Tensor& tensor, std::int32_t value);
+    // Rank 1's copy of an I32 control scalar, uploaded on rank 1's stream.
+    void set_peer_i32(Tensor& tensor, std::int32_t value);
+    void attach_tensor_parallel_mirrors();
+    // Writes rank 1's prefill Text KV row scalar to the row rank 0 just published, and checks the
+    // mirrored execution tables agree. No-op at width 1.
+    void publish_peer_kv_rows(const SequenceState& sequence);
     void copy_tail(SequenceState& sequence, const Tensor& source);
     void copy_round_token();
     void
