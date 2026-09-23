@@ -137,6 +137,43 @@ Tensor post_mixer_hidden(Allocator& allocator, const TextConfig& config, std::in
     return matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens);
 }
 
+// Tensor-parallel (tp == 2) calls run the recipes above on each rank's own arena with the rank's
+// share of the config (execution::shard_text_config): the attention, GDN, FFN and vocabulary
+// extents are halved and the hidden/residual extent is not. These two recipes are the tp-only
+// roots of one call.
+
+// The all-reduce staging of one call: every row-parallel projection of every layer reuses it, one
+// per rank, because each all-reduce leaves its source and staging free on return.
+struct TensorParallelCallRoots {
+    Tensor staging;
+};
+
+template <class Allocator>
+TensorParallelCallRoots tp_call_roots(Allocator& allocator, const TextConfig& config,
+                                      std::int32_t tokens) {
+    return {matrix(allocator, DType::BF16, dimension(config.hidden_size), tokens)};
+}
+
+// The vocabulary-split logits of `columns` final hidden columns on one rank: this rank's rows of
+// the output head, and on rank 1 the complete [V, columns] gather destination the row gather also
+// writes there (rank 0 gathers into the caller's logits).
+struct TensorParallelLogitsRoots {
+    Tensor partial;
+    Tensor gathered;
+};
+
+template <class Allocator>
+TensorParallelLogitsRoots tp_logits(Allocator& allocator, const TextConfig& config,
+                                    std::int32_t shard_rows, std::int32_t columns,
+                                    bool gather_destination) {
+    TensorParallelLogitsRoots out;
+    out.partial = matrix(allocator, DType::BF16, shard_rows, columns);
+    if (gather_destination) {
+        out.gathered = matrix(allocator, DType::BF16, dimension(config.vocab_size), columns);
+    }
+    return out;
+}
+
 struct MtpStemRoots {
     Tensor embedding;
     Tensor normalized_embedding;

@@ -1,5 +1,6 @@
 #include "models/qwen3_5/execution/attention.h"
 
+#include "models/qwen3_5/execution/linear.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/rope.h"
 
@@ -17,7 +18,52 @@ void require_rope_axes(const Tensor& positions, const RopeConfig& config) {
     }
 }
 
+const LinearParameters& split_projection(const AttentionParameters& parameters) {
+    const auto* single = std::get_if<LinearParameters>(&parameters.projection);
+    if (single == nullptr) {
+        throw std::invalid_argument("tensor-parallel attention projection: a paired Q|K + gate|V "
+                                    "projection has no two-device route");
+    }
+    return *single;
+}
+
 } // namespace
+
+std::size_t attention_projection_split_workspace_bytes(const AttentionParameters& parameters,
+                                                       std::int32_t first, std::int32_t last) {
+    if (first <= 0 || last < first) {
+        throw std::invalid_argument("attention projection: invalid column interval");
+    }
+    const auto& single = split_projection(parameters);
+    return ops::attn_input_proj_column_parallel_workspace_capacity_bytes(
+        single.weight.qtype, single.policy, first, last);
+}
+
+void attention_projection_split(const std::array<Tensor, 2>& hidden,
+                                const std::array<const AttentionParameters*, 2>& parameters,
+                                const std::array<Tensor, 2>& query,
+                                const std::array<Tensor, 2>& gate, const std::array<Tensor, 2>& key,
+                                const std::array<Tensor, 2>& value,
+                                const std::array<WorkspaceArena*, 2>& workspace,
+                                const ExecutionContext& execution) {
+    const std::array<const LinearParameters*, 2> shards{&split_projection(*parameters[0]),
+                                                        &split_projection(*parameters[1])};
+    const auto policy = split_policy(shards, "tensor-parallel attention projection");
+    auto scope0       = workspace[0]->scope();
+    auto scope1       = workspace[1]->scope();
+    ops::attn_input_proj_column_parallel(hidden, split_weights(shards), query, gate, key, value,
+                                         policy, workspace, execution);
+}
+
+void attention_output_split(const std::array<Tensor, 2>& attention,
+                            const std::array<const AttentionParameters*, 2>& parameters,
+                            const std::array<Tensor, 2>& residual,
+                            const std::array<Tensor, 2>& staging,
+                            const std::array<WorkspaceArena*, 2>& workspace,
+                            const ExecutionContext& execution, const ops::PeerEvents& events) {
+    project_add_row_parallel(attention, {&parameters[0]->output, &parameters[1]->output}, residual,
+                             staging, workspace, execution, events);
+}
 
 std::size_t attention_projection_workspace_bytes(const AttentionParameters& parameters,
                                                  std::int32_t first, std::int32_t last) {
