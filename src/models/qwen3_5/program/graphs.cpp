@@ -428,7 +428,14 @@ void ProgramImpl::prepare_graphs() {
                                                  *dflash_host_egress,
                                                  state_images->continuation_hidden_store(),
                                                  dflash_draft_handoff->tokens(),
-                                                 dflash_draft_handoff->ready};
+                                                 dflash_draft_handoff->ready,
+                                                 // Tensor-parallel width 2: rank 1's own DFlash2
+                                                 // frame and continuation hidden store, which
+                                                 // receive the same ingress record and rank 0's
+                                                 // drafts, as for the MTP round above.
+                                                 peer ? &*peer->io.dflash_decode : nullptr,
+                                                 peer ? &peer->state_images->continuation_hidden_store()
+                                                      : nullptr};
         };
         const auto target_envelope = [&](std::uint32_t frontier) {
             return ops::CausalAttentionExecutionEnvelope{

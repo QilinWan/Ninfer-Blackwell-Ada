@@ -22,26 +22,33 @@ namespace ninfer::models::qwen3_5::detail {
 
 static_assert(std::is_nothrow_move_assignable_v<SpeculativeStats>);
 
+const PersistentLayout& ProgramImpl::PeerRuntime::layout(const SequencePlanImpl& plan) {
+    if (!plan.peer_persistent || plan.peer_persistent->dflash ||
+        plan.peer_persistent->state_images.dflash_local) {
+        throw std::logic_error("tensor-parallel plan has no rank 1 persistent layout");
+    }
+    return *plan.peer_persistent;
+}
+
 ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const SequencePlanImpl& plan)
-    : device(peer_device), persistent(plan.persistent.bytes),
+    : device(peer_device), persistent(layout(plan).bytes),
       workspace_storage(plan.workspace.capacity),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}) {
-    const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
-    decoder = std::make_unique<qwen3_5::DecoderState>(backing, plan.persistent.decoder);
-    state_images = std::make_unique<StateImageDevicePool>(backing, plan.persistent.state_images);
-    if (plan.persistent.replay_records) {
-        replay_records.emplace(backing, *plan.persistent.replay_records);
+    const PersistentLayout& own = layout(plan);
+    const DeviceSpan backing    = persistent.alloc_bytes(own.bytes, 256);
+    decoder                     = std::make_unique<qwen3_5::DecoderState>(backing, own.decoder);
+    state_images = std::make_unique<qwen3_5::StateImageDevicePool>(backing, own.state_images);
+    if (own.replay_records) {
+        replay_records.emplace(backing, *own.replay_records);
         replay_fold.emplace(*replay_records, state_images->linear().all_layers_view());
     }
-    io           = qwen3_5::RoundState(backing, plan.persistent.round);
-    if (!io.ordinary) {
-        throw std::logic_error("tensor-parallel rank 1 has no ordinary decode frame");
-    }
-    io             = qwen3_5::RoundState(backing, plan.persistent.round);
-    prefill_hidden = plan.persistent.prefill_hidden.bind(backing);
-    if (io.ordinary.has_value() == io.mtp_decode.has_value()) {
-        throw std::logic_error(
-            "tensor-parallel rank 1 needs exactly one of the ordinary and MTP decode frames");
+    io             = qwen3_5::RoundState(backing, own.round);
+    prefill_hidden = own.prefill_hidden.bind(backing);
+    if (static_cast<int>(io.ordinary.has_value()) + static_cast<int>(io.mtp_decode.has_value()) +
+            static_cast<int>(io.dflash_decode.has_value()) !=
+        1) {
+        throw std::logic_error("tensor-parallel rank 1 needs exactly one of the ordinary, MTP and "
+                               "DFlash decode frames");
     }
     if (io.ordinary) { ordinary = execution::ordinary_peer_frame(*io.ordinary); }
 }
@@ -120,11 +127,9 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             throw std::invalid_argument(
                 "tensor-parallel Program requires a Host context capacity of 0");
         }
-        if ((speculative_backend != SpeculativeBackend::None &&
-             speculative_backend != SpeculativeBackend::Mtp) ||
-            vision_enabled || causal_scoring) {
-            throw std::invalid_argument("tensor-parallel Program supports ordinary and MTP "
-                                        "text generation only");
+        if (speculative_backend == SpeculativeBackend::DFlash || vision_enabled || causal_scoring) {
+            throw std::invalid_argument("tensor-parallel Program supports ordinary, MTP and "
+                                        "DFlash2 text generation only");
         }
         execution_context = execution_in;
         peer_parameters   = peer_parameters_in;
@@ -254,10 +259,18 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         // Rank 1's prefill row scalar starts at 0; every publish that writes rank 0's writes it.
         set_peer_i32(peer->io.text_kv_table_row, 0);
         set_peer_i32(peer->io.backend_kv_table_row, 0);
-        const bool mtp = speculative_backend == SpeculativeBackend::Mtp;
+        const bool mtp         = speculative_backend == SpeculativeBackend::Mtp;
+        const bool speculative = speculative_backend != SpeculativeBackend::None;
         if (mtp && (!peer->io.mtp || !peer->io.mtp_decode || !peer->replay_records ||
                     peer->decoder->mtp_cache() == nullptr)) {
             throw std::logic_error("tensor-parallel rank 1 has no MTP storage");
+        }
+        // Rank 1 verifies DFlash2 proposals in its own copy of the decode frame and records its
+        // GDN heads for the commit fold; it holds none of the drafter's state.
+        if (is_masked_draft_backend(speculative_backend) &&
+            (!peer->io.dflash_decode || !peer->replay_records ||
+             peer->state_images->dflash_local() != nullptr)) {
+            throw std::logic_error("tensor-parallel rank 1 has no DFlash2 verification storage");
         }
         tp_execution.emplace(execution::TpExecution{
             .execution            = execution_context,
@@ -268,12 +281,12 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             .text_cache           = &peer->decoder->text_kv,
             .text_kv_table_row    = peer->io.text_kv_table_row,
             .ordinary             = peer->io.ordinary ? &peer->ordinary : nullptr,
+            .replay_records       = speculative ? &*peer->replay_records : nullptr,
             .mtp_cache            = mtp ? peer->decoder->mtp_cache() : nullptr,
             .mtp_kv               = {},
             .backend_kv_table_row = mtp ? peer->io.backend_kv_table_row : Tensor{},
             .mtp                  = mtp ? &*peer->io.mtp : nullptr,
             .prefill_hidden       = mtp ? peer->prefill_hidden : Tensor{},
-            .replay_records       = mtp ? &*peer->replay_records : nullptr,
         });
     }
     host_tokens = round_host

@@ -364,15 +364,18 @@ public:
     const std::size_t graph_allowance_bytes;
     const WorkspacePlan workspace_plan;
 
-    // Tensor-parallel rank 1 (width 2 only). It holds the same persistent and workspace layout as
-    // rank 0 on ExecutionContext::dev[1]; its KV page pools, KV execution tables and StateImages
-    // are mirrors that rank 0's pools drive, so rank 0's bookkeeping names both ranks' storage.
-    // Rank 1 reads the Text and MTP KV, the GDN/hidden StateImages, its ReplaySSM records, the
-    // prefill hidden and KV rows, and the ordinary or MTP decode frame. Declared before rank 0's
+    // Tensor-parallel rank 1 (width 2 only). It holds rank 0's workspace layout and rank 0's
+    // persistent layout without the masked drafter's state (SequencePlanImpl::peer_persistent) on
+    // ExecutionContext::dev[1]; its KV page pools, KV execution tables and StateImages are mirrors
+    // that rank 0's pools drive, so rank 0's bookkeeping names both ranks' storage. Rank 1 reads
+    // the Text and MTP KV, the GDN/hidden StateImages, its ReplaySSM records, the prefill hidden
+    // and KV rows, and the ordinary, MTP or DFlash2 decode frame. Declared before rank 0's
     // storage so it is destroyed after it: rank 0's execution tables hold rank 1's row leases
     // until they are destroyed, and rank 0's graphs hold rank 1 nodes and events.
     struct PeerRuntime {
         PeerRuntime(DeviceContext& device, const SequencePlanImpl& plan);
+
+        [[nodiscard]] static const PersistentLayout& layout(const SequencePlanImpl& plan);
 
         DeviceContext& device;
         DeviceArena persistent;

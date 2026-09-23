@@ -85,7 +85,8 @@ struct SequencePlanningInputs {
     int device                        = 0;
     std::int32_t multiprocessor_count = 0;
     // Tensor-parallel width. At 2 every layout below is one rank's: KV heads, GDN channels and
-    // value heads are halved, and both ranks allocate the same layout.
+    // value heads are halved, and both ranks allocate the same layout except the masked drafter's
+    // state, which only rank 0 holds.
     int tp = 1;
     ContextCacheOptions context_cache;
 };
@@ -108,10 +109,13 @@ struct SequencePlanImpl {
     std::int32_t multiprocessor_count = 0;
     int tp              = 1;
     ContextCacheOptions context_cache;
+    // Rank 0's persistent layout, and at tp 2 rank 1's: the same layout without the masked
+    // drafter's state (DFlashPersistentLayout and the StateImage DFlash local slots).
     PersistentLayout persistent;
+    std::optional<PersistentLayout> peer_persistent;
     WorkspacePlan workspace;
     std::size_t graph_allowance_bytes = 0;
-    // Per rank: at tp 2 each device reserves this many bytes.
+    // Per rank: at tp 2 each device is budgeted for rank 0's reservation, which bounds rank 1's.
     std::size_t device_reservation_bytes = 0;
 };
 

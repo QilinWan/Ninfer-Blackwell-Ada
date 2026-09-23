@@ -85,6 +85,9 @@ struct TpExecution {
     Tensor text_kv_table_row;
     // Rank 1's ordinary decode control. Read by ordinary decode only; may be null otherwise.
     const OrdinaryPeerFrame* ordinary = nullptr;
+    // Rank 1's ReplaySSM records of its GDN heads, written by speculative target verification
+    // (MTP and DFlash2); null without a speculative backend.
+    const GdnReplayRecords* replay_records = nullptr;
 
     // --- MTP (speculative backend Mtp only; null or empty otherwise) ----------------------------
     // Rank 1's MTP KV cache (KV heads / 2); like the text cache, its page pool and execution
@@ -101,8 +104,6 @@ struct TpExecution {
     // BF16 [hidden, prefill_chunk] on rank 1: the final-normed prefill chunk, which rank 1's
     // half of the MTP input projection contracts.
     Tensor prefill_hidden;
-    // Rank 1's ReplaySSM records of its GDN heads, written by speculative target verification.
-    const GdnReplayRecords* replay_records = nullptr;
 
     [[nodiscard]] bool complete() const noexcept {
         return execution != nullptr && events != nullptr && parameters != nullptr &&

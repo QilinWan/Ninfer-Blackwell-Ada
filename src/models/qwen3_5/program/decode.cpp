@@ -683,7 +683,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
         execution::DFlashBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, tp_binding(), graph_peer_bridge()},
             decoder->text_kv,
             *dflash,
             *io.dflash_decode,
@@ -691,7 +691,9 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
             *dflash_host_egress,
             state_images->continuation_hidden_store(),
             dflash_draft_handoff->tokens(),
-            dflash_draft_handoff->ready};
+            dflash_draft_handoff->ready,
+            peer ? &*peer->io.dflash_decode : nullptr,
+            peer ? &peer->state_images->continuation_hidden_store() : nullptr};
 
         mark_workspace_usage(workspace_plan.dflash_round);
         const auto batch = static_cast<std::int32_t>(lanes.size());
@@ -719,7 +721,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
         {
             nvtx::ScopedRange wait_range(nvtx::Name::DecodeDFlashWait, nvtx::Category::Control,
                                          static_cast<std::uint64_t>(lanes.size()));
-            device.synchronize();
+            synchronize_devices();
         }
         timing.end_wait();
 
@@ -779,7 +781,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
         try {
             nvtx::ScopedRange wait_range(nvtx::Name::DecodeDFlashWait, nvtx::Category::Control,
                                          static_cast<std::uint64_t>(lanes.size()));
-            device.synchronize();
+            synchronize_devices();
         } catch (...) {}
         timing.end_wait();
         clear_execution_failure_lanes(lanes);
