@@ -165,5 +165,10 @@ int main() {
               }),
               "--tp 3 was accepted");
     failures += check(help.find("--tp") != std::string::npos, "CLI help omits --tp");
+    failures +=
+        check(split.tp_mailbox && !parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp",
+                                          "2", "--devices", "1,0", "--no-tp-mailbox"})
+                                       .tp_mailbox,
+              "--no-tp-mailbox did not disable the captured mailbox transport");
     return failures == 0 ? 0 : 1;
 }

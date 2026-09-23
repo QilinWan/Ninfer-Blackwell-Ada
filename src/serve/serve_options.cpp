@@ -133,7 +133,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--rope-yarn-factor F] [--rope-original-max-position N] "
-           "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--vision] [--no-cuda-graph] [--no-tp-mailbox] [--no-prefix-reuse] "
            "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
            "[--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
@@ -166,6 +166,7 @@ std::string serve_usage_text(const char* argv0) {
            "ordinary, --spec mtp or --spec dflash2 --lm-head-draft decoding with bf16 or int8 "
            "KV; it defaults the Device checkpoint pool to max(2x concurrency,8) and the Host "
            "budget to 0\n"
+           "       --no-tp-mailbox keeps the captured --tp 2 all-reduces on cross-device copies\n"
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
@@ -333,6 +334,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.enable_vision = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
+        } else if (arg == "--no-tp-mailbox") {
+            options.tp_mailbox = false;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {

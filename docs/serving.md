@@ -906,6 +906,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
+| `--no-tp-mailbox` | keep the captured `--tp 2` all-reduces on cross-device copies; see [Two GPUs](#two-gpus) | mailbox on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency`; `max(2 * max-concurrency, 8)` at `--tp 2` |
 | `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages`; `0` at `--tp 2` |
@@ -961,6 +962,16 @@ vocabulary, plus its half of the KV pages and recurrent state, whose allocation 
 copies follow rank 0's. Both ranks reserve the same runtime layout, and `--kv-capacity auto` sizes
 it from the rank with less free memory. Prefix reuse, concurrent requests and CUDA Graph decode
 work as on one GPU.
+
+Every layer ends in two cross-device all-reduces. Prefill and eager decode move them with
+stream-ordered device-to-device copies, which the driver stages through host memory when the GPUs
+have no peer access. In CUDA Graph decode, an all-reduce of one request's activation (the hidden
+state across the verified columns) instead runs one kernel per GPU that exchanges the two halves
+through a small pinned host mailbox, which costs far less than the staged copies' event chain;
+wider multi-request payloads keep the copies. Both transports give identical results.
+`--no-tp-mailbox` keeps every all-reduce on the copies, for comparison. If a mailbox exchange ever
+waits about half a second for the other GPU, the round fails with an error instead of returning a
+diverged result.
 
 Rank 1 has no Host copy of its KV or state, so the Host tiers are off: an omitted
 `--host-state-slots` or `--host-kv-mib` becomes `0`, and a nonzero value is rejected. Every

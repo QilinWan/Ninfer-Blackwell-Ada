@@ -51,6 +51,7 @@ struct ServeOptions {
     ContextCacheOptions context_cache;
     bool enable_vision      = false;
     bool use_cuda_graph     = true;
+    bool tp_mailbox         = true;
     bool allow_prefix_reuse = true;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;

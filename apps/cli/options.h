@@ -37,6 +37,7 @@ struct Options {
     YarnOptions yarn;
     bool enable_vision  = false;
     bool use_cuda_graph = true;
+    bool tp_mailbox     = true;
 
     bool raw_output      = false;
     bool print_token_ids = false;

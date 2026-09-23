@@ -100,7 +100,7 @@ std::string usage_text(const char* argv0) {
            "        --regex PATTERN | --choice TEXT ...]\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort none|minimal|low|medium|high|xhigh|max] [--vision]\n"
-           "       [--no-cuda-graph]\n"
+           "       [--no-cuda-graph] [--no-tp-mailbox]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
@@ -110,6 +110,7 @@ std::string usage_text(const char* argv0) {
            "--tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A);\n"
            "tensor parallelism supports ordinary, --spec mtp and --spec dflash2 --lm-head-draft "
            "decoding with bf16 or int8 KV only.\n"
+           "--no-tp-mailbox keeps the captured --tp 2 all-reduces on cross-device copies.\n"
            "--thinking-budget caps model-origin thinking tokens; inserted control tokens count "
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
@@ -195,6 +196,8 @@ Options parse_options(int argc, char** argv) {
             options.enable_vision = true;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
+        } else if (arg == "--no-tp-mailbox") {
+            options.tp_mailbox = false;
         } else if (arg == "--stop-token-id") {
             const std::uint32_t token = parse_u32(value(arg), "stop-token-id", true);
             if (token > static_cast<std::uint32_t>(std::numeric_limits<TokenId>::max())) {
