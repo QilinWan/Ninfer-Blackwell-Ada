@@ -3,6 +3,7 @@
 #include "core/device.h"
 #include "core/nvtx.h"
 #include "core/startup.h"
+#include "ninfer/ops/allreduce.h"
 #include "runtime/contract/sampling.h"
 #include "runtime/contract/request.h"
 #include "runtime/engine/causal_score_core.h"
@@ -20,11 +21,15 @@
 namespace ninfer {
 namespace {
 
-DeviceContext initialize_device(const EngineOptions& options) {
+// One DeviceContext per tensor-parallel rank (normalized options.devices), rank 0 current. At tp 2
+// direct peer access is enabled when both directions support it; otherwise the collectives copy
+// through CUDA's host-staged transfer, which is equally correct.
+ExecutionContext initialize_execution(const EngineOptions& options) {
     StartupPhaseScope phase(options.startup_observer, StartupPhase::CudaInitialize);
-    DeviceContext device(options.device);
+    ExecutionContext execution(options.devices);
+    if (execution.tp == 2) { (void)ops::enable_peer_access(execution); }
     phase.complete();
-    return device;
+    return execution;
 }
 
 runtime::ResolvedRequestOptions resolve_request_options(const ModelSamplingDefaults& defaults,
@@ -155,9 +160,9 @@ public:
 
     explicit Impl(EngineOptions engine_options)
         : options(runtime::normalize_engine_options(std::move(engine_options))),
-          device(initialize_device(options)) {
+          execution(initialize_execution(options)), device(execution.primary()) {
         nvtx::ScopedRange load_range(nvtx::Name::EngineLoad, nvtx::Category::Runtime);
-        auto constructed    = runtime::construct_model(options, device);
+        auto constructed  = runtime::construct_model(options, execution);
         active              = std::move(constructed.instance);
         load                = std::move(constructed.load);
         load.cuda_sync_mode = device.sync_mode();
@@ -176,12 +181,14 @@ public:
         device.bind_to_current_thread_noexcept();
         core.emplace<std::monostate>();
         try {
+            if (execution.tp == 2) { execution.dev[1]->synchronize(); }
             device.synchronize();
         } catch (...) {}
     }
 
     EngineOptions options;
-    DeviceContext device;
+    ExecutionContext execution;
+    DeviceContext& device; // execution.primary(): rank 0 owns scheduling and sampling.
     std::unique_ptr<runtime::ModelInstance> active;
     LoadSummary load;
     ModelSamplingDefaults sampling_defaults;

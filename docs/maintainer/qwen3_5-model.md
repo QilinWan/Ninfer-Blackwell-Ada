@@ -291,6 +291,13 @@ verification, multimodal prefill, the MoE FFN, paired (two-parent) input project
 caches other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no
 per-rank override.
 
+The Program plans one per-rank layout (`SequencePlanImpl::tp`): KV heads and GDN state halved,
+and a workspace sized from the split schedule's own allocation order with the rank's
+`shard_text_config` extents, the all-reduce staging and the vocabulary-split logits. Rank 1
+allocates the same layout; its KV pages, execution tables and StateImages are mirrors of rank 0's.
+Every `ExecutionCore` carries the `TpExecution`, so prompt prefill, forced tokens and ordinary
+decode (eager and captured) run on both ranks.
+
 ## Vision and multimodal positions
 
 The current native processor uses 16×16 spatial patches, pairs of frames, and 2×2 spatial merge.

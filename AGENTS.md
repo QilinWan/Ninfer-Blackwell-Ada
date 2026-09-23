@@ -14,7 +14,8 @@ requested scope.
 It implements `Qwen3_5ForCausalLM` and `Qwen3_5MoeForCausalLM`. Checkpoints and recipe combinations
 of existing representations use the same architecture, binding and execution path; do not add
 checkpoint-specific execution registration. Generation uses one GPU, one resident model, and
-one to eight resident execution lanes fixed at startup.
+one to eight resident execution lanes fixed at startup. An experimental two-GPU tensor-parallel
+mode (`--tp 2`) exists for two 16 GB boards; it does not extend this product boundary.
 
 V3 `.ninfer` is the only C++ product artifact. Generation, offline CausalScoring, CLI, serving, and
 inference benchmarks use the public Engine. There is no Python model-inference route or

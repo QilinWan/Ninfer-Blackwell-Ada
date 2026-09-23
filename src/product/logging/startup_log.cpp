@@ -287,6 +287,17 @@ void StartupLogRenderer::engine_ready(const LoadSummary& load) {
     impl_->logger->info("engine ready | {} | total {} | weights {} | CUDA sync {}",
                         format_pretty_text(load.model_name), format_pretty_duration(total_seconds),
                         format_pretty_bytes(load.host_to_device_bytes), load.cuda_sync_mode);
+    if (load.devices.size() > 1) {
+        for (std::size_t rank = 0; rank < load.devices.size(); ++rank) {
+            const LoadDeviceSummary& device = load.devices[rank];
+            impl_->logger->info(
+                "rank {} | device {} | weights {} | sharded {} | replicated {} | local {}", rank,
+                device.device, format_pretty_bytes(device.capacity_bytes),
+                format_pretty_bytes(device.sharded_bytes),
+                format_pretty_bytes(device.replicated_bytes),
+                format_pretty_bytes(device.local_bytes));
+        }
+    }
     impl_->logger->debug(
         "load detail | architecture {} | artifact read {} | H2D {} | staging peak {} | device "
         "objects {} | host objects {}",

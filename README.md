@@ -379,6 +379,11 @@ The product boundary remains intentionally small:
 - parsed tool calls are returned to the client; NInfer does not execute tools;
 - the in-tree C++ headers are not distributed as an installed SDK.
 
+Note: an experimental two-GPU tensor-parallel mode (`--tp 2 --devices A,B`, see
+[Two GPUs](docs/cli.md#two-gpus)) splits a dense model across two 16 GB boards that cannot hold it
+alone. It is verified only on two RTX 5070 Ti without peer access and does not change the
+single-GPU product boundary above.
+
 `--max-context` is each sequence's logical limit. `--kv-capacity` sizes the shared Main Text KV pool
 used by active requests and retained prefixes; `auto` resolves the largest legal capacity at
 startup from the memory remaining after weights while keeping 1 GiB of sizing headroom. Explicit

@@ -52,8 +52,8 @@ struct DeviceContext {
 
 // One process, up to two CUDA devices. dev[0..tp-1] hold constructed DeviceContext instances;
 // the remaining slots stay empty. tp == 1 is the single-device configuration; tp == 2 is the
-// two-device tensor-parallel configuration consumed by the collectives in ninfer/ops/allreduce.h.
-// No product path constructs a tp == 2 context yet.
+// two-device tensor-parallel configuration consumed by the collectives in ninfer/ops/allreduce.h;
+// the Engine builds one from EngineOptions::devices.
 struct ExecutionContext {
     std::array<std::optional<DeviceContext>, 2> dev;
     int tp = 1;

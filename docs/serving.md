@@ -888,6 +888,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--log-stats-interval-ms N` | aggregate throughput report interval; `0` disables it | `5000` |
 | `--log-level trace\|debug\|info\|warning\|error\|critical\|off` | pretty stderr verbosity | `info` |
 | `--device N` | CUDA device index | `0` |
+| `--tp 1\|2` | tensor-parallel width; see [Two GPUs](#two-gpus) | `1` |
+| `--devices A,B` | one CUDA device per rank, rank 0 first; required with `--tp 2` | `--device` |
 | `--context-cost-presets FILE` | optional runtime context-cost preset registry | generic + compiled defaults |
 | `--max-request-mib N` | body-size limit before JSON parsing | `384` |
 | `--media-cache-mib N` | LRU-retained prepared BF16 media payloads; `0` disables retention | `1024` |
@@ -905,8 +907,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
-| `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency` |
-| `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages` |
+| `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency`; `max(max-concurrency, 4)` at `--tp 2` |
+| `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages`; `0` at `--tp 2` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--cors` | permissive browser CORS headers | off |
@@ -940,6 +942,36 @@ limit on total process RAM. `--host-context-mib 0` disables Host context backing
 available, and the capacity flags may still be specified.
 
 Run `./build/apps/ninfer-serve --help` for the exact option contract.
+
+### Two GPUs
+
+`--tp 2 --devices A,B` serves a dense artifact split across two GPUs, for a model that does not fit
+one device:
+
+```bash
+./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
+  --tp 2 --devices 0,1 \
+  --max-context 32768 --kv-capacity auto \
+  --max-concurrency 2 --kv-dtype int8
+```
+
+Rank 0 runs on `A` and owns admission, the context cache bookkeeping and sampling; rank 1 holds the
+other half of every attention and Gated DeltaNet head group, MLP intermediate width and output-head
+vocabulary, plus its half of the KV pages and recurrent state, whose allocation and checkpoint
+copies follow rank 0's. Both ranks reserve the same runtime layout, and `--kv-capacity auto` sizes
+it from the rank with less free memory. Prefix reuse, concurrent requests and CUDA Graph decode
+work as on one GPU, except that a request whose whole prompt is already cached re-prefills from an
+earlier checkpoint instead of reusing it completely.
+
+Rank 1 has no Host copy of its KV or state, so the Host tiers are off: an omitted
+`--host-state-slots` or `--host-kv-mib` becomes `0`, and a nonzero value is rejected. Every
+checkpoint therefore lives in a Device StateImage, and the defaults raise the Device checkpoint pool
+to `max(max-concurrency, 4)` and the private catalog to `max(2 * max-concurrency, 8)`. The startup
+log prints one line per rank and a `tensor parallel` capacity line.
+
+Tensor parallelism currently covers ordinary decoding with `bf16` or `int8` KV. `--spec`,
+`--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV types are rejected at
+startup.
 
 Serve writes human-readable operational records to stderr using
 `YYYY-MM-DD HH:MM:SS.mmm  LEVEL  message`. Normal output covers material startup milestones,

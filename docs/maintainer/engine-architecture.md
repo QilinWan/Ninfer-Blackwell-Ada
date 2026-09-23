@@ -380,6 +380,26 @@ continuation 或 checkpoint。
 6. PendingBatch 完整消费后才能发布对应输出；终态结算前请求保有资源所有权。
 7. 每个请求、资源事务和模型事务均有唯一终态。
 
+### 8.1 双 GPU 张量并行
+
+`EngineOptions.tp = 2` 时 Engine 为 `devices` 中的每个 rank 建立一个 `DeviceContext`，组成
+`ExecutionContext`，并在驱动允许时启用 peer access（否则 collectives 经 host staging 复制）。
+加载得到一个双设备 Model；`ModelInstance` 持有 rank 0 与 rank 1 的 `execution::Parameters`，
+两 rank 共享同一份不可变 YaRN 系数（张量并行只分头，不分 rope）。Scheduler、ResourceManager、
+admission、sampling 和 request 输出仍然只在 rank 0，Engine 语义与单卡相同。
+
+Program 只有一套逻辑 store（KV address space、page、StateImage、catalog），由 rank 0 持有。
+rank 1 在 `ProgramImpl::PeerRuntime` 中分配与 rank 0 相同的 per-rank persistent/workspace 布局
+（KV heads、GDN channels 与 value heads 减半），其 KV page pool、execution tables 与 StateImage pool
+在构造时作为 rank 0 pool 的 mirror 挂接：rank 0 的每次 page zero/copy、row acquire/release/publish
+与 slot zero/copy 在 rank 1 的 stream 上以相同物理索引重放。我方 `ContextCacheOptions` 只有一个
+Host 预算旋钮 `host_capacity_bytes`；rank 1 没有 Host 副本，因此 tp 2 要求该预算为 0。每次 bind 与
+prefill step 都在两个 rank 上发布同一个 prefill KV row；ordinary decode 把同一个 host ingress 上传到
+两个 rank 的 frame。CUDA Graph 把 rank 1 的 stream fork/join 进 rank 0 的同一次 capture，launch 前以
+rank 1 已提交的 mirror 工作为 gate。两个 rank 保留相同的 runtime reservation，KV 容量按空闲显存较少
+的 rank 求解。当前只支持 dense 架构的 ordinary 生成与 `bf16`/`int8` KV；speculative、Vision、
+CausalScoring 与 MoE 在启动时拒绝；从 retained hidden 直接采样在 tp 2 抛错。
+
 | 职责 | 主要位置 |
 |---|---|
 | 公共 Engine facade | `include/ninfer/engine.h`, `src/runtime/engine/engine.cpp` |

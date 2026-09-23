@@ -140,4 +140,15 @@ KvCapacityResolution resolve_kv_capacity(const KvCapacityPolicy& policy,
     };
 }
 
+KvCapacityResolution
+resolve_kv_capacity_symmetric(const KvCapacityPolicy& policy, const SequenceCapacityCurve& curve,
+                              std::span<const std::size_t> available_runtime_bytes_per_rank) {
+    if (available_runtime_bytes_per_rank.empty()) {
+        throw std::invalid_argument("KV capacity resolution requires at least one rank budget");
+    }
+    return resolve_kv_capacity(policy, curve,
+                               *std::min_element(available_runtime_bytes_per_rank.begin(),
+                                                 available_runtime_bytes_per_rank.end()));
+}
+
 } // namespace ninfer::runtime
