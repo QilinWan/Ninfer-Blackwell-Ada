@@ -1917,15 +1917,166 @@ void TextContext::logits_tp2(const RankTensors& hidden, Tensor& logits) {
                         {logits, part1.gathered}, ws, *tp_->execution, *tp_->events);
 }
 
+template <class Tap>
+PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
+                                                 const TextPrefill& text_prefill, Tap& tap,
+                                                 bool finalize_at_end) {
+    runtime::ExecutionTimingRecorder timing;
+    if (ids.empty()) { throw std::invalid_argument("TextContext::prefill requires tokens"); }
+    if (ids.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::overflow_error("TextContext::prefill token count exceeds int32");
+    }
+    const std::uint32_t base = text_kv_base_;
+    if (base != text_prefill.begin ||
+        text_prefill.token_ids.size() < static_cast<std::size_t>(base) + ids.size()) {
+        throw std::invalid_argument("text prefill chunk does not match its full prompt");
+    }
+    const ExecutionContext& execution = *tp_->execution;
+    const DeviceScope device(ctx_.device);
+    cudaStream_t s  = ctx_.stream;
+    const int T     = static_cast<int>(ids.size());
+    const int chunk = static_cast<int>(prefill_chunk_);
+    if (text_kv_base_ == 0) { rope_delta_ = 0; }
+    ops::set_i32_scalar(io_.rope_delta, rope_delta_, s);
+    if (static_cast<std::uint64_t>(base) + static_cast<std::uint64_t>(T) >
+        static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::overflow_error("TextContext::prefill absolute position exceeds int32");
+    }
+    const int base_i = static_cast<int>(base);
+
+    const std::int64_t base64    = static_cast<std::int64_t>(base);
+    const std::int64_t split_abs = prefill_split_frontier_;
+    const bool has_split = split_abs > base64 && split_abs <= base64 + static_cast<std::int64_t>(T);
+    const int split_rel  = has_split ? static_cast<int>(split_abs - base64) : -1;
+
+    // One chunk per call, exactly as the single-device path: the caller advances the frontier.
+    int len = std::min(chunk, T);
+    if (split_rel > 0 && len > split_rel) { len = split_rel; }
+    const bool is_last = finalize_at_end && len == T;
+    nvtx::ScopedRange chunk_range(nvtx::Name::PrefillChunk, nvtx::Category::Prefill,
+                                  static_cast<std::uint64_t>(len));
+    const auto ws = workspaces();
+    work_.reset();
+    tp_->work->reset();
+    {
+        // A text chunk continuing a multimodal prefix keeps that prefix's RoPE delta, as on one
+        // device; each rank offsets its own positions with its own copy of the delta.
+        const std::int32_t rope_axes = rope_delta_ != 0 ? 1 : 0;
+        std::array<workspace::TextPrefillRoots, 2> roots;
+        RankTensors staging;
+        for (std::size_t r = 0; r < 2; ++r) {
+            roots[r]   = workspace::text_prefill_roots(*ws[r], config_, len, rope_axes, 0);
+            staging[r] = workspace::tp_call_roots(*ws[r], config_, len).staging;
+        }
+        Tensor peer_rope_delta = rope_delta_ != 0 ? ws[1]->alloc(DType::I32, {1}) : Tensor{};
+        RankTensors positions;
+        RankTensors rope_positions;
+        RankTensors x;
+        for_each_rank(execution, [&](int rank) {
+            const auto r        = static_cast<std::size_t>(rank);
+            cudaStream_t stream = rank_stream(rank);
+            copy_i32(ids.data(), roots[r].ids, stream);
+            positions[r] = roots[r].positions;
+            ops::fill_i32_positions(positions[r], base_i, stream);
+            rope_positions[r] = positions[r];
+            if (rope_delta_ != 0) {
+                Tensor delta = io_.rope_delta;
+                if (rank != 0) {
+                    delta = peer_rope_delta;
+                    ops::set_i32_scalar(delta, rope_delta_, stream);
+                }
+                rope_positions[r] = roots[r].rope_positions;
+                ops::offset_i32_positions(positions[r], delta, rope_positions[r], stream);
+            }
+            x[r] = roots[r].residual;
+            ops::embedding(roots[r].ids, rank_parameters(rank).text.token_embedding, x[r], stream);
+        });
+
+        ScopedPositions scoped_cache(active_cache_positions_, positions[0]);
+        ScopedPositions scoped_rope(active_rope_positions_, rope_positions[0]);
+        ScopedValue<const Tensor*> peer_cache(peer_cache_positions_, &positions[1]);
+        ScopedValue<const Tensor*> peer_rope(peer_rope_positions_, &rope_positions[1]);
+        ScopedValue<const Tensor*> peer_rows(peer_kv_table_rows_, &tp_->text_kv_table_row);
+        const auto visible = static_cast<std::uint32_t>(base_i + len);
+        const ops::CausalAttentionExecutionEnvelope chunk_envelope{visible, visible};
+        ScopedEnvelope scoped_envelope(active_causal_attention_envelope_, chunk_envelope);
+
+        if constexpr (Tap::enabled) { tap.begin(x[0]); }
+        run_layers_tp2(x, Phase::Prefill, staging, tap);
+        if constexpr (requires { tap.capture_positions(positions[0], s); }) {
+            tap.capture_positions(positions[0], s);
+        }
+
+        // Rank 0 keeps the whole normalized chunk (prefill_hidden and the rewrite checkpoint read
+        // it); rank 1 only needs the last column, as its input to the vocabulary-split head.
+        Tensor xf = prefill_hidden_.data != nullptr
+                        ? matrix_window(prefill_hidden_, len)
+                        : work_.alloc(DType::BF16, {dimension(config_.hidden_size), len});
+        ops::rmsnorm(x[0], *final_norm_, config_.rms_norm_eps, true, xf, s);
+
+        if (is_last) {
+            Tensor peer_last = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), 1});
+            {
+                const DeviceScope peer(execution.dev[1]->device);
+                ops::rmsnorm(x[1].slice(1, len - 1, 1), rank_parameters(1).text.final_norm,
+                             config_.rms_norm_eps, true, peer_last, rank_stream(1));
+            }
+            Tensor logits = matrix_window(io_.logits, 1);
+            logits_tp2({xf.slice(1, len - 1, 1), peer_last}, logits);
+            // Sampling belongs to rank 0 alone, over the gathered complete logits.
+            ops::set_i32_scalar(io_.pos, base_i + T, s);
+            ops::set_i32_scalar(io_.rope_pos, base_i + T + rope_delta_, s);
+            if (sampling_config_ != nullptr) {
+                ops::sample(logits, io_.token,
+                            dimension(parameters_.model.resources().public_token_count),
+                            sampling_config_, io_.pos, ops::kSamplePurposePrefill, work_, s);
+            } else {
+                ops::argmax(logits, io_.token,
+                            dimension(parameters_.model.resources().public_token_count), s);
+            }
+        }
+
+        if (split_rel > 0 && len == split_rel && rewrite_checkpoint_hidden_output_ != nullptr) {
+            require_tensor_shape(*rewrite_checkpoint_hidden_output_, DType::BF16,
+                                 {dimension(config_.hidden_size), 1},
+                                 "rewrite checkpoint hidden output");
+            const Tensor checkpoint_hidden = xf.slice(1, len - 1, 1);
+            CUDA_CHECK(cudaMemcpyAsync(rewrite_checkpoint_hidden_output_->data,
+                                       checkpoint_hidden.data, checkpoint_hidden.bytes(),
+                                       cudaMemcpyDeviceToDevice, s));
+        }
+    }
+
+    if constexpr (requires { tap.consume_prefill_chunk(len, false); }) {
+        work_.reset();
+        tap.consume_prefill_chunk(len, split_rel > 0 && len == split_rel);
+    }
+
+    prefill_split_frontier_ = -1;
+
+    timing.begin_wait();
+    ctx_.synchronize();
+    execution.dev[1]->synchronize();
+    timing.end_wait();
+    work_.reset();
+    tp_->work->reset();
+    return PrefillChunkResult{.processed_tokens = static_cast<std::uint32_t>(len),
+                              .finalized        = finalize_at_end && len == T,
+                              .timing           = timing.finish()};
+}
+
 PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std::uint32_t begin,
                                               std::uint32_t nominal_length, bool finalize_at_end) {
     if (begin >= full_ids.size() || nominal_length == 0 ||
         nominal_length > full_ids.size() - begin) {
         throw std::invalid_argument("text prefill chunk is outside the prompt");
     }
-    require_single_device("text prefill");
     const TextPrefill text_prefill{full_ids, begin};
     NullTap tap;
+    if (tp2()) {
+        return prefill_impl_tp2(full_ids.subspan(begin, nominal_length), text_prefill, tap,
+                                finalize_at_end);
+    }
     return prefill_impl(full_ids.subspan(begin, nominal_length), &text_prefill, nullptr, tap,
                         finalize_at_end);
 }
@@ -1937,8 +2088,11 @@ PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std
         nominal_length > full_ids.size() - begin) {
         throw std::invalid_argument("text prefill chunk is outside the prompt");
     }
-    require_single_device("text prefill");
     const TextPrefill text_prefill{full_ids, begin};
+    if (tp2()) {
+        return prefill_impl_tp2(full_ids.subspan(begin, nominal_length), text_prefill, sink,
+                                finalize_at_end);
+    }
     return prefill_impl(full_ids.subspan(begin, nominal_length), &text_prefill, nullptr, sink,
                         finalize_at_end);
 }
