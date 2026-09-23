@@ -12,6 +12,7 @@
 #include "ninfer/ops/softmax_attention.h"
 #include "ninfer/ops/sparse_moe.h"
 #include "models/qwen3_5/state/decoder_state.h"
+#include "models/qwen3_5/execution/tp.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/round_buffers.h"
 
@@ -19,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -65,6 +67,12 @@ struct DFlashFeatureSink {
 
 class VisionPrefillSession;
 
+// One Text call over the rank-0 operands, and with a non-null `tp` over both ranks of a
+// two-device Model (tp.h). A null `tp` is the single-device schedule, unchanged. With `tp`, the
+// text prefill chunk, ordinary decode and their logits run split; speculative verification, MTP,
+// DFlash target verification and multimodal prefill are rejected with std::invalid_argument, and
+// the constructor rejects MTP state, the MoE FFN, paired input projections and KV caches the
+// head-local attention does not support (only BF16 and INT8-G64).
 class TextContext {
 public:
     TextContext(DeviceContext& ctx, const execution::Parameters& weights, WorkspaceArena& work,
@@ -73,7 +81,8 @@ public:
                 std::uint32_t text_kv_base,
                 qwen3_5::PagedKVCacheView mtp_kv           = qwen3_5::PagedKVCacheView(),
                 const qwen3_5::PagedKVCache* batch_text_kv = nullptr,
-                const qwen3_5::PagedKVCache* batch_mtp_kv  = nullptr);
+                const qwen3_5::PagedKVCache* batch_mtp_kv  = nullptr,
+                const TpExecution* tp                      = nullptr);
     ~TextContext();
 
     TextContext(const TextContext&)            = delete;
@@ -164,6 +173,48 @@ private:
         return mtp_kv_.valid() || batch_mtp_kv_ != nullptr;
     }
 
+    // --- tp == 2 -------------------------------------------------------------------------------
+    // Separate functions rather than branches inside the single-device ones, so the tp1 schedule
+    // is unchanged. The residual x[r] is replicated: each layer ends in an all-reduce that leaves
+    // the identical BF16 sum on both ranks, so every later per-rank stage sees identical inputs.
+    // Rank r's work is issued on ExecutionContext::dev[r]'s stream; only the collectives inside
+    // the row-parallel projections order the two streams, with no host synchronization.
+    using RankBlocks  = std::array<const BlockParameters*, kTensorParallelWidth>;
+    using RankTensors = std::array<Tensor, kTensorParallelWidth>;
+
+    [[nodiscard]] bool tp2() const noexcept { return tp_ != nullptr; }
+
+    void validate_tensor_parallel();
+    void require_single_device(const char* operation) const;
+    [[nodiscard]] const Parameters& rank_parameters(int rank) const noexcept;
+    [[nodiscard]] std::array<WorkspaceArena*, kTensorParallelWidth> workspaces() const noexcept;
+    [[nodiscard]] cudaStream_t rank_stream(int rank) const noexcept;
+    [[nodiscard]] LinearAttentionStatePool& rank_state(int rank) const noexcept;
+    [[nodiscard]] const qwen3_5::PagedKVCache& rank_text_cache(int rank) const;
+    // Rank 0 reads the active_* bindings exactly as the single-device path does; rank 1 reads
+    // the peer_* bindings the tp2 entry point sets from rank 1's own control tensors.
+    [[nodiscard]] const Tensor& rank_cache_positions(int rank) const;
+    [[nodiscard]] const Tensor& rank_rope_positions(int rank) const;
+    [[nodiscard]] const Tensor& rank_kv_table_rows(int rank) const;
+    [[nodiscard]] const Tensor& rank_linear_state_source_slots(int rank) const;
+    [[nodiscard]] const Tensor& rank_linear_state_destination_slots(int rank) const;
+    void attn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index,
+                      const RankTensors& staging);
+    void gdn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index, Phase phase,
+                     const RankTensors& staging);
+    void mlp_tail_tp2(const RankBlocks& weights, RankTensors& x, const RankTensors& staging);
+    template <class Tap>
+    void run_layers_tp2(RankTensors& x, Phase phase, const RankTensors& staging, Tap& tap);
+    // Vocabulary-split head: each rank projects its half of the vocabulary from its final hidden
+    // columns, and the row gather assembles the complete [V, C] logits in rank 0's `logits`.
+    void logits_tp2(const RankTensors& hidden, Tensor& logits);
+    void ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,
+                                   const Tensor& rope_positions, const Tensor& kv_table_rows,
+                                   const Tensor& linear_state_source_slots,
+                                   const Tensor& linear_state_destination_slots,
+                                   ops::CausalAttentionExecutionEnvelope envelope, Tensor& hidden,
+                                   Tensor& logits);
+
     void attn_mix(const BlockParameters& weights, Tensor& x, int index, Phase phase);
     void gdn_mix(const BlockParameters& weights, Tensor& x, int index, Phase phase);
     void mlp_tail(const BlockParameters& weights, Tensor& x, Phase phase,
@@ -212,6 +263,11 @@ private:
     [[nodiscard]] PrefillChunkResult
     prefill_impl(std::span<const int> ids, const TextPrefill* text_prefill,
                  const MultimodalPrefill* multimodal, Tap& tap, bool finalize_at_end);
+    // Text-only tp2 prefill of one chunk. A DFlash feature tap reads rank 0's replicated residual.
+    template <class Tap>
+    [[nodiscard]] PrefillChunkResult prefill_impl_tp2(std::span<const int> ids,
+                                                      const TextPrefill& text_prefill, Tap& tap,
+                                                      bool finalize_at_end);
     DeviceContext& ctx_;
     const Parameters& parameters_;
     const TextConfig& config_;
@@ -254,6 +310,15 @@ private:
     int proposal_head_n_                        = 0;
     const ops::SamplingConfig* sampling_config_ = nullptr;
     const MtpParameters* mtp_                   = nullptr;
+
+    const TpExecution* tp_ = nullptr;
+    // Each rank's share of config_ (shard_text_config), present only at tp == 2.
+    std::optional<TextConfig> shard_config_;
+    const Tensor* peer_cache_positions_                = nullptr;
+    const Tensor* peer_rope_positions_                 = nullptr;
+    const Tensor* peer_kv_table_rows_                  = nullptr;
+    const Tensor* peer_linear_state_source_slots_      = nullptr;
+    const Tensor* peer_linear_state_destination_slots_ = nullptr;
 };
 
 } // namespace ninfer::models::qwen3_5::execution

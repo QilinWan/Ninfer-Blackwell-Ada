@@ -151,6 +151,35 @@ private:
     T previous_;
 };
 
+// Current-device save/restore around per-rank issue: a kernel launch or a stream-ordered memcpy
+// targets the current device, and the caller's device is restored afterwards.
+class DeviceScope {
+public:
+    explicit DeviceScope(int device) {
+        CUDA_CHECK(cudaGetDevice(&previous_));
+        CUDA_CHECK(cudaSetDevice(device));
+    }
+
+    DeviceScope(const DeviceScope&)            = delete;
+    DeviceScope& operator=(const DeviceScope&) = delete;
+
+    ~DeviceScope() { (void)cudaSetDevice(previous_); }
+
+private:
+    int previous_ = 0;
+};
+
+// Issues `body(rank)` for rank 0 then rank 1 with that rank's device current. The calls only
+// enqueue, so the two ranks' work overlaps on the devices.
+template <class Body>
+void for_each_rank(const ExecutionContext& execution, Body&& body) {
+    const DeviceScope restore(execution.dev[0]->device);
+    for (int rank = 0; rank < kTensorParallelWidth; ++rank) {
+        CUDA_CHECK(cudaSetDevice(execution.dev[static_cast<std::size_t>(rank)]->device));
+        body(rank);
+    }
+}
+
 } // namespace
 
 void DFlashFeatureSink::begin(const Tensor& value) {
@@ -236,11 +265,11 @@ TextContext::TextContext(DeviceContext& ctx, const execution::Parameters& weight
                          Tensor& prefill_hidden, std::uint32_t prefill_chunk,
                          std::uint32_t text_kv_base, qwen3_5::PagedKVCacheView mtp_kv,
                          const qwen3_5::PagedKVCache* batch_text_kv,
-                         const qwen3_5::PagedKVCache* batch_mtp_kv)
+                         const qwen3_5::PagedKVCache* batch_mtp_kv, const TpExecution* tp)
     : ctx_(ctx), parameters_(weights), config_(weights.model.config().text), work_(work), kv_(kv),
       mtp_kv_(mtp_kv), state_(state), io_(io), prefill_hidden_(prefill_hidden),
       prefill_chunk_(prefill_chunk), text_kv_base_(text_kv_base), batch_text_kv_(batch_text_kv),
-      batch_mtp_kv_(batch_mtp_kv) {
+      batch_mtp_kv_(batch_mtp_kv), tp_(tp) {
     if (prefill_chunk_ == 0 ||
         prefill_chunk_ > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
         throw std::invalid_argument("TextContext effective prefill chunk must fit positive int32");
@@ -262,6 +291,7 @@ TextContext::TextContext(DeviceContext& ctx, const execution::Parameters& weight
             &p.head, p.token_ids ? static_cast<const std::int32_t*>(p.token_ids->data) : nullptr,
             dimension(p.rows));
     }
+    if (tp_ != nullptr) { validate_tensor_parallel(); }
 }
 
 TextContext::~TextContext() = default;
@@ -596,6 +626,7 @@ void TextContext::mtp_forward_batch(const Tensor& ids, const Tensor& hidden,
                                     Tensor& mtp_hidden, int logits_column, Tensor* logits,
                                     Tensor* draft_token, const Tensor* explicit_rope_positions,
                                     const Tensor* input_embeddings) {
+    require_single_device("MTP forward");
     if (batch_mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
     const int T = ids.ne[0];
     if (T <= 0 || static_cast<std::uint32_t>(T) > prefill_chunk_) {
@@ -643,6 +674,7 @@ void TextContext::mtp_forward_ar_step(const Tensor& token, const Tensor& previou
                                       const Tensor& position,
                                       ops::CausalAttentionExecutionEnvelope envelope,
                                       Tensor& mtp_hidden, Tensor& logits, Tensor& draft_token) {
+    require_single_device("MTP proposal");
     if (batch_mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
     require_tensor_shape(token, DType::I32, {1}, "MTP AR token");
     require_tensor_shape(position, DType::I32, {1}, "MTP AR position");
@@ -684,6 +716,7 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
                          "ordinary decode hidden");
     require_tensor_shape(logits, DType::BF16, {dimension(config_.vocab_size), batch},
                          "ordinary decode logits");
+    require_single_device("ordinary decode");
 
     cudaStream_t stream = ctx_.stream;
     work_.reset();
@@ -717,6 +750,7 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
                                            ops::CausalAttentionExecutionEnvelope envelope,
                                            Tensor& hidden, Tensor& logits, Tensor& target_tokens,
                                            Tap& tap) {
+    require_single_device("target verification");
     const std::int32_t width = ids.ne[0];
     const std::int32_t batch = ids.ne[1];
     if (width <= 0 || width > static_cast<std::int32_t>(kDFlashDecodeMaximumWidth) || batch <= 0 ||
@@ -801,6 +835,7 @@ void TextContext::mtp_forward_decode_batch(const Tensor& ids, const Tensor& hidd
                                            const Tensor& valid_columns, const Tensor& kv_table_rows,
                                            ops::CausalAttentionExecutionEnvelope envelope,
                                            Tensor& mtp_hidden) {
+    require_single_device("MTP decode");
     if (batch_mtp_kv_ == nullptr) { throw std::runtime_error("MTP forward is not enabled"); }
     const std::int32_t width = ids.ne[0];
     const std::int32_t batch = ids.ne[1];
@@ -828,6 +863,7 @@ void TextContext::mtp_forward_decode_batch(const Tensor& ids, const Tensor& hidd
 }
 
 void TextContext::mtp_propose_batch(const Tensor& hidden, Tensor& logits, Tensor& draft_tokens) {
+    require_single_device("MTP proposal");
     const std::int32_t batch = hidden.ne[1];
     require_tensor_shape(hidden, DType::BF16, {dimension(config_.hidden_size), batch},
                          "MTP proposal batch hidden");
@@ -1403,12 +1439,491 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
                               .timing           = timing.finish()};
 }
 
+// =================================================================================================
+// Tensor-parallel (tp == 2) forward
+// =================================================================================================
+//
+// Every layer runs the same pattern on both ranks:
+//
+//   1. replicated elementwise work (RMSNorm, RoPE, gating) per rank, on that rank's stream, over
+//      that rank's copy of the replicated residual;
+//   2. a column-parallel projection of the rank's heads (attention Q|K|gate|V, GDN A/B and
+//      Q|K|V|Z), with no communication;
+//   3. head-local mixing: attention of the rank's query heads against its own KV heads and pages,
+//      or the GDN convolution and recurrence over its own key/value heads and state slots;
+//   4. a row-parallel output projection whose all-reduce folds the residual in once (the mixer's
+//      only collective);
+//   5. the FFN, whose row-parallel down projection is the layer's second and last collective.
+//
+// The all-reduce leaves p0 + p1 on rank 0 and p1 + p0 on rank 1, which are the same BF16 value,
+// so the residual, and everything derived from it (the next norm, KV pages, GDN state), stays
+// identical on both ranks without any other agreement protocol.
+
+void TextContext::validate_tensor_parallel() {
+    const TpExecution& tp = *tp_;
+    if (!tp.complete() || tp.execution->tp != kTensorParallelWidth || !tp.execution->dev[0] ||
+        !tp.execution->dev[1] || !tp.events->live()) {
+        throw std::invalid_argument("tensor-parallel TextContext binding is incomplete");
+    }
+    if (tp.execution->dev[0]->device != ctx_.device ||
+        tp.execution->dev[0]->stream != ctx_.stream) {
+        throw std::invalid_argument(
+            "tensor-parallel TextContext must execute on rank 0 of its ExecutionContext");
+    }
+    if (&tp.parameters->model != &parameters_.model || parameters_.device != 0 ||
+        tp.parameters->device != 1 || parameters_.model.device_count() != kTensorParallelWidth) {
+        throw std::invalid_argument(
+            "tensor-parallel TextContext requires the rank 0 and rank 1 Parameters of one "
+            "two-device Model");
+    }
+    if (mtp_enabled()) {
+        throw std::invalid_argument("MTP is not implemented at tensor-parallel width 2");
+    }
+    if (batch_text_kv_ == nullptr) {
+        throw std::invalid_argument("tensor-parallel TextContext requires the text KV caches");
+    }
+    if (tp.linear_attention->slot_count() != state_.slot_count()) {
+        throw std::invalid_argument(
+            "tensor-parallel Linear Attention state pools disagree on their slots");
+    }
+    shard_config_       = shard_text_config(config_, kTensorParallelWidth);
+    const auto& layers0 = parameters_.text.layers;
+    const auto& layers1 = tp.parameters->text.layers;
+    if (layers0.size() != layers1.size() || layers0.size() != config_.layer_types.size()) {
+        throw std::invalid_argument("tensor-parallel ranks disagree on the Text layers");
+    }
+    for (std::size_t layer = 0; layer < layers0.size(); ++layer) {
+        for (const auto* block : {&layers0[layer], &layers1[layer]}) {
+            if (!std::holds_alternative<DenseParameters>(block->ffn)) {
+                throw std::invalid_argument("text/layers/" + std::to_string(layer) +
+                                            ": the MoE FFN has no tensor-parallel route");
+            }
+            const ops::ProjectionWeights& projection =
+                std::holds_alternative<AttentionParameters>(block->mixer)
+                    ? std::get<AttentionParameters>(block->mixer).projection
+                    : std::get<GdnParameters>(block->mixer).projection;
+            if (!std::holds_alternative<LinearParameters>(projection)) {
+                throw std::invalid_argument(
+                    "text/layers/" + std::to_string(layer) +
+                    ": a paired input projection has no tensor-parallel route; the split "
+                    "projections require one contiguous shard parent per rank");
+            }
+        }
+    }
+    if (config_.full_attention_layers != 0) {
+        for (int rank = 0; rank < kTensorParallelWidth; ++rank) {
+            const PagedKVBatchLayerView view = rank_text_cache(rank).batch_layer_view(0);
+            // The head-local [256,12,2] attention geometry is registered for these two caches
+            // only (softmax_attention.h).
+            if (view.storage != KvCacheStorage::BFloat16 &&
+                view.storage != KvCacheStorage::Int8Group64) {
+                throw std::invalid_argument(
+                    "tensor-parallel attention supports only BF16 and INT8-G64 KV caches");
+            }
+            if (view.num_kv_heads != dimension(shard_config_->attention->num_key_value_heads) ||
+                view.head_dim != dimension(shard_config_->attention->head_dim)) {
+                throw std::invalid_argument(
+                    "tensor-parallel KV cache does not hold one rank's KV heads");
+            }
+        }
+    }
+}
+
+void TextContext::require_single_device(const char* operation) const {
+    if (tp_ != nullptr) {
+        throw std::invalid_argument(std::string(operation) +
+                                    " is not implemented at tensor-parallel width 2");
+    }
+}
+
+const Parameters& TextContext::rank_parameters(int rank) const noexcept {
+    return rank == 0 ? parameters_ : *tp_->parameters;
+}
+
+std::array<WorkspaceArena*, kTensorParallelWidth> TextContext::workspaces() const noexcept {
+    return {&work_, tp_->work};
+}
+
+cudaStream_t TextContext::rank_stream(int rank) const noexcept {
+    return rank == 0 ? ctx_.stream : tp_->execution->dev[1]->stream;
+}
+
+LinearAttentionStatePool& TextContext::rank_state(int rank) const noexcept {
+    return rank == 0 ? state_ : *tp_->linear_attention;
+}
+
+const qwen3_5::PagedKVCache& TextContext::rank_text_cache(int rank) const {
+    const qwen3_5::PagedKVCache* cache = rank == 0 ? batch_text_kv_ : tp_->text_cache;
+    if (cache == nullptr) { throw std::logic_error("tensor-parallel text KV cache is unbound"); }
+    return *cache;
+}
+
+const Tensor& TextContext::rank_cache_positions(int rank) const {
+    if (rank == 0) {
+        return active_cache_positions_ != nullptr ? *active_cache_positions_ : io_.pos;
+    }
+    if (peer_cache_positions_ == nullptr) {
+        throw std::logic_error("tensor-parallel rank 1 cache positions are unbound");
+    }
+    return *peer_cache_positions_;
+}
+
+const Tensor& TextContext::rank_rope_positions(int rank) const {
+    if (rank == 0) {
+        return active_rope_positions_ != nullptr ? *active_rope_positions_ : io_.rope_pos;
+    }
+    if (peer_rope_positions_ == nullptr) {
+        throw std::logic_error("tensor-parallel rank 1 RoPE positions are unbound");
+    }
+    return *peer_rope_positions_;
+}
+
+const Tensor& TextContext::rank_kv_table_rows(int rank) const {
+    if (rank == 0) {
+        return active_kv_table_rows_ != nullptr ? *active_kv_table_rows_ : io_.text_kv_table_row;
+    }
+    if (peer_kv_table_rows_ == nullptr) {
+        throw std::logic_error("tensor-parallel rank 1 KV table rows are unbound");
+    }
+    return *peer_kv_table_rows_;
+}
+
+const Tensor& TextContext::rank_linear_state_source_slots(int rank) const {
+    const Tensor* slots =
+        rank == 0 ? active_linear_state_source_slots_ : peer_linear_state_source_slots_;
+    if (slots == nullptr) {
+        throw std::logic_error("tensor-parallel Linear Attention source slots are unbound");
+    }
+    return *slots;
+}
+
+const Tensor& TextContext::rank_linear_state_destination_slots(int rank) const {
+    const Tensor* slots =
+        rank == 0 ? active_linear_state_destination_slots_ : peer_linear_state_destination_slots_;
+    if (slots == nullptr) {
+        throw std::logic_error("tensor-parallel Linear Attention destination slots are unbound");
+    }
+    return *slots;
+}
+
+void TextContext::attn_mix_tp2(const RankBlocks& w, RankTensors& x, int fidx,
+                               const RankTensors& staging) {
+    const ExecutionContext& execution = *tp_->execution;
+    const AttentionConfig& shard      = *shard_config_->attention;
+    const auto ws                     = workspaces();
+    const int T                       = x[0].ne[1];
+    if (active_causal_attention_envelope_ == nullptr) {
+        throw std::logic_error("Text GQA execution envelope is not set");
+    }
+    if (active_valid_columns_ != nullptr) {
+        throw std::logic_error("tensor-parallel attention has no masked-column route");
+    }
+    const std::array<const AttentionParameters*, 2> p{&std::get<AttentionParameters>(w[0]->mixer),
+                                                      &std::get<AttentionParameters>(w[1]->mixer)};
+    const std::int32_t head_dim = dimension(shard.head_dim);
+    const std::int32_t q_heads  = dimension(shard.num_attention_heads);
+    const std::int32_t kv_heads = dimension(shard.num_key_value_heads);
+    const std::int32_t q_width  = dimension(shard.query_width());
+
+    RankTensors h;
+    RankTensors q_flat;
+    RankTensors gate_flat;
+    RankTensors k_flat;
+    RankTensors v_flat;
+    for (std::size_t r = 0; r < 2; ++r) {
+        const auto projection = workspace::text_attention_projection(*ws[r], *shard_config_, T);
+        h[r]                  = projection.hidden;
+        q_flat[r]             = projection.query;
+        gate_flat[r]          = projection.gate;
+        k_flat[r]             = projection.key;
+        v_flat[r]             = projection.value;
+    }
+    for_each_rank(execution, [&](int rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        ops::rmsnorm(x[r], w[r]->input_norm, config_.rms_norm_eps, true, h[r], rank_stream(rank));
+    });
+    attention_projection_split(h, p, q_flat, gate_flat, k_flat, v_flat, ws, execution);
+
+    RankTensors qn;
+    RankTensors kn;
+    RankTensors a;
+    for (std::size_t r = 0; r < 2; ++r) {
+        const auto results = workspace::text_attention_results(*ws[r], *shard_config_, T);
+        qn[r]              = results.normalized_query.view({head_dim, q_heads, T});
+        kn[r]              = results.normalized_key.view({head_dim, kv_heads, T});
+        a[r]               = results.attention.view({head_dim, q_heads, T});
+    }
+    const float scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(head_dim)));
+    for_each_rank(execution, [&](int rank) {
+        const auto r   = static_cast<std::size_t>(rank);
+        cudaStream_t s = rank_stream(rank);
+        Tensor q       = q_flat[r].view({head_dim, q_heads, T});
+        Tensor k       = k_flat[r].view({head_dim, kv_heads, T});
+        Tensor v       = v_flat[r].view({head_dim, kv_heads, T});
+        Tensor gate    = gate_flat[r].view({head_dim, q_heads, T});
+        ops::rmsnorm(q, p[r]->query_norm, config_.rms_norm_eps, true, qn[r], s);
+        ops::rmsnorm(k, p[r]->key_norm, config_.rms_norm_eps, true, kn[r], s);
+        const Tensor& cache_positions = rank_cache_positions(rank);
+        const Tensor& rope_positions  = rank_rope_positions(rank);
+        Tensor rope_for_op =
+            active_sequence_batch_ != 0 ? rope_positions.view({T}) : rope_positions;
+        text_rope(rope_for_op, *config_.rope_parameters, qn[r], kn[r], s);
+
+        const PagedKVBatchLayerView cache = rank_text_cache(rank).batch_layer_view(fidx);
+        const Tensor& kv_table_rows       = rank_kv_table_rows(rank);
+        if (active_sequence_batch_ != 0) {
+            const std::int32_t width = active_sequence_width_;
+            const std::int32_t batch = active_sequence_batch_;
+            if (width <= 0 || width * batch != T) {
+                throw std::logic_error(
+                    "Text sequence batch binding does not match aggregate columns");
+            }
+            Tensor q_batch        = qn[r].view({head_dim, q_heads, width, batch});
+            Tensor k_batch        = kn[r].view({head_dim, kv_heads, width, batch});
+            Tensor v_batch        = v.view({head_dim, kv_heads, width, batch});
+            Tensor a_batch        = a[r].view({head_dim, q_heads, width, batch});
+            Tensor position_batch = cache_positions.view({width, batch});
+            ops::causal_softmax_attention(q_batch, k_batch, v_batch, position_batch, Tensor{},
+                                          kv_table_rows, {head_dim, q_heads, kv_heads}, scale,
+                                          cache, *active_causal_attention_envelope_, *ws[r],
+                                          a_batch, s);
+        } else {
+            ops::causal_softmax_attention(qn[r], kn[r], v, cache_positions, Tensor{}, kv_table_rows,
+                                          {head_dim, q_heads, kv_heads}, scale, cache,
+                                          *active_causal_attention_envelope_, *ws[r], a[r], s);
+        }
+        ops::sigmoid_mul(gate, a[r], s);
+    });
+
+    attention_output_split({a[0].view({q_width, T}), a[1].view({q_width, T})}, p, x, staging, ws,
+                           execution, *tp_->events);
+}
+
+void TextContext::gdn_mix_tp2(const RankBlocks& w, RankTensors& x, int gidx, Phase ph,
+                              const RankTensors& staging) {
+    const ExecutionContext& execution = *tp_->execution;
+    const GdnConfig& shard            = *shard_config_->gdn;
+    const auto ws                     = workspaces();
+    const int T                       = x[0].ne[1];
+    const std::array<const GdnParameters*, 2> p{&std::get<GdnParameters>(w[0]->mixer),
+                                                &std::get<GdnParameters>(w[1]->mixer)};
+    const std::int32_t key_dim     = dimension(shard.linear_key_head_dim);
+    const std::int32_t key_heads   = dimension(shard.linear_num_key_heads);
+    const std::int32_t value_dim   = dimension(shard.linear_value_head_dim);
+    const std::int32_t value_heads = dimension(shard.linear_num_value_heads);
+    const std::int32_t key_width   = dimension(shard.key_width());
+    const std::int32_t value_width = dimension(shard.value_width());
+    const auto layer               = static_cast<std::uint32_t>(gidx);
+
+    RankTensors h;
+    RankTensors g;
+    RankTensors beta;
+    RankTensors z;
+    RankTensors qc;
+    RankTensors kc;
+    RankTensors vc;
+    for (std::size_t r = 0; r < 2; ++r) {
+        const auto control    = workspace::gdn_control(*ws[r], *shard_config_, T);
+        h[r]                  = control.hidden;
+        g[r]                  = control.g;
+        beta[r]               = control.beta;
+        const auto projection = workspace::gdn_projection(*ws[r], *shard_config_, T);
+        z[r]                  = projection.output_gate;
+        qc[r]                 = projection.query;
+        kc[r]                 = projection.key;
+        vc[r]                 = projection.value;
+    }
+    // The single-device path fuses this norm into the gating GEMM, which has no split form. The
+    // norm is replicated elementwise work, so it runs per rank ahead of the split gating.
+    for_each_rank(execution, [&](int rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        ops::rmsnorm(x[r], w[r]->input_norm, config_.rms_norm_eps, true, h[r], rank_stream(rank));
+    });
+    gdn_control_split(h, p, g, beta, ws, execution);
+
+    if (ph == Phase::Verify) {
+        const std::int32_t width = active_sequence_width_;
+        const std::int32_t batch = active_sequence_batch_;
+        if (batch == 0 || width <= 0 || width * batch != T) {
+            throw std::logic_error("GDN sequence batch binding does not match aggregate columns");
+        }
+        if (gdn_state_action_ != GdnStateAction::UpdateInPlace || width != 1) {
+            throw std::logic_error(
+                "tensor-parallel GDN implements the in-place width-one batched update only");
+        }
+        RankTensors projection_input;
+        RankTensors query_output;
+        RankTensors key_output;
+        RankTensors value_output;
+        RankTensors gate_output;
+        RankTensors conv_states;
+        RankTensors source_slots;
+        RankTensors destination_slots;
+        for (std::size_t r = 0; r < 2; ++r) {
+            const int rank       = static_cast<int>(r);
+            projection_input[r]  = h[r].view({dimension(config_.hidden_size), width, batch});
+            query_output[r]      = qc[r].view({key_width, width, batch});
+            key_output[r]        = kc[r].view({key_width, width, batch});
+            value_output[r]      = vc[r].view({value_width, width, batch});
+            gate_output[r]       = z[r].view({value_width, width, batch});
+            conv_states[r]       = rank_state(rank).layer_view(layer).conv;
+            source_slots[r]      = rank_linear_state_source_slots(rank);
+            destination_slots[r] = rank_linear_state_destination_slots(rank);
+        }
+        gdn_projection_snapshot_split(projection_input, p, conv_states, {Tensor{}, Tensor{}},
+                                      source_slots, destination_slots, query_output, key_output,
+                                      value_output, gate_output, ws, execution);
+    } else {
+        RankTensors qkv;
+        for (std::size_t r = 0; r < 2; ++r) {
+            qkv[r] = workspace::gdn_prefill_conv(*ws[r], *shard_config_, T);
+        }
+        gdn_projection_split(h, p, qkv, z, ws, execution);
+        for_each_rank(execution, [&](int rank) {
+            const auto r         = static_cast<std::size_t>(rank);
+            Tensor conv_state_in = rank_state(rank).conv_slot(layer, linear_state_source_slot_);
+            Tensor conv_state_out =
+                rank_state(rank).conv_slot(layer, linear_state_destination_slot_);
+            ops::causal_conv1d_silu_split(qkv[r], p[r]->convolution, conv_state_in, conv_state_out,
+                                          qc[r], kc[r], vc[r], rank_stream(rank));
+        });
+    }
+
+    RankTensors o;
+    for (std::size_t r = 0; r < 2; ++r) {
+        o[r] = workspace::gdn_recurrent_output(*ws[r], *shard_config_, T)
+                   .view({value_dim, value_heads, T});
+    }
+    const float scale = static_cast<float>(1.0 / std::sqrt(static_cast<double>(key_dim)));
+    for_each_rank(execution, [&](int rank) {
+        const auto r       = static_cast<std::size_t>(rank);
+        cudaStream_t s     = rank_stream(rank);
+        Tensor q_recurrent = qc[r].view({key_dim, key_heads, T});
+        Tensor k_recurrent = kc[r].view({key_dim, key_heads, T});
+        Tensor v_recurrent = vc[r].view({value_dim, value_heads, T});
+        if (ph == Phase::Verify) {
+            const std::int32_t width = active_sequence_width_;
+            const std::int32_t batch = active_sequence_batch_;
+            Tensor recurrent_states  = rank_state(rank).layer_view(layer).recurrent;
+            Tensor q_batch           = q_recurrent.view({key_dim, key_heads, width, batch});
+            Tensor k_batch           = k_recurrent.view({key_dim, key_heads, width, batch});
+            Tensor v_batch           = v_recurrent.view({value_dim, value_heads, width, batch});
+            Tensor g_batch           = g[r].view({value_heads, width, batch});
+            Tensor beta_batch        = beta[r].view({value_heads, width, batch});
+            Tensor out_batch         = o[r].view({value_dim, value_heads, width, batch});
+            ops::gated_delta_net_batch_update(
+                q_batch, k_batch, v_batch, g_batch, beta_batch, scale,
+                /*normalize_qk=*/true, recurrent_states, rank_linear_state_source_slots(rank),
+                rank_linear_state_destination_slots(rank), out_batch, s);
+        } else {
+            Tensor recurrent_state_in =
+                rank_state(rank).recurrent_slot(layer, linear_state_source_slot_);
+            Tensor recurrent_state_out =
+                rank_state(rank).recurrent_slot(layer, linear_state_destination_slot_);
+            ops::gated_delta_net(q_recurrent, k_recurrent, v_recurrent, g[r], beta[r], scale,
+                                 /*normalize_qk=*/true, *ws[r], recurrent_state_in,
+                                 recurrent_state_out, o[r], s);
+        }
+    });
+
+    RankTensors on;
+    for (std::size_t r = 0; r < 2; ++r) {
+        on[r] = workspace::gdn_normalized_output(*ws[r], *shard_config_, T)
+                    .view({value_dim, value_heads, T});
+    }
+    for_each_rank(execution, [&](int rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        Tensor gate  = z[r].view({value_dim, value_heads, T});
+        // The norm weight is per head dimension and replicated, so each rank applies all of it
+        // over its own value heads.
+        ops::gated_rmsnorm(o[r], p[r]->norm, gate, config_.rms_norm_eps, on[r], rank_stream(rank));
+    });
+
+    gdn_output_split({on[0].view({value_width, T}), on[1].view({value_width, T})}, p, x, staging,
+                     ws, execution, *tp_->events);
+}
+
+void TextContext::mlp_tail_tp2(const RankBlocks& w, RankTensors& x, const RankTensors& staging) {
+    const ExecutionContext& execution = *tp_->execution;
+    const auto ws                     = workspaces();
+    RankTensors h;
+    for (std::size_t r = 0; r < 2; ++r) {
+        h[r] = workspace::post_mixer_hidden(*ws[r], config_, x[r].ne[1]);
+    }
+    for_each_rank(execution, [&](int rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        ops::rmsnorm(x[r], w[r]->post_attention_norm, config_.rms_norm_eps, true, h[r],
+                     rank_stream(rank));
+    });
+    ffn_split(h, {&w[0]->ffn, &w[1]->ffn}, x, staging, ws, execution, *tp_->events);
+}
+
+template <class Tap>
+void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& staging, Tap& tap) {
+    const bool prefill  = ph == Phase::Prefill;
+    const auto& layers0 = parameters_.text.layers;
+    const auto& layers1 = tp_->parameters->text.layers;
+    for (std::size_t layer = 0; layer < layers0.size(); ++layer) {
+        const RankBlocks block{&layers0[layer], &layers1[layer]};
+        const bool full    = config_.layer_types[layer] == MixerKind::FullAttention;
+        const auto compact = dimension(config_.compact_layer_indices[layer]);
+        nvtx::ScopedRange layer_range(
+            full ? (prefill ? nvtx::Name::PrefillLayerFull : nvtx::Name::VerifyLayerFull)
+                 : (prefill ? nvtx::Name::PrefillLayerGdn : nvtx::Name::VerifyLayerGdn),
+            full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
+        try {
+            {
+                nvtx::ScopedRange mixer_range(
+                    full ? (prefill ? nvtx::Name::PrefillAttention : nvtx::Name::VerifyAttention)
+                         : (prefill ? nvtx::Name::PrefillGdn : nvtx::Name::VerifyGdn),
+                    full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
+                auto scope0 = work_.scope();
+                auto scope1 = tp_->work->scope();
+                if (full) {
+                    attn_mix_tp2(block, x, compact, staging);
+                } else {
+                    gdn_mix_tp2(block, x, compact, ph, staging);
+                }
+            }
+            {
+                nvtx::ScopedRange range(prefill ? nvtx::Name::PrefillPostMixer
+                                                : nvtx::Name::VerifyPostMixer,
+                                        nvtx::Category::PostMixer, layer);
+                auto scope0 = work_.scope();
+                auto scope1 = tp_->work->scope();
+                mlp_tail_tp2(block, x, staging);
+            }
+            if constexpr (Tap::enabled) {
+                tap.capture_layer(static_cast<int>(layer), x[0], ctx_.stream);
+            }
+        } catch (const std::exception& error) {
+            throw std::runtime_error(
+                "text/layers/" + std::to_string(layer) + (prefill ? " prefill" : " verify") +
+                " tp2 columns=" + std::to_string(x[0].ne[1]) + ": " + error.what());
+        }
+    }
+}
+
+void TextContext::logits_tp2(const RankTensors& hidden, Tensor& logits) {
+    const auto ws                 = workspaces();
+    const std::int32_t columns    = hidden[0].ne[1];
+    const LinearParameters& head0 = parameters_.text.output_head;
+    const LinearParameters& head1 = tp_->parameters->text.output_head;
+    auto scope0                   = work_.scope();
+    auto scope1                   = tp_->work->scope();
+    const auto part0 = workspace::tp_logits(*ws[0], config_, head0.weight.n, columns, false);
+    const auto part1 = workspace::tp_logits(*ws[1], config_, head1.weight.n, columns, true);
+    output_logits_split(hidden, {&head0, &head1}, {part0.partial, part1.partial},
+                        {logits, part1.gathered}, ws, *tp_->execution, *tp_->events);
+}
+
 PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std::uint32_t begin,
                                               std::uint32_t nominal_length, bool finalize_at_end) {
     if (begin >= full_ids.size() || nominal_length == 0 ||
         nominal_length > full_ids.size() - begin) {
         throw std::invalid_argument("text prefill chunk is outside the prompt");
     }
+    require_single_device("text prefill");
     const TextPrefill text_prefill{full_ids, begin};
     NullTap tap;
     return prefill_impl(full_ids.subspan(begin, nominal_length), &text_prefill, nullptr, tap,
@@ -1422,6 +1937,7 @@ PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std
         nominal_length > full_ids.size() - begin) {
         throw std::invalid_argument("text prefill chunk is outside the prompt");
     }
+    require_single_device("text prefill");
     const TextPrefill text_prefill{full_ids, begin};
     return prefill_impl(full_ids.subspan(begin, nominal_length), &text_prefill, nullptr, sink,
                         finalize_at_end);
@@ -1434,6 +1950,7 @@ PrefillChunkResult TextContext::prefill_chunk(const qwen3_5::PreparedPromptData&
         nominal_length > input.token_ids.size() - begin) {
         throw std::invalid_argument("multimodal prefill chunk is outside the prompt");
     }
+    require_single_device("multimodal prefill");
     const std::span<const int> tokens(input.token_ids);
     const MultimodalPrefill multimodal{tokens, input.positions, &vision, begin, input.rope_delta};
     NullTap tap;
@@ -1449,6 +1966,7 @@ PrefillChunkResult TextContext::prefill_chunk(const qwen3_5::PreparedPromptData&
         nominal_length > input.token_ids.size() - begin) {
         throw std::invalid_argument("multimodal prefill chunk is outside the prompt");
     }
+    require_single_device("multimodal prefill");
     const std::span<const int> tokens(input.token_ids);
     const MultimodalPrefill multimodal{tokens, input.positions, &vision, begin, input.rope_delta};
     return prefill_impl(tokens.subspan(begin, nominal_length), nullptr, &multimodal, sink,
