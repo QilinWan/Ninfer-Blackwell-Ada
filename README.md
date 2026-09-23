@@ -3,17 +3,42 @@
 > Selected checkpoints. Maximum single-GPU inference performance.
 
 NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
-single NVIDIA GeForce RTX 5090. It runs text, image, and video prompts through a local CLI or
+single NVIDIA GeForce GPU. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
 resident model, and a startup-fixed capacity of one to eight active requests.
 
-Five official artifacts are available. The quick-start commands use Qwen3.8-27B NVFP4.
+## This repository: NInfer for Ada (sm_89)
+
+Upstream [Neroued/ninfer](https://github.com/Neroued/ninfer) compiles for exactly one architecture,
+`sm_120a` (RTX 5090). This repository keeps that build intact and adds a second one for **Ada
+(`sm_89`)**: RTX 4090 / 4090D / 4080 (SUPER) / 4070 (Ti) / 4060. Both builds consume the same
+**v3 `.ninfer` artifacts** — the v3 switch is a container and manifest change, not a requantization,
+so no re-download or re-conversion is needed.
+
+What Ada does and does not support, why, and how each claim is checked:
+**[docs/sm89.md](docs/sm89.md)**. Everything else on this page is upstream's product documentation.
+
+| | Ada (`-DCMAKE_CUDA_ARCHITECTURES=89`) | Blackwell (`120a`, upstream default) |
+|---|---|---|
+| Artifact format | v3 only | v3 only |
+| Weight recipes | `groupwise-int` (Q4/Q5/Q6/Q8 + Q8 vocab) | groupwise-int, `nvfp4` |
+| Speculation | MTP, DFlash, DFlash2 | MTP, DFlash, DFlash2 |
+| KV cache | INT8, FP8, BF16 | plus NVFP4, K8V4 |
+| Vision, CLI, HTTP serving | yes | yes |
+
+One cubin covers the whole Ada family: SM count, L2 size and residency come from the device at
+runtime, so a 4090 (128 SM), a 4090D (114 SM) and a 4080 SUPER (80 SM) share one binary.
+
+## Official artifacts
+
+Five official artifacts are available. The quick-start commands use Qwen3.8-27B NVFP4, which needs
+the Blackwell build; on Ada use the `groupwise-int` artifact.
 
 | Model | Weights | Artifact | Download and model card |
 |---|---|---|---|
 | Qwen3.6-27B | `groupwise-int` | `qwen3_6_27b.ninfer` | [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) |
 | Qwen3.6-27B | `nvfp4` | `qwen3_6_27b_nvfp4.ninfer` | [Qwen3.6-27B NVFP4](https://huggingface.co/neroued/Qwen3.6-27B-nvfp4-NInfer) |
-| Qwen3.8-27B | `groupwise-int` | `qwen3_8_27b.ninfer` | [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) |
+| Qwen3.8-27B | `groupwise-int` | `qwen3_8_27b.ninfer` | [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) |
 | Qwen3.8-27B | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) |
 | Qwen3.6-35B-A3B | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) |
 
@@ -28,19 +53,29 @@ the weights again.
 
 ## Quick start
 
-NInfer requires 64-bit Linux, an NVIDIA GeForce RTX 5090, a CUDA toolkit supporting `sm_120a`,
-CMake 3.28 or newer, a C++20 host compiler, Ninja, `pkg-config`, FFmpeg development libraries
-(`libavformat`, `libavcodec`, `libavutil`, and `libswscale`), and `libcurl >= 7.85`.
-CUDA 13.1 is the validated development toolkit; CMake does not impose a CUDA version floor.
-The build rejects CUDA architectures other than `sm_120a`.
+NInfer requires 64-bit Linux, a C++20 host compiler, CMake 3.28 or newer, Ninja and `pkg-config`,
+plus one of:
+
+| Target | GPU | CUDA toolkit | Extra dependencies | Build flag |
+|---|---|---|---|---|
+| `sm_120a` (upstream) | RTX 5090 | 13.1 validated | FFmpeg dev (`libavformat`, `libavcodec`, `libavutil`, `libswscale`), `libcurl >= 7.85` | default |
+| `sm_89` (this fork) | RTX 40 series | 13.x validated, 12.x in checking | same; FFmpeg optional with `-DNINFER_ENABLE_VISION=OFF` | `-DCMAKE_CUDA_ARCHITECTURES=89` |
+
+CMake accepts exactly those two architectures and rejects anything else, so a mis-set target fails at
+configure time rather than producing a binary that cannot launch.
 
 Build the product binaries:
 
 ```bash
-git clone https://github.com/Neroued/ninfer.git
-cd ninfer
+git clone https://github.com/QilinWan/Ninfer-sm89.git
+cd Ninfer-sm89
 
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+# Ada (RTX 4090 / 4090D / 4080 SUPER / 4070 / 4060)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=89
+cmake --build build -j
+
+# Blackwell (RTX 5090): identical to upstream
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120a
 cmake --build build -j
 ```
 
