@@ -365,12 +365,12 @@ public:
     const WorkspacePlan workspace_plan;
 
     // Tensor-parallel rank 1 (width 2 only). It holds the same persistent and workspace layout as
-    // rank 0 on ExecutionContext::dev[1]; its KV page pool, KV execution tables and StateImages
+    // rank 0 on ExecutionContext::dev[1]; its KV page pools, KV execution tables and StateImages
     // are mirrors that rank 0's pools drive, so rank 0's bookkeeping names both ranks' storage.
-    // Only the Text KV, the GDN/hidden StateImages, the prefill KV row and the ordinary decode
-    // frame are read on rank 1. Declared before rank 0's storage so it is destroyed after it:
-    // rank 0's execution tables hold rank 1's row leases until they are destroyed, and rank 0's
-    // graphs hold rank 1 nodes and events.
+    // Rank 1 reads the Text and MTP KV, the GDN/hidden StateImages, its ReplaySSM records, the
+    // prefill hidden and KV rows, and the ordinary or MTP decode frame. Declared before rank 0's
+    // storage so it is destroyed after it: rank 0's execution tables hold rank 1's row leases
+    // until they are destroyed, and rank 0's graphs hold rank 1 nodes and events.
     struct PeerRuntime {
         PeerRuntime(DeviceContext& device, const SequencePlanImpl& plan);
 
@@ -380,7 +380,11 @@ public:
         WorkspaceArena work;
         std::unique_ptr<qwen3_5::DecoderState> decoder;
         std::unique_ptr<qwen3_5::StateImageDevicePool> state_images;
+        std::optional<GdnReplayRecords> replay_records;
+        std::optional<ops::GdnReplayFoldPlan> replay_fold;
         qwen3_5::RoundState io;
+        Tensor prefill_hidden;
+        // Views rank 1's ordinary decode frame; empty under a speculative backend.
         execution::OrdinaryPeerFrame ordinary;
     };
 
@@ -400,6 +404,11 @@ public:
     [[nodiscard]] const DecodeGraphPeerBridge* graph_peer_bridge() const noexcept {
         return graph_bridge ? &*graph_bridge : nullptr;
     }
+
+    // A prefill call's copy of tp_execution naming `sequence`'s rank-1 MTP KV row; empty at
+    // width 1.
+    [[nodiscard]] std::optional<execution::TpExecution>
+    prefill_tp_binding(const SequenceState& sequence) const;
 
     // Waits for rank 1 and then rank 0; at width 1 only rank 0.
     void synchronize_devices() const;

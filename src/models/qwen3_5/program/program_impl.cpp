@@ -29,11 +29,21 @@ ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const Sequence
     const DeviceSpan backing = persistent.alloc_bytes(plan.persistent.bytes, 256);
     decoder = std::make_unique<qwen3_5::DecoderState>(backing, plan.persistent.decoder);
     state_images = std::make_unique<StateImageDevicePool>(backing, plan.persistent.state_images);
+    if (plan.persistent.replay_records) {
+        replay_records.emplace(backing, *plan.persistent.replay_records);
+        replay_fold.emplace(*replay_records, state_images->linear().all_layers_view());
+    }
     io           = qwen3_5::RoundState(backing, plan.persistent.round);
     if (!io.ordinary) {
         throw std::logic_error("tensor-parallel rank 1 has no ordinary decode frame");
     }
-    ordinary = execution::ordinary_peer_frame(*io.ordinary);
+    io             = qwen3_5::RoundState(backing, plan.persistent.round);
+    prefill_hidden = plan.persistent.prefill_hidden.bind(backing);
+    if (io.ordinary.has_value() == io.mtp_decode.has_value()) {
+        throw std::logic_error(
+            "tensor-parallel rank 1 needs exactly one of the ordinary and MTP decode frames");
+    }
+    if (io.ordinary) { ordinary = execution::ordinary_peer_frame(*io.ordinary); }
 }
 
 ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const SequencePlanImpl& plan,
@@ -110,9 +120,11 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             throw std::invalid_argument(
                 "tensor-parallel Program requires a Host context capacity of 0");
         }
-        if (speculative_backend != SpeculativeBackend::None || vision_enabled || causal_scoring) {
-            throw std::invalid_argument(
-                "tensor-parallel Program supports ordinary generation only");
+        if ((speculative_backend != SpeculativeBackend::None &&
+             speculative_backend != SpeculativeBackend::Mtp) ||
+            vision_enabled || causal_scoring) {
+            throw std::invalid_argument("tensor-parallel Program supports ordinary and MTP "
+                                        "text generation only");
         }
         execution_context = execution_in;
         peer_parameters   = peer_parameters_in;
@@ -241,15 +253,27 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (peer) {
         // Rank 1's prefill row scalar starts at 0; every publish that writes rank 0's writes it.
         set_peer_i32(peer->io.text_kv_table_row, 0);
+        set_peer_i32(peer->io.backend_kv_table_row, 0);
+        const bool mtp = speculative_backend == SpeculativeBackend::Mtp;
+        if (mtp && (!peer->io.mtp || !peer->io.mtp_decode || !peer->replay_records ||
+                    peer->decoder->mtp_cache() == nullptr)) {
+            throw std::logic_error("tensor-parallel rank 1 has no MTP storage");
+        }
         tp_execution.emplace(execution::TpExecution{
-            .execution         = execution_context,
-            .events            = &*peer_events,
-            .parameters        = peer_parameters,
-            .work              = &peer->work,
-            .linear_attention  = &peer->state_images->linear(),
-            .text_cache        = &peer->decoder->text_kv,
-            .text_kv_table_row = peer->io.text_kv_table_row,
-            .ordinary          = &peer->ordinary,
+            .execution            = execution_context,
+            .events               = &*peer_events,
+            .parameters           = peer_parameters,
+            .work                 = &peer->work,
+            .linear_attention     = &peer->state_images->linear(),
+            .text_cache           = &peer->decoder->text_kv,
+            .text_kv_table_row    = peer->io.text_kv_table_row,
+            .ordinary             = peer->io.ordinary ? &peer->ordinary : nullptr,
+            .mtp_cache            = mtp ? peer->decoder->mtp_cache() : nullptr,
+            .mtp_kv               = {},
+            .backend_kv_table_row = mtp ? peer->io.backend_kv_table_row : Tensor{},
+            .mtp                  = mtp ? &*peer->io.mtp : nullptr,
+            .prefill_hidden       = mtp ? peer->prefill_hidden : Tensor{},
+            .replay_records       = mtp ? &*peer->replay_records : nullptr,
         });
     }
     host_tokens = round_host
@@ -325,7 +349,31 @@ void ProgramImpl::attach_tensor_parallel_mirrors() {
     decoder->text_kv.page_pool().attach_mirror(peer->decoder->text_kv.page_pool(), where);
     decoder->text_kv.execution_tables().attach_mirror(peer->decoder->text_kv.execution_tables(),
                                                       where);
+    if (qwen3_5::PagedKVCache* mtp = decoder->mtp_cache()) {
+        // The MTP rows are leased with the sequence's backend address space; the mirror takes and
+        // releases rank 1's lease on the same row with rank 0's.
+        qwen3_5::PagedKVCache* peer_mtp = peer->decoder->mtp_cache();
+        if (peer_mtp == nullptr) { throw std::logic_error("tensor-parallel rank 1 has no MTP KV"); }
+        mtp->page_pool().attach_mirror(peer_mtp->page_pool(), where);
+        mtp->execution_tables().attach_mirror(peer_mtp->execution_tables(), where);
+    }
     state_images->attach_mirror(*peer->state_images, rank1.device, rank1.stream);
+}
+
+std::optional<execution::TpExecution>
+ProgramImpl::prefill_tp_binding(const SequenceState& sequence) const {
+    if (!tp_execution) { return std::nullopt; }
+    execution::TpExecution binding = *tp_execution;
+    if (speculative_backend == SpeculativeBackend::Mtp) {
+        if (decoder->mtp_cache() == nullptr || !sequence.kv || !sequence.kv->backend ||
+            !backend_kv_addresses->active(*sequence.kv->backend)) {
+            throw std::logic_error("sequence has no active MTP KV execution mapping");
+        }
+        const KVExecutionRowLease& row = decoder->mtp_cache()->execution_tables().mirror_row(
+            backend_kv_addresses->execution_row(*sequence.kv->backend).handle());
+        binding.mtp_kv = peer->decoder->mtp_cache()->execution_view(row);
+    }
+    return binding;
 }
 
 void ProgramImpl::synchronize_devices() const {
@@ -342,8 +390,8 @@ void ProgramImpl::set_peer_i32(Tensor& tensor, std::int32_t value) {
 
 void ProgramImpl::publish_peer_kv_rows(const SequenceState& sequence) {
     if (!peer) { return; }
-    // Rank 1's prefill reads its own row scalar. Its execution tables are rank 0's mirror, so the
-    // row index is the same; it is written whenever rank 0's is.
+    // Rank 1's prefill reads its own row scalars. Its execution tables are rank 0's mirrors, so the
+    // row indices are the same; they are written whenever rank 0's are.
     const std::int32_t row = text_kv_addresses->bound_row(sequence.kv->text);
     const KVExecutionRowLease& peer_row = decoder->text_kv.execution_tables().mirror_row(
         text_kv_addresses->execution_row(sequence.kv->text).handle());
@@ -351,6 +399,23 @@ void ProgramImpl::publish_peer_kv_rows(const SequenceState& sequence) {
         throw std::logic_error("tensor-parallel KV execution rows disagree across ranks");
     }
     set_peer_i32(peer->io.text_kv_table_row, row);
+
+    // The MTP round's backend (MTP KV) row follows the Text row on both ranks, so a speculative
+    // prefill, a forced-token prefill and a replay chunk all name the same row on rank 1.
+    const std::int32_t backend_row =
+        sequence.kv->backend ? backend_kv_addresses->bound_row(*sequence.kv->backend) : 0;
+    if (sequence.kv->backend) {
+        const qwen3_5::PagedKVCache* backend = backend_kv_cache();
+        if (backend == nullptr || backend->execution_tables()
+                                       .mirror_row(backend_kv_addresses
+                                                       ->execution_row(*sequence.kv->backend)
+                                                       .handle())
+                                       .row_index() != backend_row) {
+            throw std::logic_error(
+                "tensor-parallel backend KV execution rows disagree across ranks");
+        }
+    }
+    set_peer_i32(peer->io.backend_kv_table_row, backend_row);
 }
 
 std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,

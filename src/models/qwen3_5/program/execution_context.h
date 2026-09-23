@@ -83,6 +83,10 @@ struct MtpBatchContext {
     const qwen3_5::MtpDecodeIngress& host_ingress;
     qwen3_5::MtpDecodeEgress& host_egress;
     Tensor& continuation_hidden_store;
+    // Tensor-parallel width 2 only: rank 1's frame, which receives the same host ingress record,
+    // and rank 1's continuation hidden store.
+    qwen3_5::MtpDecodeState* peer_frame    = nullptr;
+    Tensor* peer_continuation_hidden_store = nullptr;
 };
 
 struct DFlashBatchContext {
@@ -146,6 +150,15 @@ void configure_text_card(TextContext& card, const ExecutionCore& execution,
 void target_verify_forward(ExecutionCore&, TextContext&, TargetVerifyFrameView,
                            ops::CausalAttentionExecutionEnvelope);
 void target_accept(ExecutionCore&, Tensor& continuation_hidden_store, TargetVerifyFrameView);
+// Tensor-parallel width 2: both ranks verify their halves of the model, each with its own frame
+// view and ReplaySSM records. Acceptance runs on rank 0 alone over the gathered logits; its
+// accepted-draft counts are copied to rank 1, and both ranks select and publish their accepted
+// hidden. `peer.replay_records` are rank 1's; feature capture is not supported. This tree splits
+// verify and accept into two entries, so the peer face is one extra parameter each.
+void target_verify_forward(ExecutionCore&, TextContext&, TargetVerifyFrameView frame,
+                           TargetVerifyFrameView peer, ops::CausalAttentionExecutionEnvelope);
+void target_accept(ExecutionCore&, Tensor& continuation_hidden_store, TargetVerifyFrameView frame,
+                   TargetVerifyFrameView peer, Tensor& peer_continuation_hidden_store);
 
 [[nodiscard]] PrefillChunkResult prefill_text_chunk(PrefillContext& state,
                                                     std::span<const TokenId> ids,

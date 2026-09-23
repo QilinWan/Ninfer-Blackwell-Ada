@@ -197,9 +197,16 @@ void ProgramImpl::prepare_graphs() {
             CUDA_CHECK(cudaMemsetAsync(tensor.data, 0, tensor.bytes(), device.stream));
         }
         if (peer) {
+            std::vector<Tensor> peer_controls{peer->io.token, peer->io.pos, peer->io.rope_pos,
+                                              peer->io.rope_delta};
+            if (peer->io.mtp) {
+                peer_controls.push_back(peer->io.mtp->position);
+                peer_controls.push_back(peer->io.mtp->draft_tokens);
+                peer_controls.push_back(peer->io.mtp->target_input_ids);
+                peer_controls.push_back(peer->io.mtp->target_positions);
+            }
             const ScopedCurrentDevice rank1(peer->device.device);
-            for (const Tensor& tensor :
-                 {peer->io.token, peer->io.pos, peer->io.rope_pos, peer->io.rope_delta}) {
+            for (const Tensor& tensor : peer_controls) {
                 CUDA_CHECK(cudaMemsetAsync(tensor.data, 0, tensor.bytes(), peer->device.stream));
             }
         }
@@ -376,6 +383,7 @@ void ProgramImpl::prepare_graphs() {
         }
     }
 
+
     if (!ordinary_graphs.profiles.empty()) {
         instantiate_graph_family(ordinary_graphs, "ordinary", device, synchronize_all);
         for (auto& topology : ordinary_graphs.topologies) {
@@ -398,13 +406,18 @@ void ProgramImpl::prepare_graphs() {
         validate_graph_profiles(forward_profiles, capacity - 1, "speculative forward");
         validate_graph_profiles(finish_profiles, capacity - 1, "speculative finish");
         const auto mtp_context = [&] {
-            return execution::MtpBatchContext{execution_core(),
-                                              decoder->text_kv,
-                                              *decoder->mtp_cache(),
-                                              *io.mtp_decode,
-                                              *mtp_host_ingress,
-                                              *mtp_host_egress,
-                                              state_images->continuation_hidden_store()};
+            return execution::MtpBatchContext{
+                execution_core(),
+                decoder->text_kv,
+                *decoder->mtp_cache(),
+                *io.mtp_decode,
+                *mtp_host_ingress,
+                *mtp_host_egress,
+                state_images->continuation_hidden_store(),
+                // Tensor-parallel width 2: rank 1's own MTP frame and continuation hidden store,
+                // which receive the same ingress record and publish their accepted hidden.
+                peer ? &*peer->io.mtp_decode : nullptr,
+                peer ? &peer->state_images->continuation_hidden_store() : nullptr};
         };
         const auto dflash_context = [&] {
             return execution::DFlashBatchContext{execution_core(),
@@ -455,11 +468,19 @@ void ProgramImpl::prepare_graphs() {
         };
 
         const auto code_warm = forward_profiles.front();
-        prepare_representative(code_warm.min, 1);
-        synchronize_devices();
-        run(SpeculativePhase::Forward, 1, code_warm.max, nullptr);
-        run(SpeculativePhase::Finish, 1, code_warm.max, nullptr);
-        synchronize_devices();
+        // As for ordinary rounds: a module first touched inside a capture region cannot be loaded
+        // there and batch shape selects kernels, so every batch size is warmed eagerly on both
+        // devices at tp 2 before any capture. Each warm round runs both phases, as this tree's
+        // speculative entry points do.
+        const std::uint32_t warm_batches = tensor_parallel() ? max_concurrency : 1U;
+        for (std::uint32_t batch = 1; batch <= warm_batches; ++batch) {
+            prepare_representative(code_warm.min, batch);
+            synchronize_all();
+            run(SpeculativePhase::Forward, static_cast<std::int32_t>(batch), code_warm.max,
+                nullptr);
+            run(SpeculativePhase::Finish, static_cast<std::int32_t>(batch), code_warm.max, nullptr);
+            synchronize_all();
+        }
 
         for (const auto phase : {SpeculativePhase::Forward, SpeculativePhase::Finish}) {
             const bool forward = phase == SpeculativePhase::Forward;

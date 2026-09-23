@@ -352,6 +352,18 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
         timing.resume_submit();
         replay_fold->execute(std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
                              device.stream);
+        if (peer) {
+            // Rank 1 folds its own records into its own GDN state with the same rows and commit
+            // counts: the accepted prefix belongs to the round, and the two ranks' records differ
+            // only in which heads and channels they cover.
+            if (!peer->replay_fold) {
+                throw std::logic_error("tensor-parallel speculative batch has no rank 1 records");
+            }
+            const ScopedCurrentDevice rank1(peer->device.device);
+            peer->replay_fold->execute(
+                std::span<const ops::GdnReplayFoldRow>(fold_rows.data(), lanes.size()),
+                peer->device.stream);
+        }
 
         // Sparse acceptance reads counts. Publish only the prefix licensed by the Frontend.
         if (speculative_backend == SpeculativeBackend::DFlash2) {
@@ -521,10 +533,11 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             rewrite_capture_hidden = state_images->continuation_hidden_slot(selectors.destination);
             rewrite_capture_hidden_ptr = &rewrite_capture_hidden;
         }
+        const std::optional<execution::TpExecution> tp = prefill_tp_binding(sequence);
         execution::PrefillContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head, tp_binding(), graph_peer_bridge()},
+             proposal_head, tp ? &*tp : nullptr, graph_peer_bridge()},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,

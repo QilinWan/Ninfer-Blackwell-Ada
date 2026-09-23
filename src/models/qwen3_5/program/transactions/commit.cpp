@@ -268,10 +268,11 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
             while (cursor < end) {
                 const std::uint32_t count           = std::min(prefill_chunk, end - cursor);
                 const StateImageSelectors selectors = state_selectors(sequence);
+                const std::optional<execution::TpExecution> tp = prefill_tp_binding(sequence);
                 execution::PrefillContext schedule_state{
                     {device, parameters, work, state_images->linear(),
                      replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-                     proposal_head, tp_binding(), graph_peer_bridge()},
+                     proposal_head, tp ? &*tp : nullptr, graph_peer_bridge()},
                     text_kv_view(sequence),
                     mtp_kv_view(sequence),
                     decoder->text_kv,
