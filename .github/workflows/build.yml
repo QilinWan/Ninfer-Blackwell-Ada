@@ -2,7 +2,7 @@ name: build
 
 # The product promise of this repository is that anyone can clone it and compile it. Neither job
 # needs a GPU: compiling and linking for Ada is the thing that breaks when an sm_120a-only
-# instruction sneaks back in, and it is checked on every push.
+# instruction sneaks back into a shared file.
 
 # Manual only by default: automatic runs on every push burn CI minutes for a check that cannot
 # touch Ada hardware here, and this repository's compile/link gate is already exercised locally for
