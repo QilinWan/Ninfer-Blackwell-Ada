@@ -262,15 +262,32 @@ constexpr std::int32_t cooperative_resident_ctas_per_sm() noexcept {
     static_assert(SplitK > 1);
     if constexpr (std::is_same_v<Geometry, Bf16Gdn27Geometry>) {
         static_assert(SplitK == 8 || SplitK == 4 || SplitK == 2);
+#ifdef NINFER_SM89
+        // Measured on this sm_89 object (cuobjdump --dump-resource-usage): BN128 split-8 is 256
+        // threads at 70 registers, so its 40 KiB of shared memory bounds residency to two CTAs per
+        // SM; split-4/2 are 512 threads at 74 registers, and Ada's 64K-register SM admits only one.
+        // Claiming more admits a cooperative grid the driver rejects with
+        // cudaErrorCooperativeLaunchTooLarge.
+        return SplitK == 8 ? 2 : 1;
+#else
         // Qualified on the sm_120a build: BN128 split-8 uses 256 threads and split-4/2 use
         // 512 threads; registers and 40-KiB shared memory admit two resident CTAs per SM.
         return 2;
+#endif
     } else {
         static_assert(std::is_same_v<Geometry, Bf16Gdn35Geometry>);
         static_assert(SplitK == 32 || SplitK == 16 || SplitK == 8 || SplitK == 4 || SplitK == 2);
+#ifdef NINFER_SM89
+        // Same measurement: BN64 split-32 needs 88-126 registers per thread and is register-bound
+        // to two CTAs per SM; split-16 uses 56 and reaches four; split-8/4/2 use 74 and reach three.
+        if constexpr (SplitK == 32) { return 2; }
+        if constexpr (SplitK == 16) { return 4; }
+        return 3;
+#else
         // BN64 split-32 is register-limited to two resident CTAs per SM. The remaining
         // specializations admit four. These are kernel facts, not a device-wide SM-count policy.
         return SplitK == 32 ? 2 : 4;
+#endif
     }
 }
 
