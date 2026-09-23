@@ -33,11 +33,24 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
         CUDA_CHECK(cudaMemcpyAsync(ordinary.ingress.data, &state.host_ingress,
                                    sizeof(qwen3_5::OrdinaryDecodeIngress), cudaMemcpyHostToDevice,
                                    state.execution.device.stream));
+        if (state.execution.tp != nullptr) {
+            // Rank 1 reads its own upload of the same record: the same tokens, positions, KV rows
+            // (its execution tables mirror rank 0's row for row) and StateImage slots. It never
+            // samples, so the record's rank-0 sampling configs are never read there.
+            if (state.peer_frame == nullptr) {
+                throw std::logic_error("tensor-parallel decode requires rank 1's ordinary frame");
+            }
+            const DeviceContext& rank1 = *state.execution.tp->execution->dev[1];
+            const detail::ScopedCurrentDevice scope(rank1.device);
+            CUDA_CHECK(cudaMemcpyAsync(state.peer_frame->ingress.data, &state.host_ingress,
+                                       sizeof(qwen3_5::OrdinaryDecodeIngress),
+                                       cudaMemcpyHostToDevice, rank1.stream));
+        }
 
         TextContext card(state.execution.device, state.execution.parameters, state.execution.work,
                          {}, state.execution.linear_attention, state.execution.io,
                          state.execution.prefill_hidden, state.execution.prefill_chunk, 0, {},
-                         &state.text_cache);
+                         &state.text_cache, nullptr, state.execution.tp);
 
         Tensor tokens             = ordinary.tokens.slice(0, 0, batch_size);
         Tensor cache_positions    = ordinary.cache_positions.slice(0, 0, batch_size);
@@ -287,12 +300,13 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         execution::OrdinaryBatchContext schedule_state{
             {device, parameters, work, state_images->linear(),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
-             proposal_head},
+             proposal_head, tp_binding(), graph_peer_bridge()},
             decoder->text_kv,
             *io.ordinary,
             *ordinary_host_ingress,
             *ordinary_host_egress,
-            state_images->continuation_hidden_store()};
+            state_images->continuation_hidden_store(),
+            peer ? &*peer->io.ordinary : nullptr};
 
         mark_workspace_usage(workspace_plan.ordinary_round);
         execution::ordinary_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
@@ -302,7 +316,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         {
             nvtx::ScopedRange wait_range(nvtx::Name::DecodeOrdinaryWait, nvtx::Category::Control,
                                          static_cast<std::uint64_t>(lanes.size()));
-            device.synchronize();
+            synchronize_devices();
         }
         timing.end_wait();
 
@@ -339,7 +353,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         try {
             nvtx::ScopedRange wait_range(nvtx::Name::DecodeOrdinaryWait, nvtx::Category::Control,
                                          static_cast<std::uint64_t>(lanes.size()));
-            device.synchronize();
+            synchronize_devices();
         } catch (...) {}
         timing.end_wait();
         clear_execution_failure_lanes(lanes);

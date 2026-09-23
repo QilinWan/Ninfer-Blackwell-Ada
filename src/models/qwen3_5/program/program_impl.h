@@ -39,6 +39,10 @@
 namespace ninfer::models::qwen3_5::detail {
 using execution::dimension;
 using PreparedPromptData = qwen3_5::PreparedPromptData;
+// The device-scope helper lives in the core (core/device_scope.h): rank 1's storage, control
+// uploads and graph preparation use it, and the tensor-parallel family code names it through this
+// namespace.
+using ninfer::ScopedCurrentDevice;
 
 struct PreparedCaptureBacking {
     PrefixShortlistDigests digests;
