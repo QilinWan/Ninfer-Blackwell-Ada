@@ -9,6 +9,21 @@ include(cmake/BenchSupportTests.cmake)
 include(models/qwen3_5/tests.cmake)
 include(ops/tests.cmake)
 
+if(NOT NINFER_ENABLE_VISION)
+  # A text-only build links the media decoder stand-in by design, so the cases that decode image or
+  # video input cannot run in it. Disabling them keeps the suite a real gate for both configurations.
+  set(_ninfer_visionless_tests
+    ninfer_media_decode_test
+    ninfer_qwen3_5_frontend_test)
+  foreach(_ninfer_test IN LISTS _ninfer_visionless_tests)
+    if(TEST ${_ninfer_test})
+      set_tests_properties(${_ninfer_test} PROPERTIES DISABLED TRUE)
+    else()
+      message(FATAL_ERROR "text-only test gate names an unregistered test: ${_ninfer_test}")
+    endif()
+  endforeach()
+endif()
+
 if(NINFER_SM89_BUILD)
   # These cases drive FP4 code conversion, block-scaled MMA and TMA kernels that an Ada build does
   # not contain at all (cmake/Sm89Compat.cmake). Disabling them keeps `ctest` a meaningful gate on

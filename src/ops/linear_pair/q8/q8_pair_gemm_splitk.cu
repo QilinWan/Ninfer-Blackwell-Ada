@@ -114,7 +114,7 @@ void launch_medium(const Tensor& x, const Weight& first_weight, const Weight& se
     [[maybe_unused]] constexpr auto grouped_shared_kernel =
         q8_ksplit_grouped_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, PairOutput>();
     NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
-    q8_ksplit_grouped_mma_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
+    q8_ksplit_grouped_mma_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, PairOutput>
         <<<(2 * kRows) / 16, KSplits * NGroups * 32, grouped_shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), first_codes, first_scales, output, x.ne[1]);
 }

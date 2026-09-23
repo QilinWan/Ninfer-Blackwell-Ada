@@ -285,9 +285,9 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& qkv, Tens
     constexpr std::size_t shared_bytes =
         Q8KSplitSharedWindow<Schedule>::kBytes;
     [[maybe_unused]] constexpr auto shared_kernel =
-        q8_ksplit_kernel<Geometry, ActiveCols, Schedule>();
+        q8_ksplit_kernel<Geometry, ActiveCols, Schedule, Output>();
     NINFER_REQUEST_SHARED_WINDOW(shared_bytes, shared_kernel);
-    q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule>
+    q8_ksplit_mma_kernel<Geometry, ActiveCols, Schedule, Output>
         <<<kRows / kRowsPerCta, Schedule::kThreads, shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),

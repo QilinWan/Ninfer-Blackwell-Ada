@@ -1394,8 +1394,13 @@ int main(int argc, char** argv) {
         failures += full_append_case(kv_heads, KvCacheStorage::BFloat16);
         failures += full_append_case(kv_heads, KvCacheStorage::Int8Group64);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8E4M3Row256);
+#ifdef NINFER_SM89
+        // No FP4 append kernel exists in an Ada build; the --nvfp4-only/--k8v4-only entries are
+        // disabled for it in tests/CMakeLists.txt, and the default sweep skips them here.
+#else
         failures += full_append_case(kv_heads, KvCacheStorage::Nvfp4Group16);
         failures += full_append_case(kv_heads, KvCacheStorage::Fp8KeyNvfp4Value);
+#endif
     }
     failures += full_append_case(2, KvCacheStorage::Int8Group64, 129);
     failures += full_append_case(2, KvCacheStorage::Fp8E4M3Row256, 129);

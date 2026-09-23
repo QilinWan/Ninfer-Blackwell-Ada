@@ -32,6 +32,17 @@ constexpr std::int32_t kQuantGroup       = 64;
 constexpr std::int32_t kQuantGroups      = kHeadDim / kQuantGroup;
 constexpr std::int32_t kFp8QuantGroup    = kHeadDim;
 constexpr std::int32_t kFp8QuantGroups   = 1;
+// An Ada build contains no FP4 kernel routes at all (cmake/Sm89Compat.cmake), so sweeps over KV
+// storage formats skip the formats it cannot execute rather than asking for them and aborting.
+[[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
+#ifdef NINFER_SM89
+    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
+#else
+    static_cast<void>(storage);
+    return true;
+#endif
+}
+
 constexpr std::int32_t kNvfp4QuantGroup  = 16;
 constexpr std::int32_t kNvfp4QuantGroups = kHeadDim / kNvfp4QuantGroup;
 constexpr std::int32_t kNvfp4CodeBytes   = kHeadDim / 2;
@@ -2170,6 +2181,7 @@ int run_dflash2_cases() {
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+        if (!kv_storage_supported(storage)) { continue; }
         const auto run = [&](int width, int batch, int base, bool graph) {
             BatchAttentionCase c{width,
                                  {},
@@ -2214,6 +2226,7 @@ int run_batch_cases() {
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+        if (!kv_storage_supported(storage)) { continue; }
         failures += run_batch_case(kGeometries[0], storage,
                                    {16, {0}, {0}, {0}, MappingPattern::Fragmented, 1501u});
         failures += run_batch_case(kGeometries[0], storage,
@@ -2458,10 +2471,14 @@ int run_softmax_attention_causal_cache_tests() {
     }
 
     int failures = verify_workspace_capacity_contract();
+#ifndef NINFER_SM89
     failures += run_nvfp4_cases();
+#endif
     failures += run_quantized_batch_cases(KvCacheStorage::Nvfp4Group16, 720u);
     failures += report_quantization_quality(KvCacheStorage::Nvfp4Group16, 724u);
+#ifndef NINFER_SM89
     failures += run_k8v4_cases();
+#endif
     failures += run_quantized_batch_cases(KvCacheStorage::Fp8KeyNvfp4Value, 815u);
     failures += report_quantization_quality(KvCacheStorage::Fp8KeyNvfp4Value, 819u);
     for (const Geometry& geometry : kGeometries) { failures += run_geometry(geometry); }

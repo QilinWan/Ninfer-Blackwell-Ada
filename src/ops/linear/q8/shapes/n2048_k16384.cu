@@ -30,7 +30,8 @@ void launch_grouped(const Tensor& x, const Weight& weight, Tensor& out, cudaStre
             q8_ksplit_grouped_kernel<Geometry::kInputRows, Capacity, KWarps, TokenGroups, 1,
                                      Q8ContiguousOutput>();
     NINFER_REQUEST_SHARED_WINDOW(grouped_shared_bytes, grouped_shared_kernel);
-    q8_ksplit_grouped_mma_kernel<Geometry::kInputRows, Capacity, KWarps, TokenGroups, 1>
+    q8_ksplit_grouped_mma_kernel<Geometry::kInputRows, Capacity, KWarps, TokenGroups, 1,
+                                 Q8ContiguousOutput>
         <<<Geometry::kOutputRows / 16, KWarps * TokenGroups * 32, grouped_shared_bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
