@@ -2067,6 +2067,12 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
     const bool has_split = split_abs > base64 && split_abs <= base64 + static_cast<std::int64_t>(T);
     const int split_rel  = has_split ? static_cast<int>(split_abs - base64) : -1;
 
+    const bool prepare_mtp_prompt = mtp_enabled() && io_.mtp.has_value();
+    if (prepare_mtp_prompt &&
+        mtp_proposal_extent_ > static_cast<std::uint32_t>(io_.mtp->draft_tokens.ne[0])) {
+        throw std::logic_error("MTP proposal extent exceeds the configured draft window");
+    }
+
     // One chunk per call, exactly as the single-device path: the caller advances the frontier.
     int len = std::min(chunk, T);
     if (split_rel > 0 && len > split_rel) { len = split_rel; }
@@ -2126,15 +2132,28 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
         }
 
         // Rank 0 keeps the whole normalized chunk (prefill_hidden and the rewrite checkpoint read
-        // it); rank 1 only needs the last column, as its input to the vocabulary-split head.
+        // it). Rank 1 keeps it too when the MTP head consumes the chunk, whose input projection
+        // half on rank 1 contracts the normalized hidden; otherwise it only needs the last column,
+        // as its input to the vocabulary-split head.
         Tensor xf = prefill_hidden_.data != nullptr
                         ? matrix_window(prefill_hidden_, len)
                         : work_.alloc(DType::BF16, {dimension(config_.hidden_size), len});
         ops::rmsnorm(x[0], *final_norm_, config_.rms_norm_eps, true, xf, s);
+        Tensor peer_xf;
+        if (prepare_mtp_prompt) {
+            Tensor peer_hidden = tp_->prefill_hidden;
+            peer_xf            = matrix_window(peer_hidden, len);
+            const DeviceScope peer(execution.dev[1]->device);
+            ops::rmsnorm(x[1], rank_parameters(1).text.final_norm, config_.rms_norm_eps, true,
+                         peer_xf, rank_stream(1));
+        }
 
         if (is_last) {
-            Tensor peer_last = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), 1});
-            {
+            Tensor peer_last;
+            if (prepare_mtp_prompt) {
+                peer_last = peer_xf.slice(1, len - 1, 1);
+            } else {
+                peer_last = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), 1});
                 const DeviceScope peer(execution.dev[1]->device);
                 ops::rmsnorm(x[1].slice(1, len - 1, 1), rank_parameters(1).text.final_norm,
                              config_.rms_norm_eps, true, peer_last, rank_stream(1));
@@ -2151,6 +2170,70 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
             } else {
                 ops::argmax(logits, io_.token,
                             dimension(parameters_.model.resources().public_token_count), s);
+            }
+        }
+
+        if (prepare_mtp_prompt) {
+            // The MTP head consumes the shifted token stream against the text model's own final
+            // hidden, one column behind the target, exactly as on one device. Only rank 0 needs
+            // the shifted ids: its input projection half contracts the token embedding.
+            const auto alignment_tokens = static_cast<std::uint32_t>(text_prefill.token_ids.size());
+            const qwen3_5::MtpAlignmentWindow mtp_window = qwen3_5::plan_mtp_alignment_window(
+                alignment_tokens, base, static_cast<std::uint32_t>(len));
+            const int prompt_columns =
+                len - static_cast<int>(mtp_window.final_column_uses_generated_token);
+            Tensor mtp_ids = work_.alloc(DType::I32, {len});
+            if (prompt_columns != 0) {
+                Tensor prompt_mtp_ids = mtp_ids.slice(0, 0, prompt_columns);
+                copy_i32(text_prefill.token_ids.data() + mtp_window.shifted_embedding_begin,
+                         prompt_mtp_ids, s);
+            }
+            if (mtp_window.final_column_uses_generated_token) {
+                Tensor generated_mtp_id = mtp_ids.slice(0, len - 1, 1);
+                CUDA_CHECK(cudaMemcpyAsync(generated_mtp_id.data, io_.token.data,
+                                           sizeof(std::int32_t), cudaMemcpyDeviceToDevice, s));
+            }
+            const RankTensors mtp_input{xf, peer_xf};
+            if (is_last && mtp_proposal_extent_ != 0) {
+                Tensor logits = matrix_window(io_.logits, 1);
+                Tensor draft0 = io_.mtp->draft_tokens.slice(0, 0, 1);
+                const RankTensors ar_hidden{io_.mtp->ar_hidden, tp_->mtp->ar_hidden};
+                mtp_prefill_chunk_tp2(mtp_ids, mtp_input, positions, rope_positions, chunk_envelope,
+                                      true, &ar_hidden, &logits, &draft0);
+
+                const RankTensors ar_position{io_.mtp->position.slice(0, 0, 1),
+                                              tp_->mtp->position.slice(0, 0, 1)};
+                for_each_rank(execution, [&](int rank) {
+                    Tensor position = ar_position[static_cast<std::size_t>(rank)];
+                    ops::set_i32_scalar(position, base_i + T, rank_stream(rank));
+                });
+                for (int i = 1; i < static_cast<int>(mtp_proposal_extent_); ++i) {
+                    auto step_scope0      = work_.scope();
+                    auto step_scope1      = tp_->work->scope();
+                    Tensor previous_token = io_.mtp->draft_tokens.slice(0, i - 1, 1);
+                    Tensor next_token     = io_.mtp->draft_tokens.slice(0, i, 1);
+                    RankTensors next_hidden;
+                    for (std::size_t r = 0; r < 2; ++r) {
+                        next_hidden[r] =
+                            ws[r]->alloc(DType::BF16, {dimension(config_.hidden_size), 1});
+                    }
+                    const auto ar_visible = static_cast<std::uint32_t>(base_i + T + i);
+                    const ops::CausalAttentionExecutionEnvelope ar_envelope{ar_visible, ar_visible};
+                    mtp_forward_ar_step(previous_token, ar_hidden, ar_position, ar_envelope,
+                                        next_hidden, logits, next_token);
+                    for_each_rank(execution, [&](int rank) {
+                        const auto r        = static_cast<std::size_t>(rank);
+                        cudaStream_t stream = rank_stream(rank);
+                        CUDA_CHECK(cudaMemcpyAsync(ar_hidden[r].data, next_hidden[r].data,
+                                                   ar_hidden[r].bytes(), cudaMemcpyDeviceToDevice,
+                                                   stream));
+                        Tensor position = ar_position[r];
+                        ops::increment_i32_scalar(position, stream);
+                    });
+                }
+            } else {
+                mtp_prefill_chunk_tp2(mtp_ids, mtp_input, positions, rope_positions, chunk_envelope,
+                                      false, nullptr, nullptr, nullptr);
             }
         }
 
