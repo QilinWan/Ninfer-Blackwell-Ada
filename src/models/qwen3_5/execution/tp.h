@@ -54,16 +54,29 @@ struct OrdinaryPeerFrame {
 [[nodiscard]] OrdinaryPeerFrame ordinary_peer_frame(const qwen3_5::OrdinaryDecodeState& frame);
 
 // Vocabulary-split output head. Rank r projects `hidden[r]` [H,C] through its head shard
-// [V_r,H] into `partial[r]` [V_r,C]; one exact row gather per column then assembles the complete
-// [V,C] logits in both `logits[0]` (rank 0, the one consumer) and `logits[1]` (rank 1 scratch,
-// written because the gather leaves its image on both ranks). V = V_0 + V_1, rank 0 first.
+// [V_r,H] into `partial[r]` [V_r,C]; V = V_0 + V_1, rank 0 first.
 [[nodiscard]] std::size_t output_head_split_workspace_bytes(const LinearParameters& shard,
                                                             std::int32_t first, std::int32_t last);
+
+// One exact row gather per column assembles the complete [V,C] logits in both `logits[0]` and
+// `logits[1]`: the symmetric form, for callers whose frames hold a copy on each rank.
 void output_logits_split(const std::array<Tensor, 2>& hidden,
                          const std::array<const LinearParameters*, 2>& head,
                          const std::array<Tensor, 2>& partial, const std::array<Tensor, 2>& logits,
                          const std::array<WorkspaceArena*, 2>& workspace,
                          const ExecutionContext& execution, const ops::PeerEvents& events);
+
+// Rank 0 alone receives the complete [V,C] `logits`: it pulls rank 1's contiguous `partial[1]`
+// block into its own `staging` [V_1,C] with one cross-device copy, then two local pitched copies
+// interleave both halves column by column. Rank 1 keeps no copy of the logits. `logits` and
+// `staging` are contiguous BF16 on rank 0. On return rank 0's stream is ordered after rank 1's
+// projection and rank 1's stream after rank 0's pull, so both may reuse their operands.
+void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
+                               const std::array<const LinearParameters*, 2>& head,
+                               const std::array<Tensor, 2>& partial, const Tensor& logits,
+                               const Tensor& staging,
+                               const std::array<WorkspaceArena*, 2>& workspace,
+                               const ExecutionContext& execution, const ops::PeerEvents& events);
 
 // Everything a TextContext needs to drive rank 1 in lockstep with its own rank-0 operands. The
 // TextContext's DeviceContext must be `execution->dev[0]`. All members are borrowed and must

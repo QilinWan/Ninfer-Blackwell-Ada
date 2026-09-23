@@ -218,15 +218,14 @@ public:
     // The MTP bridge over both ranks: `ids` [T] (rank 0's alone) against each rank's copy of the
     // target hidden [H,T], appending both ranks' MTP K/V at `positions` through each rank's
     // prefill MTP KV row. `rope_positions[r]` are one-axis [T]. With `logits_column` >= 0 rank 0
-    // proposes `draft_token` from that column of `mtp_hidden`; rank 1's gathered logits stay in
-    // its arena.
+    // proposes `draft_token` from that column of `mtp_hidden`, over logits rank 0 alone gathers.
     void mtp_forward_batch(const Tensor& ids, const RankTensors& hidden,
                            const RankTensors& positions, const RankTensors& rope_positions,
                            ops::CausalAttentionExecutionEnvelope envelope,
                            const RankTensors& mtp_hidden, int logits_column, Tensor* logits,
                            Tensor* draft_token);
-    // One prompt proposal step through each rank's prefill MTP KV row; rank 1's gathered logits
-    // stay in its arena.
+    // One prompt proposal step through each rank's prefill MTP KV row; rank 0 alone gathers the
+    // proposal logits.
     void mtp_forward_ar_step(const Tensor& token, const RankTensors& previous_hidden,
                              const RankTensors& position,
                              ops::CausalAttentionExecutionEnvelope envelope,
@@ -292,8 +291,9 @@ private:
                                       const RankTensors& hidden, const RankTensors& logits,
                                       Tensor& target_tokens, Tap& tap);
     // Vocabulary-split head: each rank projects its half of the vocabulary from its final hidden
-    // columns, and the row gather assembles the complete [V, C] logits in rank 0's `logits` and
-    // in `peer_logits`, or in rank 1's arena when it is null.
+    // columns. Without `peer_logits` rank 0 alone gathers the complete [V, C] logits into
+    // `logits` (one pull of rank 1's half); with it, a per-column row gather also writes rank 1's
+    // copy into `peer_logits`.
     void logits_tp2(const RankTensors& hidden, Tensor& logits);
     void logits_tp2(const RankTensors& hidden, const std::array<const LinearParameters*, 2>& head,
                     Tensor& logits, const Tensor* peer_logits);

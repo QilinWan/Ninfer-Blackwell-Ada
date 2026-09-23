@@ -51,7 +51,8 @@
 // PeerEvents needs NO host synchronization between calls -- which is exactly what a captured
 // CUDA graph replays, and what a decode token's collectives do. For the 27B model that is
 // 128 all-reduces (64 layers x 2 row-parallel projections: the mixer output and the MLP down
-// projection) plus one allgather_rows per logit column, so 129 collectives at batch 1.
+// projection); the vocabulary-split logits are then pulled to rank 0 alone by the model's own
+// one-sided gather, which follows the same record/wait discipline.
 //
 // Everything in a call is stream-ordered device work (memcpy, event record, event wait, kernel
 // launch): no host round trip, no host-memory spin flag, no device or stream synchronization. That

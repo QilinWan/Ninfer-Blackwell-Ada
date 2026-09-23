@@ -466,8 +466,8 @@ std::size_t dflash_accept_workspace(const SequencePlanImpl& plan, std::int32_t b
 // run_layers_tp2 and logits_tp2) and of rank 0's DFlash2 drafter (execution/draft.cpp). Per-layer
 // stages use the rank's share of the config and the rank's shard Parameters; the call roots (ids,
 // positions, residual, all-reduce staging) keep the replicated hidden width. Both ranks allocate
-// this capacity: where the ranks differ (rank 1's complete gather destination and last hidden
-// column, rank 0's sampling, token embedding, optimized proposal head and drafter), the plan covers
+// this capacity: where the ranks differ (rank 0's logits gather staging, sampling, token
+// embedding, optimized proposal head and drafter, rank 1's last hidden column), the plan covers
 // both. It is built from rank 0's Parameters, whose shard shapes equal rank 1's except for the
 // heads and the drafter only rank 0 holds.
 WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan) {
@@ -574,17 +574,18 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             scratch(layout, execution::ffn_split_workspace_bytes(block.ffn, first, last));
         }
     };
-    // Vocabulary-split head over `columns` final hidden columns: this rank's rows, rank 1's
-    // complete gather destination, and the column-parallel projection's scratch.
+    // Vocabulary-split head over `columns` final hidden columns: this rank's rows, rank 0's
+    // staging of rank 1's rows, and the column-parallel projection's scratch.
     const auto split_logits = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
         const execution::LinearParameters& head = parameters.text.output_head;
+        const std::int32_t peer_rows            = dimension(config.vocab_size) - head.weight.n;
         auto call                               = layout.scope();
-        (void)workspace::tp_logits(layout, config, head.weight.n, columns, true);
+        (void)workspace::tp_logits(layout, head.weight.n, peer_rows, columns, true);
         scratch(layout, execution::output_head_split_workspace_bytes(head, columns, columns));
     };
     // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, or the
-    // vocabulary-split output head (rank 1's gather destination in its arena when the caller has
-    // none).
+    // vocabulary-split output head (rank 0's gather staging in its arena when the caller has no
+    // rank-1 frame).
     const auto proposal = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
         auto call = layout.scope();
         if (plan.proposal_head == ProposalHead::Optimized) {
@@ -676,8 +677,9 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         target_body(target, aggregate, aggregate, TextPhase::Verify, true, batch, verify, verify);
         {
             auto logits = target.scope();
-            (void)workspace::tp_logits(target, config, parameters.text.output_head.weight.n,
-                                       aggregate, false);
+            const std::int32_t rows = parameters.text.output_head.weight.n;
+            (void)workspace::tp_logits(target, rows, dimension(config.vocab_size) - rows, aggregate,
+                                       false);
             scratch(target, execution::output_head_split_workspace_bytes(
                                 parameters.text.output_head, aggregate, aggregate));
         }
@@ -1248,8 +1250,8 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         // each class and the driver/module state materialized while qualifying all definitions.
         if (impl->speculative_backend == SpeculativeBackend::None) {
             // Per device. At tp 2 each rank holds its half of one dual-device graph per topology
-            // class, and the two all-reduces per layer plus the per-column vocabulary gather add
-            // nodes and module state on both devices; the tp 2 class allowance follows the
+            // class, and the two all-reduces per layer plus the vocabulary gather add nodes and
+            // module state on both devices; the tp 2 class allowance follows the
             // fork's measured two-device budget.
             const std::size_t per_batch = impl->tp == 1 ? 12ULL * kMiB : 24ULL * kMiB;
             impl->graph_allowance_bytes =

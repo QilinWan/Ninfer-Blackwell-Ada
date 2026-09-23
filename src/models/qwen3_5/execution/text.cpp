@@ -2025,13 +2025,18 @@ void TextContext::logits_tp2(const RankTensors& hidden,
                              const Tensor* peer_logits) {
     const auto ws              = workspaces();
     const std::int32_t columns = hidden[0].ne[1];
+    const std::int32_t rows0   = head[0]->weight.n;
+    const std::int32_t rows1   = head[1]->weight.n;
     auto scope0                = work_.scope();
     auto scope1                = tp_->work->scope();
-    const auto part0 = workspace::tp_logits(*ws[0], config_, head[0]->weight.n, columns, false);
-    const auto part1 =
-        workspace::tp_logits(*ws[1], config_, head[1]->weight.n, columns, peer_logits == nullptr);
-    output_logits_split(hidden, head, {part0.partial, part1.partial},
-                        {logits, peer_logits != nullptr ? *peer_logits : part1.gathered}, ws,
+    const auto part0 = workspace::tp_logits(*ws[0], rows0, rows1, columns, peer_logits == nullptr);
+    const auto part1 = workspace::tp_logits(*ws[1], rows1, rows0, columns, false);
+    if (peer_logits == nullptr) {
+        output_logits_split_rank0(hidden, head, {part0.partial, part1.partial}, logits,
+                                  part0.staging, ws, *tp_->execution, *tp_->events);
+        return;
+    }
+    output_logits_split(hidden, head, {part0.partial, part1.partial}, {logits, *peer_logits}, ws,
                         *tp_->execution, *tp_->events);
 }
 

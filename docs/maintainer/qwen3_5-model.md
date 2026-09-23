@@ -279,8 +279,11 @@ x       += all_reduce(row_parallel(swiglu(column_parallel(offset_rmsnorm(x, post
 Both all-reduces leave the identical BF16 sum on the two ranks, so every later per-rank input
 (norms, KV pages, GDN state) agrees without further exchange. The GDN input norm runs separately
 before the split gating projection because the fused norm-and-gating Op has no split form. The
-final norm is replicated; each rank projects its half of the vocabulary and a per-column row
-gather assembles the complete logits on rank 0, where sampling runs.
+final norm is replicated; each rank projects its half of the vocabulary, and rank 0 alone
+assembles the complete logits, where sampling runs: one cross-device copy pulls rank 1's
+contiguous `[V/2, C]` half into rank-0 staging and two local pitched copies interleave both halves
+column by column. Only the speculative verification and MTP proposal logits, which the rounds
+keep in per-rank frames, are still gathered per column on both ranks.
 
 Rank 1 receives its own copies of the control tensors: prefill fills its positions on device and
 reads its KV row from `TpExecution::text_kv_table_row`; ordinary decode reads

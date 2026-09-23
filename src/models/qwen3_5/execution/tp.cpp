@@ -2,6 +2,10 @@
 
 #include "models/qwen3_5/execution/linear.h"
 
+#include <cuda_runtime.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -82,6 +86,60 @@ void output_logits_split(const std::array<Tensor, 2>& hidden,
                                           logits[1].slice(1, column, 1).view({1, rows0 + rows1})};
         ops::allgather_rows(whole, piece, execution, events);
     }
+}
+
+void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
+                               const std::array<const LinearParameters*, 2>& head,
+                               const std::array<Tensor, 2>& partial, const Tensor& logits,
+                               const Tensor& staging,
+                               const std::array<WorkspaceArena*, 2>& workspace,
+                               const ExecutionContext& execution, const ops::PeerEvents& events) {
+    const std::int32_t columns = hidden[0].ne[1];
+    const std::int32_t rows0   = partial[0].ne[0];
+    const std::int32_t rows1   = partial[1].ne[0];
+    for (std::size_t r = 0; r < 2; ++r) {
+        if (partial[r].dtype != DType::BF16 || partial[r].ne[1] != columns ||
+            !partial[r].is_contiguous()) {
+            throw std::invalid_argument("tensor-parallel logits: partial logits do not match");
+        }
+    }
+    if (logits.dtype != DType::BF16 || logits.ne[0] != rows0 + rows1 || logits.ne[1] != columns ||
+        logits.ne[2] != 1 || logits.ne[3] != 1 || !logits.is_contiguous() ||
+        staging.dtype != DType::BF16 || staging.ne[0] != rows1 || staging.ne[1] != columns ||
+        !staging.is_contiguous()) {
+        throw std::invalid_argument(
+            "tensor-parallel logits: gathered logits or staging do not match the vocabulary");
+    }
+    if (!events.live()) { throw std::invalid_argument("tensor-parallel logits: dead events"); }
+    project_column_parallel(hidden, head, partial, workspace, execution);
+
+    const std::size_t element  = sizeof(std::uint16_t);
+    const std::size_t bytes0   = static_cast<std::size_t>(rows0) * element;
+    const std::size_t bytes1   = static_cast<std::size_t>(rows1) * element;
+    const std::size_t pitch    = bytes0 + bytes1;
+    const auto height          = static_cast<std::size_t>(columns);
+    const DeviceContext& rank0 = *execution.dev[0];
+    const DeviceContext& rank1 = *execution.dev[1];
+    int previous               = 0;
+    CUDA_CHECK(cudaGetDevice(&previous));
+    CUDA_CHECK(cudaSetDevice(rank1.device));
+    CUDA_CHECK(cudaEventRecord(events.inputs_ready(1), rank1.stream));
+    CUDA_CHECK(cudaSetDevice(rank0.device));
+    CUDA_CHECK(cudaStreamWaitEvent(rank0.stream, events.inputs_ready(1), 0));
+    // The one cross-device transfer: a plain D2D cudaMemcpyAsync over UVA, the form the
+    // collectives use because it is capturable with and without peer access.
+    CUDA_CHECK(cudaMemcpyAsync(staging.data, partial[1].data, bytes1 * height,
+                               cudaMemcpyDeviceToDevice, rank0.stream));
+    CUDA_CHECK(cudaEventRecord(events.pull_done(0), rank0.stream));
+    CUDA_CHECK(cudaMemcpy2DAsync(logits.data, pitch, partial[0].data, bytes0, bytes0, height,
+                                 cudaMemcpyDeviceToDevice, rank0.stream));
+    CUDA_CHECK(cudaMemcpy2DAsync(static_cast<std::uint8_t*>(logits.data) + bytes0, pitch,
+                                 staging.data, bytes1, bytes1, height, cudaMemcpyDeviceToDevice,
+                                 rank0.stream));
+    // Rank 1 may overwrite partial[1] only after rank 0's pull has read it.
+    CUDA_CHECK(cudaSetDevice(rank1.device));
+    CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, events.pull_done(0), 0));
+    CUDA_CHECK(cudaSetDevice(previous));
 }
 
 OrdinaryPeerFrame ordinary_peer_frame(const qwen3_5::OrdinaryDecodeState& frame) {

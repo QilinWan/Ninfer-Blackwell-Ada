@@ -51,7 +51,7 @@ DFlashFeatureSink make_dflash_prefill_sink(PrefillContext& state) {
 
 // The vocabulary-split output head over one retained hidden column. The hidden axis is
 // replicated, so rank 1's operand is rank 0's column itself: rank 1 pulls it once rank 0's stream
-// reaches it, and each rank then projects its half of the vocabulary for the row gather.
+// reaches it, each rank then projects its half of the vocabulary, and rank 0 pulls rank 1's half.
 void project_split_output_head(PrefillContext& state, const Tensor& hidden, Tensor& logits) {
     const TpExecution& tp             = *state.execution.tp;
     const ExecutionContext& execution = *tp.execution;
@@ -70,11 +70,12 @@ void project_split_output_head(PrefillContext& state, const Tensor& hidden, Tens
         CUDA_CHECK(cudaMemcpyAsync(rank1_hidden.data, rank0_hidden.data, rank1_hidden.bytes(),
                                    cudaMemcpyDeviceToDevice, rank1.stream));
     }
-    const auto part0 = workspace::tp_logits(state.execution.work, config, head0.weight.n, 1, false);
-    const auto part1 = workspace::tp_logits(*tp.work, config, head1.weight.n, 1, true);
-    output_logits_split({rank0_hidden, rank1_hidden}, {&head0, &head1},
-                        {part0.partial, part1.partial}, {logits, part1.gathered},
-                        {&state.execution.work, tp.work}, execution, *tp.events);
+    const auto part0 =
+        workspace::tp_logits(state.execution.work, head0.weight.n, head1.weight.n, 1, true);
+    const auto part1 = workspace::tp_logits(*tp.work, head1.weight.n, head0.weight.n, 1, false);
+    output_logits_split_rank0({rank0_hidden, rank1_hidden}, {&head0, &head1},
+                              {part0.partial, part1.partial}, logits, part0.staging,
+                              {&state.execution.work, tp.work}, execution, *tp.events);
 }
 
 } // namespace

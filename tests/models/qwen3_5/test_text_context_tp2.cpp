@@ -5,7 +5,8 @@
 // requires -- is written as a v3 artifact with random FP8 row-scaled projections, loaded once at
 // tp 1 on device 0 and once at tp 2 on devices 0 and 1, and driven through the same 64-token
 // prompt (two prefill chunks) and four ordinary decode steps. The rank-0 logits of the split
-// forward are compared with the single-device logits after every call.
+// forward are compared with the single-device logits after every call. Last, the rank-0 logits
+// gather runs alone over three columns and is checked byte for byte against the two partials.
 //
 // Criterion: the split forward differs from the single-device one only in summation order and in
 // the BF16 rounding of each rank's partial before every all-reduce (four per token here: two per
@@ -32,6 +33,7 @@
 #include "core/linear_attention_state.h"
 #include "core/paged_kv_cache.h"
 #include "core/weight_view.h"
+#include "models/qwen3_5/execution/linear.h"
 #include "models/qwen3_5/execution/parameters.h"
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/tp.h"
@@ -503,7 +505,7 @@ DeviceBuffer device_bytes(int device, std::size_t bytes) {
 
 // One device's KV cache (one bound execution row), GDN state pool (one slot), RoundState and
 // transient arena. `config` is the rank's share of the Text config; `logit_rows` is the complete
-// vocabulary, which every RoundState holds (rank 1's copy is the logit gather's scratch).
+// vocabulary, which every RoundState holds (rank 0 alone gathers the logits into its copy).
 struct RankStorage {
     DeviceBuffer decoder_bytes;
     std::optional<qwen::DecoderState> decoder;
@@ -731,6 +733,83 @@ void compare(const std::vector<float>& reference, const std::vector<float>& spli
             label + ": split argmax differs beyond the tolerance");
 }
 
+std::vector<std::uint16_t> read_bf16(const Tensor& tensor) {
+    std::vector<std::uint16_t> bits(static_cast<std::size_t>(tensor.numel()));
+    CUDA_CHECK(cudaMemcpy(bits.data(), tensor.data, bits.size() * sizeof(std::uint16_t),
+                          cudaMemcpyDeviceToHost));
+    return bits;
+}
+
+// The rank-0 logits gather over C = 3 columns, the case ordinary decode at batch > 1 relies on:
+// every gathered column must be rank 0's and then rank 1's partial column byte for byte (the gather
+// only relocates storage), and must match the single-device head within the criterion above.
+void gather_columns(const ExecutionContext& execution, const ops::PeerEvents& events,
+                    const exec::Parameters& reference, const exec::Parameters& rank0,
+                    const exec::Parameters& rank1, WorkspaceArena& reference_work,
+                    WorkspaceArena& work0, WorkspaceArena& work1, std::size_t domain) {
+    constexpr std::int32_t kColumns     = 3;
+    const auto hidden_size              = static_cast<std::int32_t>(kHidden);
+    const exec::LinearParameters& head0 = rank0.text.output_head;
+    const exec::LinearParameters& head1 = rank1.text.output_head;
+    const std::int32_t rows0            = head0.weight.n;
+    const std::int32_t rows1            = head1.weight.n;
+    const std::int32_t vocab            = rows0 + rows1;
+    const DeviceContext& device0        = *execution.dev[0];
+    const DeviceContext& device1        = *execution.dev[1];
+    std::vector<std::uint16_t> host_hidden(static_cast<std::size_t>(hidden_size) * kColumns);
+    std::uint64_t state = 29;
+    for (auto& value : host_hidden) { value = bf16_bits(uniform(state, -2.0F, 2.0F)); }
+
+    reference_work.reset();
+    work0.reset();
+    work1.reset();
+    const Tensor hidden0  = work0.alloc(DType::BF16, {hidden_size, kColumns});
+    const Tensor partial0 = work0.alloc(DType::BF16, {rows0, kColumns});
+    const Tensor staging  = work0.alloc(DType::BF16, {rows1, kColumns});
+    const Tensor gathered = work0.alloc(DType::BF16, {vocab, kColumns});
+    const Tensor hidden1  = work1.alloc(DType::BF16, {hidden_size, kColumns});
+    const Tensor partial1 = work1.alloc(DType::BF16, {rows1, kColumns});
+    Tensor single         = reference_work.alloc(DType::BF16, {vocab, kColumns});
+    for (const Tensor* hidden : {&hidden0, &hidden1}) {
+        CUDA_CHECK(
+            cudaMemcpy(hidden->data, host_hidden.data(), hidden->bytes(), cudaMemcpyHostToDevice));
+    }
+    for (const DeviceContext* device : {&device0, &device1}) {
+        CUDA_CHECK(cudaSetDevice(device->device));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    CUDA_CHECK(cudaSetDevice(device0.device));
+    exec::output_logits_split_rank0({hidden0, hidden1}, {&head0, &head1}, {partial0, partial1},
+                                    gathered, staging, {&work0, &work1}, execution, events);
+    exec::project(hidden0, reference.text.output_head, single, reference_work, device0.stream);
+    device0.synchronize();
+    device1.synchronize();
+
+    const auto whole  = read_bf16(gathered);
+    const auto half0  = read_bf16(partial0);
+    const auto half1  = read_bf16(partial1);
+    const auto oracle = read_bf16(single);
+    for (std::int32_t column = 0; column < kColumns; ++column) {
+        const auto base = static_cast<std::size_t>(column) * static_cast<std::size_t>(vocab);
+        require(std::equal(half0.begin() + column * rows0, half0.begin() + (column + 1) * rows0,
+                           whole.begin() + static_cast<std::ptrdiff_t>(base)) &&
+                    std::equal(half1.begin() + column * rows1, half1.begin() + (column + 1) * rows1,
+                               whole.begin() + static_cast<std::ptrdiff_t>(base) + rows0),
+                "gathered logits column " + std::to_string(column) +
+                    " is not the two partial columns");
+        std::vector<float> expected(static_cast<std::size_t>(vocab));
+        std::vector<float> actual(static_cast<std::size_t>(vocab));
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            expected[i] = bf16_value(oracle[base + i]);
+            actual[i]   = bf16_value(whole[base + i]);
+        }
+        compare(expected, actual, domain, "gathered logits column " + std::to_string(column));
+    }
+    reference_work.reset();
+    work0.reset();
+    work1.reset();
+}
+
 int parity() {
     const char* scratch              = std::getenv("NINFER_TEST_SCRATCH_DIR");
     const std::filesystem::path root = scratch != nullptr && *scratch
@@ -797,6 +876,8 @@ int parity() {
                 "decode step " + std::to_string(step));
         token = static_cast<int>(argmax(reference_logits, domain));
     }
+    gather_columns(execution, events, reference, rank0, rank1, *reference_storage.work,
+                   *storage0.work, *storage1.work, domain);
     std::cout << "qwen3_5 tensor-parallel Text parity passed\n";
     return 0;
 }

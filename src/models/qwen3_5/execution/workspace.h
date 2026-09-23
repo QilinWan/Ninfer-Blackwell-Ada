@@ -155,22 +155,20 @@ TensorParallelCallRoots tp_call_roots(Allocator& allocator, const TextConfig& co
 }
 
 // The vocabulary-split logits of `columns` final hidden columns on one rank: this rank's rows of
-// the output head, and on rank 1 the complete [V, columns] gather destination the row gather also
-// writes there (rank 0 gathers into the caller's logits).
+// the output head and, on rank 0 when it gathers the complete logits alone, the staging that
+// receives rank 1's `peer_rows` before they are interleaved into the caller's [V, columns] logits.
 struct TensorParallelLogitsRoots {
     Tensor partial;
-    Tensor gathered;
+    Tensor staging;
 };
 
 template <class Allocator>
-TensorParallelLogitsRoots tp_logits(Allocator& allocator, const TextConfig& config,
-                                    std::int32_t shard_rows, std::int32_t columns,
-                                    bool gather_destination) {
+TensorParallelLogitsRoots tp_logits(Allocator& allocator, std::int32_t shard_rows,
+                                    std::int32_t peer_rows, std::int32_t columns,
+                                    bool gather_staging) {
     TensorParallelLogitsRoots out;
     out.partial = matrix(allocator, DType::BF16, shard_rows, columns);
-    if (gather_destination) {
-        out.gathered = matrix(allocator, DType::BF16, dimension(config.vocab_size), columns);
-    }
+    if (gather_staging) { out.staging = matrix(allocator, DType::BF16, peer_rows, columns); }
     return out;
 }
 
