@@ -716,7 +716,12 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
                          "ordinary decode hidden");
     require_tensor_shape(logits, DType::BF16, {dimension(config_.vocab_size), batch},
                          "ordinary decode logits");
-    require_single_device("ordinary decode");
+    if (tp2()) {
+        ordinary_decode_batch_tp2(ids, cache_positions, rope_positions, kv_table_rows,
+                                  linear_state_source_slots, linear_state_destination_slots,
+                                  envelope, hidden, logits);
+        return;
+    }
 
     cudaStream_t stream = ctx_.stream;
     work_.reset();
@@ -2063,6 +2068,89 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
     return PrefillChunkResult{.processed_tokens = static_cast<std::uint32_t>(len),
                               .finalized        = finalize_at_end && len == T,
                               .timing           = timing.finish()};
+}
+
+void TextContext::ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,
+                                            const Tensor& rope_positions,
+                                            const Tensor& kv_table_rows,
+                                            const Tensor& linear_state_source_slots,
+                                            const Tensor& linear_state_destination_slots,
+                                            ops::CausalAttentionExecutionEnvelope envelope,
+                                            Tensor& hidden, Tensor& logits) {
+    if (tp_->ordinary == nullptr) {
+        throw std::logic_error("tensor-parallel decode requires rank 1's ordinary frame");
+    }
+    const std::int32_t batch = ids.ne[0];
+    const auto peer_window   = [batch](const Tensor& source, const char* label) {
+        if (source.dtype != DType::I32 || source.ne[0] < batch || source.ne[1] != 1 ||
+            source.ne[2] != 1 || source.ne[3] != 1 || !source.is_contiguous() ||
+            source.data == nullptr) {
+            throw std::invalid_argument(std::string("tensor-parallel rank 1 ordinary ") + label +
+                                        " does not cover the batch");
+        }
+        return source.slice(0, 0, batch);
+    };
+    const OrdinaryPeerFrame& frame  = *tp_->ordinary;
+    const Tensor peer_ids           = peer_window(frame.tokens, "tokens");
+    const Tensor peer_cache         = peer_window(frame.cache_positions, "cache positions");
+    const Tensor peer_rope          = peer_window(frame.rope_positions, "RoPE positions");
+    const Tensor peer_rows          = peer_window(frame.text_kv_table_rows, "KV rows");
+    const Tensor peer_state_sources = peer_window(frame.state_source_slots, "source slots");
+    const Tensor peer_state_destinations =
+        peer_window(frame.state_destination_slots, "destination slots");
+
+    const ExecutionContext& execution = *tp_->execution;
+    const DeviceScope device(ctx_.device);
+    const auto ws = workspaces();
+    work_.reset();
+    tp_->work->reset();
+    {
+        ScopedPositions cache_binding(active_cache_positions_, cache_positions);
+        ScopedPositions rope_binding(active_rope_positions_, rope_positions);
+        ScopedEnvelope envelope_binding(active_causal_attention_envelope_, envelope);
+        ScopedValue<const Tensor*> kv_binding(active_kv_table_rows_, &kv_table_rows);
+        ScopedValue<const Tensor*> source_binding(active_linear_state_source_slots_,
+                                                  &linear_state_source_slots);
+        ScopedValue<const Tensor*> destination_binding(active_linear_state_destination_slots_,
+                                                       &linear_state_destination_slots);
+        ScopedValue<std::int32_t> batch_binding(active_sequence_batch_, batch);
+        ScopedValue<std::int32_t> width_binding(active_sequence_width_, 1);
+        ScopedValue<const Tensor*> peer_cache_binding(peer_cache_positions_, &peer_cache);
+        ScopedValue<const Tensor*> peer_rope_binding(peer_rope_positions_, &peer_rope);
+        ScopedValue<const Tensor*> peer_rows_binding(peer_kv_table_rows_, &peer_rows);
+        ScopedValue<const Tensor*> peer_source_binding(peer_linear_state_source_slots_,
+                                                       &peer_state_sources);
+        ScopedValue<const Tensor*> peer_destination_binding(peer_linear_state_destination_slots_,
+                                                            &peer_state_destinations);
+
+        RankTensors x;
+        RankTensors staging;
+        for (std::size_t r = 0; r < 2; ++r) {
+            x[r]       = ws[r]->alloc(DType::BF16, {dimension(config_.hidden_size), batch});
+            staging[r] = workspace::tp_call_roots(*ws[r], config_, batch).staging;
+        }
+        const std::array<const Tensor*, 2> rank_ids{&ids, &peer_ids};
+        for_each_rank(execution, [&](int rank) {
+            const auto r = static_cast<std::size_t>(rank);
+            ops::embedding(*rank_ids[r], rank_parameters(rank).text.token_embedding, x[r],
+                           rank_stream(rank));
+        });
+        NullTap tap;
+        run_layers_tp2(x, Phase::Verify, staging, tap);
+
+        // Rank 0's normalized hidden is the call's output; rank 1's is only the input of its
+        // vocabulary half.
+        ops::rmsnorm(x[0], *final_norm_, config_.rms_norm_eps, true, hidden, ctx_.stream);
+        Tensor peer_hidden = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), batch});
+        {
+            const DeviceScope peer(execution.dev[1]->device);
+            ops::rmsnorm(x[1], rank_parameters(1).text.final_norm, config_.rms_norm_eps, true,
+                         peer_hidden, rank_stream(1));
+        }
+        logits_tp2({hidden, peer_hidden}, logits);
+    }
+    work_.reset();
+    tp_->work->reset();
 }
 
 PrefillChunkResult TextContext::prefill_chunk(std::span<const int> full_ids, std::uint32_t begin,

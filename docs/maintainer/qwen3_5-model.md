@@ -253,6 +253,44 @@ An optional proposal head supplies an indexed vocabulary subset for draft predic
 converts proposal rows to actual token IDs. Full target verification continues to use the full
 output head. Backend selection, draft width and proposal-head choice are fixed at startup.
 
+## Tensor-parallel execution
+
+A Dense model loaded with `LoadOptions.tp=2` is split across two devices by heads, intermediate
+width and vocabulary ([`sharding.h`](../../src/models/qwen3_5/load/sharding.h)); rank r holds
+`execution::Parameters(model, r)`. The hidden/residual axis is replicated. `TextContext` runs the
+split schedule when it is given a `TpExecution`
+([`tp.h`](../../src/models/qwen3_5/execution/tp.h)) naming rank 1's parameters, arena, GDN state
+pool, KV cache, prefill KV row and ordinary decode control; without one it runs the single-device
+schedule unchanged.
+
+Each block issues one rank's work on that device's stream:
+
+```text
+h_r      = offset_rmsnorm(x, input_norm)                 replicated
+attention: q|k|gate|v_r = column_parallel(h_r)          12 query / 2 KV heads per rank (27B)
+           a_r = gated head-local attention over rank r's KV heads and pages
+GDN:       g|beta_r = column_parallel(h_r); q|k|v|z_r = column_parallel(h_r)
+           a_r = conv + recurrence over rank r's 8 key / 24 value heads and state slots
+x       += all_reduce(row_parallel(a_r))                 residual added once, by rank 0
+x       += all_reduce(row_parallel(swiglu(column_parallel(offset_rmsnorm(x, post_norm)))))
+```
+
+Both all-reduces leave the identical BF16 sum on the two ranks, so every later per-rank input
+(norms, KV pages, GDN state) agrees without further exchange. The GDN input norm runs separately
+before the split gating projection because the fused norm-and-gating Op has no split form. The
+final norm is replicated; each rank projects its half of the vocabulary and a per-column row
+gather assembles the complete logits on rank 0, where sampling runs.
+
+Rank 1 receives its own copies of the control tensors: prefill fills its positions on device and
+reads its KV row from `TpExecution::text_kv_table_row`; ordinary decode reads
+`TpExecution::ordinary`, which the Program uploads from the same host ingress record as rank 0's.
+KV page and row bookkeeping stay on rank 0 and are mirrored to rank 1 at the same indices.
+
+The split path covers text prefill, ordinary decode and their logits. It rejects MTP, speculative
+verification, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV
+caches other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no
+per-rank override.
+
 ## Vision and multimodal positions
 
 The current native processor uses 16×16 spatial patches, pairs of frames, and 2×2 spatial merge.
