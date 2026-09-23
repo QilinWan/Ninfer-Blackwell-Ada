@@ -260,8 +260,9 @@ width and vocabulary ([`sharding.h`](../../src/models/qwen3_5/load/sharding.h));
 `execution::Parameters(model, r)`. The hidden/residual axis is replicated. `TextContext` runs the
 split schedule when it is given a `TpExecution`
 ([`tp.h`](../../src/models/qwen3_5/execution/tp.h)) naming rank 1's parameters, arena, GDN state
-pool, KV caches, prefill KV rows, ordinary decode control and, under MTP, its prefill frames and
-ReplaySSM records; without one it runs the single-device schedule unchanged.
+pool, KV caches, prefill KV rows, ordinary decode control, the ReplaySSM records of a speculative
+backend and, under MTP, its prefill frames; without one it runs the single-device schedule
+unchanged.
 
 Each block issues one rank's work on that device's stream:
 
@@ -286,10 +287,10 @@ reads its KV row from `TpExecution::text_kv_table_row`; ordinary decode reads
 `TpExecution::ordinary`, which the Program uploads from the same host ingress record as rank 0's.
 KV page and row bookkeeping stay on rank 0 and are mirrored to rank 1 at the same indices.
 
-The split path covers text prefill, ordinary decode, the MTP round and their logits. It rejects
-DFlash, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV caches
-other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no per-rank
-override.
+The split path covers text prefill, ordinary decode, the MTP and DFlash2 rounds and their logits.
+It rejects DFlash, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV
+caches other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no
+per-rank override.
 
 MTP runs the same pattern over its one layer, with the MTP's own shards and KV pages:
 
@@ -336,14 +337,25 @@ pulls across devices once, so it needs no rank 1 copy and works for every backen
 parallelism admits text prompts only, so the per-sequence RoPE delta is zero; start_sequence
 still publishes it to rank 1.
 
+DFlash2 splits only the target. The drafter (`dflash2/*`) and the optimized proposal head
+(`proposal/*`) are placed on rank 0 alone, and the full-head proposal is rejected at width 2
+because the candidate ranking (`linear_topk`) is registered for the complete head only. A DFlash
+feature tap reads rank 0's residual after each captured layer's all-reduce, which is the complete
+hidden state, in prefill and in verification; rank 1 captures nothing. A round uploads the ingress
+record to both ranks, appends the context and proposes on rank 0, copies the draft tokens to rank
+1 after a cross-device event, prepares both ranks' verification inputs, verifies on both, accepts
+(sparse) on rank 0 and copies the accepted counts to rank 1, as for MTP. DFlash2 has no bridge;
+it resumes retained prefixes with the drafter's rings in rank 0's StateImages.
+
 The Program plans one per-rank layout (`SequencePlanImpl::tp`): KV heads and GDN state halved,
 and a workspace sized from the split schedule's own allocation order with the rank's
 `shard_text_config` extents, the all-reduce staging and the vocabulary-split logits; the ReplaySSM
-records hold one rank's heads. Rank 1 allocates the same layout; its Text and MTP KV pages,
-execution tables and StateImages are mirrors of rank 0's. Every `ExecutionCore` carries the
-`TpExecution` (a prefill call's copy names the sequence's rank 1 MTP row), so prompt prefill,
-forced tokens, ordinary decode and MTP rounds (eager and captured as one two-device graph) run on
-both ranks.
+records hold one rank's heads. Rank 1 allocates the same layout without the drafter's state
+(`SequencePlanImpl::peer_persistent`: no DFlash context or features and no StateImage DFlash
+rings); its Text and MTP KV pages, execution tables and StateImages are mirrors of rank 0's. Every
+`ExecutionCore` carries the `TpExecution` (a prefill call's copy names the sequence's rank 1 MTP
+row), so prompt prefill, forced tokens, ordinary decode, MTP and DFlash2 rounds (eager and
+captured as one two-device graph) run on both ranks.
 
 ## Vision and multimodal positions
 

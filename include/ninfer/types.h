@@ -162,10 +162,11 @@ struct EngineOptions {
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
     // Tensor-parallel width, 1 or 2. At 2 the dense Text model is split across `devices`
-    // (one id per rank, rank 0 first; rank 0 must equal `device`) for text generation, ordinary
-    // or with MTP speculative decoding: DFlash/DFlash2, Vision, CausalScoring, the MoE
-    // architecture, KV storage other than BF16/INT8 and the Host context-cache tiers are
-    // rejected. At 1 `devices` is empty or {device}.
+    // (one id per rank, rank 0 first; rank 0 must equal `device`) for text generation, ordinary,
+    // with MTP or with DFlash2 speculative decoding (DFlash2 with the optimized proposal head
+    // only; its drafter runs on rank 0): DFlash, Vision, CausalScoring, the MoE architecture, KV
+    // storage other than BF16/INT8 and the Host context-cache tiers are rejected. At 1 `devices`
+    // is empty or {device}.
     int tp = 1;
     std::vector<int> devices;
     std::size_t grammar_cache_bytes    = 256ULL * 1024 * 1024;

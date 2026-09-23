@@ -293,6 +293,33 @@ target state and continuation metadata. Their coverage must agree. These rules a
 [context scheduling](resource-scheduling-and-context-cache.md) and
 [ReplaySSM](replayssm-gdn.md).
 
+## Tensor-parallel execution
+
+At `tp=2` DFlash2 splits only the target ([Qwen3.5 model](qwen3_5-model.md#tensor-parallel-execution)).
+The drafter's weights (`dflash2/*`) and the optimized proposal head (`proposal/*`) are placed on
+rank 0 alone, which also holds the drafter's context state: the pending and prefill features and
+the DFlash rings of every StateImage. Rank 1's persistent layout omits all of them, and the
+StateImage mirror copies only rank 1's GDN and hidden components. The full-head proposal is
+rejected at load: the text output head is split by vocabulary across the ranks and `linear_topk`
+has no vocabulary-split form, so `--lm-head-draft` is required.
+
+Target features need no exchange. Each Text layer ends in an all-reduce that leaves the complete
+residual on both ranks, so the feature tap reads rank 0's residual after each captured layer, in
+prefill chunks and in verification, and only rank 0 appends to the draft context. One round:
+
+1. Upload the ingress record to both ranks' decode frames.
+2. Rank 0: materialize the pending features, append the context, propose K drafts.
+3. Record an event on rank 0; rank 1 waits on it and pulls the draft tokens into its frame.
+4. Both ranks prepare their verification ids and positions from their own frames.
+5. Both ranks verify their halves of the target with ReplaySSM records; rank 0 captures features
+   and gathers the complete logits.
+6. Rank 0 accepts sparsely and publishes the egress; rank 1 pulls the accepted counts and selects
+   and publishes its own accepted hidden.
+
+The commit folds both ranks' records with the same rows. Graph capture enrolls rank 1's stream in
+one two-device graph per profile; each topology class is budgeted 24 MiB on each rank. Retained
+prefixes resume as on one device, since no DFlash state is needed outside rank 0.
+
 ## Execution flow
 
 ```mermaid

@@ -386,9 +386,10 @@ otherwise the transfers are staged through host memory, which is slower but equi
 carry the same immutable YaRN coefficients, because a tensor-parallel round splits heads, never the
 rope scaling.
 
-Tensor parallelism covers ordinary decoding and `--spec mtp` of the dense architecture with `bf16`
-or `int8` KV. The MTP head is split like a Text layer and verification runs on both ranks;
-`--draft-tokens` and `--lm-head-draft` work as on one GPU (the optimized proposal head is loaded on
-rank 0 only and proposes there alone). `--spec dflash|dflash2`, `--vision`, the MoE architecture and
-the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8` KV types are rejected at startup, as is a nonzero
-`--host-context-mib`.
+Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2` of the dense
+architecture with `bf16` or `int8` KV. The MTP head is split like a Text layer and verification
+runs on both ranks; `--draft-tokens` and `--lm-head-draft` work as on one GPU (the optimized
+proposal head is loaded on rank 0 only and proposes there alone). The DFlash2 drafter runs on rank
+0 alone and requires `--lm-head-draft`, since the full output head is split by vocabulary across
+the ranks. `--spec dflash`, `--vision`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and
+`rk4v4-e8` KV types are rejected at startup, as is a nonzero `--host-context-mib`.

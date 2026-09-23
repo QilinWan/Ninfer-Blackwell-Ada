@@ -64,15 +64,21 @@ void validate_options(const EngineOptions& options) {
     }
     if (options.tp == 2) {
         // Rejected before the artifact is read: the two-device schedule covers prefill, the
-        // ordinary decode round and the MTP round of the dense Text model only
+        // ordinary decode round, the MTP round and the DFlash2 round of the dense Text model only
         // (models/qwen3_5/execution/text.h).
         if (options.purpose != EnginePurpose::Generation) {
             throw std::invalid_argument("Engine tp 2 does not support CausalScoring");
         }
-        if (options.speculative.backend == SpeculativeBackend::DFlash ||
-            options.speculative.backend == SpeculativeBackend::DFlash2) {
+        if (options.speculative.backend == SpeculativeBackend::DFlash) {
+            throw std::invalid_argument("Engine tp 2 does not support DFlash speculative decoding");
+        }
+        // The DFlash2 drafter runs whole on rank 0 and ranks its candidates over one complete
+        // proposal head; the full output head is split by vocabulary across the ranks, so only
+        // the optimized head, which rank 0 holds whole, can serve it.
+        if (options.speculative.backend == SpeculativeBackend::DFlash2 &&
+            options.speculative.proposal_head != ProposalHead::Optimized) {
             throw std::invalid_argument(
-                "Engine tp 2 does not support DFlash or DFlash2 speculative decoding");
+                "Engine tp 2 DFlash2 requires the optimized proposal head (--lm-head-draft)");
         }
         if (options.enable_vision) {
             throw std::invalid_argument("Engine tp 2 does not support Vision");

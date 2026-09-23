@@ -988,9 +988,26 @@ commit run on both, and acceptance and sampling run on rank 0; `--lm-head-draft`
 optimized proposal head on rank 0 alone. Prefix reuse works as on one GPU: each rank keeps its own
 copy of the hidden state a retained prefix ends with, and the MTP head resumes from it on both.
 
-Tensor parallelism covers ordinary decoding and `--spec mtp` with `bf16` or `int8` KV.
-`--spec dflash|dflash2`, `--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV
-types are rejected at startup.
+DFlash2 works at `--tp 2` with the optimized proposal head:
+
+```bash
+./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
+  --tp 2 --devices 0,1 \
+  --max-context 32768 --kv-capacity auto \
+  --max-concurrency 2 --kv-dtype int8 \
+  --spec dflash2 --draft-tokens 4 --lm-head-draft
+```
+
+The drafter and the optimized proposal head run on rank 0 alone, and rank 0 alone holds the
+drafter's context and StateImage rings, so rank 0 has less free memory than rank 1 and
+`--kv-capacity auto` sizes the KV pool from it. Rank 1 receives the draft tokens, verification and
+the recurrent-state commit run on both ranks, and acceptance and sampling run on rank 0.
+`--lm-head-draft` is required: the full output head is split by vocabulary across the ranks,
+while the drafter ranks its candidates over one complete head.
+
+Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2 --lm-head-draft`
+with `bf16` or `int8` KV. `--spec dflash`, `--spec dflash2` without `--lm-head-draft`, `--vision`,
+the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8` KV types are rejected at startup.
 
 Serve writes human-readable operational records to stderr using
 `YYYY-MM-DD HH:MM:SS.mmm  LEVEL  message`. Normal output covers material startup milestones,
