@@ -4,10 +4,11 @@ name: build
 # needs a GPU: compiling and linking for Ada is the thing that breaks when an sm_120a-only
 # instruction sneaks back in, and it is checked on every push.
 
+# Manual only by default: automatic runs on every push burn CI minutes for a check that cannot
+# touch Ada hardware here, and this repository's compile/link gate is already exercised locally for
+# both architectures. Enable automatic runs in a fork by adding a `push:` trigger, or start a run
+# from the Actions page ("Run workflow").
 on:
-  push:
-    branches: [master, sm89]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
