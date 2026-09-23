@@ -907,7 +907,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
-| `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency`; `max(max-concurrency, 4)` at `--tp 2` |
+| `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency`; `max(2 * max-concurrency, 8)` at `--tp 2` |
 | `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages`; `0` at `--tp 2` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
@@ -966,8 +966,13 @@ earlier checkpoint instead of reusing it completely.
 Rank 1 has no Host copy of its KV or state, so the Host tiers are off: an omitted
 `--host-state-slots` or `--host-kv-mib` becomes `0`, and a nonzero value is rejected. Every
 checkpoint therefore lives in a Device StateImage, and the defaults raise the Device checkpoint pool
-to `max(max-concurrency, 4)` and the private catalog to `max(2 * max-concurrency, 8)`. The startup
-log prints one line per rank and a `tensor parallel` capacity line.
+and the private catalog to `max(2 * max-concurrency, 8)`. Without a Host tier, a checkpoint captured
+during prefill (the turn-closure point a follow-up turn resumes from, a long-prompt anchor, the
+implicit shared prefix) is skipped when the Device pool is full, so after enough earlier
+conversations have filled it, a new conversation's next turn re-prefills its whole prompt. Each
+extra slot costs one StateImage per rank (about 73 MiB for Qwen3.8-27B); agentic or
+multi-conversation servers should set `--device-state-slots 12` to `16`. The startup log prints one
+line per rank and a `tensor parallel` capacity line with the Device checkpoint pool.
 
 Tensor parallelism currently covers ordinary decoding with `bf16` or `int8` KV. `--spec`,
 `--vision`, the MoE architecture and the `fp8`, `nvfp4` and `k8v4` KV types are rejected at

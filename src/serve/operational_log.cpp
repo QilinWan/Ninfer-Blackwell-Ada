@@ -453,9 +453,12 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
 
     if (engine.tp == 2) {
         logger_->info("tensor parallel | tp 2 on devices {},{} | KV, StateImages and runtime "
-                      "reserved per rank | the Host context-cache tier is off (rank 1 state has no "
-                      "Host replica)",
-                      engine.devices.at(0), engine.devices.at(1));
+                      "reserved per rank | the Host context-cache tier is off (rank 1 state has "
+                      "no Host replica) | {} Device checkpoint StateImages; prefill checkpoints "
+                      "are skipped when they are full (raise --device-state-slots for many "
+                      "conversations)",
+                      engine.devices.at(0), engine.devices.at(1),
+                      cache.enabled ? *cache.device_state_slots : 0U);
     }
 
     logger_->info("context | history {} | {} active + {} extra device states | host {}",

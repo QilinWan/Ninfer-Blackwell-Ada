@@ -162,12 +162,19 @@ EngineOptions normalize_engine_options(EngineOptions options) {
 
     ContextCacheOptions& cache      = options.context_cache;
     const std::uint32_t concurrency = options.max_concurrency;
-    // At tp 2 every endpoint, rewrite and anchor checkpoint must live in a Device StateImage:
-    // the mirrors have no Host replica, so with a single extra slot a long prompt's anchors evict
-    // its own endpoint. Our ContextCacheOptions has one Host budget knob, which must be zero.
-    const std::uint32_t minimum_device_states = options.tp == 2 ? 4U : 0U;
+    // At tp 2 the Host tier is off, so every endpoint, rewrite and anchor checkpoint must live in a
+    // Device StateImage. An in-prefill capture (the TurnClosure rewrite a follow-up turn resumes
+    // from, a long anchor, the default implicit shared prefix) that finds the pool full is skipped
+    // instead of snapshotted to Host: once earlier conversations fill the pool, a new conversation
+    // keeps only its endpoint and its next turn re-prefills the whole prompt. The tp 2 default pool
+    // therefore matches the private catalog, one checkpoint image per retained continuation; each
+    // image costs one StateImage per rank (about 73 MiB for Qwen3.8 27B).
+    const std::uint64_t default_device_states = options.tp == 2
+                                                    ? std::max<std::uint64_t>(2ULL * concurrency,
+                                                                            8ULL)
+                                                    : static_cast<std::uint64_t>(concurrency);
     cache.device_state_slots =
-        cache.device_state_slots.value_or(std::max(concurrency, minimum_device_states));
+        cache.device_state_slots.value_or(static_cast<std::uint32_t>(default_device_states));
     if (options.tp == 2) {
         if (cache.host_capacity_bytes && *cache.host_capacity_bytes != 0) {
             throw std::invalid_argument(

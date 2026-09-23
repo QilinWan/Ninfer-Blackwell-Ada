@@ -137,7 +137,7 @@ struct ContextCacheOptions {
     //
     // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
     // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2; at tp 2, where every
-    // checkpoint must live in a Device StateImage, H=max(C,4) and P=max(2C,8), and R and Host KV
+    // checkpoint must live in a Device StateImage, H=max(2C,8) and P=max(2C,8), and R and Host KV
     // must be 0. Engine::options() returns those effective values.
     bool enabled = true;
     // Extra Device StateImage slots beyond max_concurrency. Defaults to max_concurrency.

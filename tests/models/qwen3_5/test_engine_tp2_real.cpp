@@ -107,7 +107,7 @@ int exercise_load(const ninfer::Engine& engine) {
     const ninfer::EngineOptions& options = engine.options();
     if (options.context_cache.host_state_slots != 0 ||
         options.context_cache.host_kv_capacity_bytes != 0 ||
-        options.context_cache.device_state_slots.value_or(0) < 4 ||
+        options.context_cache.device_state_slots.value_or(0) < 8 ||
         options.context_cache.max_private_continuations.value_or(0) < 8) {
         std::cerr << "tp 2 context-cache defaults were not applied\n";
         return 1;
