@@ -1153,6 +1153,9 @@ struct LoadSummary {
     std::size_t device_object_count    = 0;
     std::size_t host_object_count      = 0;
     std::vector<LoadDeviceSummary> devices; // One entry per tensor-parallel rank.
+    // tp 2: the driver granted direct peer access between the two devices. When false every
+    // cross-device transfer is staged through Host memory by CUDA. Always false at tp 1.
+    bool peer_access = false;
     ContextCostSummary context_cost;
 };
 

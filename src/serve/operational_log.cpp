@@ -452,12 +452,13 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
 
     if (engine.tp == 2) {
-        logger_->info("tensor parallel | tp 2 on devices {},{} | KV, StateImages and runtime "
-                      "reserved per rank | the Host context-cache tier is off (rank 1 state has "
-                      "no Host replica) | {} Device checkpoint StateImages; prefill checkpoints "
-                      "are skipped when they are full (raise --device-state-slots for many "
+        logger_->info("tensor parallel | tp 2 on devices {},{} | p2p {} | KV, StateImages and "
+                      "runtime reserved per rank | the Host context-cache tier is off (rank 1 "
+                      "state has no Host replica) | {} Device checkpoint StateImages; prefill "
+                      "checkpoints are skipped when they are full (raise --device-state-slots for many "
                       "conversations)",
                       engine.devices.at(0), engine.devices.at(1),
+                      service.load_summary().peer_access ? "on" : "off (host-staged copies)",
                       cache.enabled ? *cache.device_state_slots : 0U);
         // Measured against the planned per-device allowance, to calibrate the tp 2 constants.
         if (engine.use_cuda_graph) {

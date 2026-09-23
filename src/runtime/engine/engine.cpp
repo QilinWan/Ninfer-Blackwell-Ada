@@ -23,11 +23,11 @@ namespace {
 
 // One DeviceContext per tensor-parallel rank (normalized options.devices), rank 0 current. At tp 2
 // direct peer access is enabled when both directions support it; otherwise the collectives copy
-// through CUDA's host-staged transfer, which is equally correct.
-ExecutionContext initialize_execution(const EngineOptions& options) {
+// through CUDA's host-staged transfer, which is equally correct. `peer_access` receives which.
+ExecutionContext initialize_execution(const EngineOptions& options, bool& peer_access) {
     StartupPhaseScope phase(options.startup_observer, StartupPhase::CudaInitialize);
     ExecutionContext execution(options.devices);
-    if (execution.tp == 2) { (void)ops::enable_peer_access(execution); }
+    peer_access = execution.tp == 2 && ops::enable_peer_access(execution);
     phase.complete();
     return execution;
 }
@@ -160,12 +160,13 @@ public:
 
     explicit Impl(EngineOptions engine_options)
         : options(runtime::normalize_engine_options(std::move(engine_options))),
-          execution(initialize_execution(options)), device(execution.primary()) {
+          execution(initialize_execution(options, peer_access)), device(execution.primary()) {
         nvtx::ScopedRange load_range(nvtx::Name::EngineLoad, nvtx::Category::Runtime);
         auto constructed  = runtime::construct_model(options, execution);
         active              = std::move(constructed.instance);
         load                = std::move(constructed.load);
         load.cuda_sync_mode = device.sync_mode();
+        load.peer_access    = peer_access;
         sampling_defaults   = active->frontend.sampling_defaults();
         StartupPhaseScope finalize_phase(options.startup_observer, StartupPhase::EngineFinalize);
         if (options.purpose == EnginePurpose::CausalScoring) {
@@ -187,6 +188,7 @@ public:
     }
 
     EngineOptions options;
+    bool peer_access = false; // Declared before `execution`, whose initializer writes it.
     ExecutionContext execution;
     DeviceContext& device; // execution.primary(): rank 0 owns scheduling and sampling.
     std::unique_ptr<runtime::ModelInstance> active;

@@ -971,9 +971,10 @@ implicit shared prefix) is skipped when the Device pool is full, so after enough
 conversations have filled it, a new conversation's next turn re-prefills its whole prompt. Each
 extra slot costs one StateImage per rank (about 73 MiB for Qwen3.8-27B); agentic or
 multi-conversation servers should set `--device-state-slots 12` to `16`. The startup log prints one
-line per rank, a `tensor parallel` capacity line with the Device checkpoint pool and, with CUDA
-Graphs, one `cuda graphs` line per rank comparing the device memory graph preparation took with
-the planned per-device allowance.
+line per rank and a `tensor parallel` capacity line with the Device checkpoint pool and the
+transfer path: `p2p on` when the driver grants direct peer access, `p2p off (host-staged copies)`
+otherwise (GeForce boards). With CUDA Graphs one `cuda graphs` line per rank compares the device
+memory graph preparation took with the planned per-device allowance.
 
 MTP speculative decoding works at `--tp 2` with the same options as on one GPU:
 
