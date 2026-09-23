@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -418,6 +419,36 @@ int main() {
     }
     failures += check(!secret_present, "startup argv retained the API key");
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
+
+    const ServeOptions split =
+        parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1"});
+    failures += check(split.tp == 2 && split.devices == std::vector<int>{0, 1} &&
+                          split.device == 0 &&
+                          split.context_cache.host_capacity_bytes.value_or(0) == 0,
+                      "--tp 2 did not select both ranks with the Host budget off");
+    failures += check(defaults.tp == 1 && defaults.devices == std::vector<int>{0},
+                      "serve default is not one rank on device 0");
+    const auto rejects = [](std::vector<std::string> arguments) {
+        try {
+            (void)parse(std::move(arguments));
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(rejects({"ninfer-serve", "model.ninfer", "--tp", "2"}),
+                      "--tp 2 was accepted without --devices");
+    // This tree has one Host budget knob (--host-context-mib covers StateImages, KV and in-flight
+    // storage together), so both donor-side Host cases collapse onto it.
+    failures += check(rejects({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1",
+                               "--host-context-mib", "1024"}),
+                      "--tp 2 accepted a nonzero Host budget");
+    failures += check(
+        rejects({"ninfer-serve", "model.ninfer", "--device", "1", "--tp", "2", "--devices", "0,1"}),
+        "--device disagreeing with the rank 0 device was accepted");
+    failures += check(!rejects({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1",
+                                "--host-context-mib", "0"}),
+                      "--tp 2 rejected an explicit zero Host budget");
+    failures += check(serve_usage_text("ninfer-serve").find("--tp") != std::string::npos,
+                      "serve help omits --tp");
 
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

@@ -61,7 +61,8 @@ struct LoadOptions {
     return {.purpose       = options.purpose,
             .vision        = options.enable_vision,
             .speculative   = options.speculative.backend,
-            .proposal_head = options.speculative.proposal_head};
+            .proposal_head = options.speculative.proposal_head,
+            .tp            = options.tp};
 }
 
 } // namespace ninfer::models

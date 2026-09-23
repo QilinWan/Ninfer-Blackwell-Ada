@@ -1,6 +1,7 @@
 #include "serve/serve_options.h"
 #include "product/speculative_options.h"
 #include "runtime/contract/yarn.h"
+#include "product/tensor_parallel_options.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -9,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ninfer::serve {
 namespace {
@@ -120,6 +122,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
+           "[--tp 1|2 --devices A,B] "
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
@@ -159,7 +162,9 @@ std::string serve_usage_text(const char* argv0) {
            "8192 MiB plus eight native StateImages\n"
            "       --device-state-slots is extra capacity beyond active lanes; "
            "--host-context-mib bounds shared Host State/KV and in-flight storage in MiB\n"
-           "       --host-context-mib accepts decimal MiB values that resolve to whole bytes\n"
+           "       --tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A) for "
+           "max(max-concurrency,4), private to max(2x concurrency,8) and the Host tiers to 0\n"
+
            "       --default-thinking-budget caps model-origin thinking for enabled requests; "
            "control tokens count toward the request output limit\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
@@ -183,6 +188,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     bool default_max_tokens_explicit = false;
     bool kv_capacity_explicit        = false;
+
+    bool device_explicit             = false;
+    bool host_capacity_explicit      = false;
+
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
         options.help_requested = true;
         return options;
@@ -264,8 +273,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_cache.device_state_slots = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
         } else if (arg == "--host-context-mib") {
-            options.context_cache.host_capacity_bytes =
+            const std::size_t bytes =
                 parse_host_context_mib(require_value("--host-context-mib"));
+            options.context_cache.host_capacity_bytes = bytes;
+            host_capacity_explicit                    = bytes != 0;
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {
@@ -286,7 +297,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             }
             options.response_store_max_bytes = static_cast<std::size_t>(mib << 20);
         } else if (arg == "--device") {
-            options.device = parse_nonnegative_int(require_value("--device"), "device");
+            options.device  = parse_nonnegative_int(require_value("--device"), "device");
+            device_explicit = true;
+        } else if (arg == "--tp") {
+            options.tp = product::parse_tp(require_value("--tp"));
+        } else if (arg == "--devices") {
+            options.devices = product::parse_devices(require_value("--devices"));
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
         } else if (arg == "--rope-yarn-factor") {
@@ -361,6 +377,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
     }
     options.context_cache.enabled = options.allow_prefix_reuse;
+
     if (options.port <= 0 || options.port > 65535) {
         throw std::invalid_argument("--port must be in [1,65535]");
     }
@@ -384,6 +401,19 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
+    product::resolve_tensor_parallel_devices(options.tp, options.devices, options.device,
+                                             device_explicit);
+    if (options.tp == 2) {
+        // Rank 1's KV pages and StateImages have no Host tier: a tensor-parallel server keeps every
+        // checkpoint in Device StateImages. This tree's single Host budget knob is the one that must
+        // be 0; the Device StateImage and private-catalog floors come from the Engine defaults, which
+        // keep a long prompt's endpoint and anchors resident together.
+        if (host_capacity_explicit) {
+            throw std::invalid_argument("--host-context-mib must be 0 with --tp 2");
+        }
+        options.context_cache.host_capacity_bytes = 0;
+    }
+
     runtime::validate_yarn(options.yarn, options.max_context);
     product::validate_speculative_cli_options(options.speculative);
     if (default_max_tokens_explicit) {

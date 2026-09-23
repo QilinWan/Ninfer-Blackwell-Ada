@@ -137,5 +137,33 @@ int main() {
                   (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "21"});
               }),
               "CLI accepted top_k beyond the executable candidate domain");
+    const ninfer::cli::Options single = parse({"ninfer-cli", "model.ninfer", "--prompt", "hello"});
+    failures += check(single.tp == 1 && single.devices == std::vector<int>{0},
+                      "CLI default is not one rank on device 0");
+    const ninfer::cli::Options split =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp", "2", "--devices", "1,0"});
+    failures += check(split.tp == 2 && split.devices == std::vector<int>{1, 0} && split.device == 1,
+                      "--tp 2 --devices did not select both ranks with rank 0 first");
+    failures +=
+        check(rejects([] {
+                  (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp", "2"});
+              }),
+              "--tp 2 was accepted without --devices");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp",
+                                       "2", "--devices", "0"});
+                      }),
+                      "--devices with fewer ids than --tp was accepted");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--device", "1", "--tp", "2", "--devices", "0,1"});
+                      }),
+                      "--device disagreeing with the rank 0 device was accepted");
+    failures +=
+        check(rejects([] {
+                  (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tp", "3"});
+              }),
+              "--tp 3 was accepted");
+    failures += check(help.find("--tp") != std::string::npos, "CLI help omits --tp");
     return failures == 0 ? 0 : 1;
 }

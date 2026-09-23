@@ -134,6 +134,11 @@ struct StartupObserver {
 struct ContextCacheOptions {
     // Controls cross-request history reads and writes. Request pause/replay resources remain
     // available when history is disabled.
+    //
+    // Engine resolves every optional once at construction. With C=max_concurrency, the enabled
+    // defaults are H=C, R=8, Host KV=8 GiB, P=2C, S=max(C,4) and L=2; at tp 2, where every
+    // checkpoint must live in a Device StateImage, H=max(C,4) and P=max(2C,8), and R and Host KV
+    // must be 0. Engine::options() returns those effective values.
     bool enabled = true;
     // Extra Device StateImage slots beyond max_concurrency. Defaults to max_concurrency.
     std::optional<std::uint32_t> device_state_slots;
@@ -154,9 +159,15 @@ struct ContextCostOptions {
 struct EngineOptions {
     std::filesystem::path artifact_path;
     std::filesystem::path chat_template_path;
-    std::size_t grammar_cache_bytes    = 256ULL * 1024 * 1024;
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
+    // Tensor-parallel width, 1 or 2. At 2 the dense Text model is split across `devices`
+    // (one id per rank, rank 0 first; rank 0 must equal `device`), ordinary generation only:
+    // speculative decoding, Vision, CausalScoring, the MoE architecture, KV storage other than
+    // BF16/INT8 and the Host context-cache tiers are rejected. At 1 `devices` is empty or {device}.
+    int tp = 1;
+    std::vector<int> devices;
+    std::size_t grammar_cache_bytes    = 256ULL * 1024 * 1024;
     std::uint32_t max_context          = 2048; // Logical ceiling of one request or score window.
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);
     std::uint32_t max_concurrency      = 1;
@@ -1112,6 +1123,7 @@ struct ContextCostSummary {
 // the placed parents' and slices' own bytes, and capacity_bytes adds the alignment between them.
 // At tp 1 every parent counts as replicated.
 struct LoadDeviceSummary {
+    int device                         = 0; // CUDA device id of this rank.
     std::uint64_t capacity_bytes       = 0; // Weight arena, including alignment.
     std::uint64_t host_to_device_bytes = 0;
     std::uint64_t sharded_bytes        = 0; // This rank's slices of row- or column-split parents.

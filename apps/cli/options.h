@@ -29,6 +29,8 @@ struct Options {
     KvCapacityPolicy kv_capacity = KvCapacityPolicy::explicit_capacity(2048);
     std::uint32_t prefill_chunk  = 1024;
     int device                   = 0;
+    int tp                       = 1;
+    std::vector<int> devices; // One id per tensor-parallel rank; {device} at tp 1.
 
     KvCacheStorage kv_cache = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;

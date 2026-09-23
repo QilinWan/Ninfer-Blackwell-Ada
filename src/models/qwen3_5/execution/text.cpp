@@ -1553,6 +1553,10 @@ cudaStream_t TextContext::rank_stream(int rank) const noexcept {
     return rank == 0 ? ctx_.stream : tp_->execution->dev[1]->stream;
 }
 
+DeviceExecutionView TextContext::rank_execution_view(int rank) const noexcept {
+    return rank == 0 ? ctx_.execution_view() : tp_->execution->dev[1]->execution_view();
+}
+
 LinearAttentionStatePool& TextContext::rank_state(int rank) const noexcept {
     return rank == 0 ? state_ : *tp_->linear_attention;
 }
@@ -1672,7 +1676,8 @@ void TextContext::attn_mix_tp2(const RankBlocks& w, RankTensors& x, int fidx,
         const Tensor& rope_positions  = rank_rope_positions(rank);
         Tensor rope_for_op =
             active_sequence_batch_ != 0 ? rope_positions.view({T}) : rope_positions;
-        text_rope(rope_for_op, *config_.rope_parameters, qn[r], kn[r], s);
+        text_rope(rope_for_op, *config_.rope_parameters, &parameters_.rope_scaling, qn[r], kn[r],
+                    rank_execution_view(rank));
 
         const PagedKVBatchLayerView cache = rank_text_cache(rank).batch_layer_view(fidx);
         const Tensor& kv_table_rows       = rank_kv_table_rows(rank);
@@ -1690,12 +1695,13 @@ void TextContext::attn_mix_tp2(const RankBlocks& w, RankTensors& x, int fidx,
             Tensor position_batch = cache_positions.view({width, batch});
             ops::causal_softmax_attention(q_batch, k_batch, v_batch, position_batch, Tensor{},
                                           kv_table_rows, {head_dim, q_heads, kv_heads}, scale,
-                                          cache, *active_causal_attention_envelope_, *ws[r],
-                                          a_batch, s);
+                                          cache, *active_causal_attention_envelope_, *ws[r], a_batch,
+                                          rank_execution_view(rank));
         } else {
             ops::causal_softmax_attention(qn[r], kn[r], v, cache_positions, Tensor{}, kv_table_rows,
                                           {head_dim, q_heads, kv_heads}, scale, cache,
-                                          *active_causal_attention_envelope_, *ws[r], a[r], s);
+                                          *active_causal_attention_envelope_, *ws[r], a[r],
+                                          rank_execution_view(rank));
         }
         ops::sigmoid_mul(gate, a[r], s);
     });
@@ -1827,7 +1833,7 @@ void TextContext::gdn_mix_tp2(const RankBlocks& w, RankTensors& x, int gidx, Pha
                 rank_state(rank).recurrent_slot(layer, linear_state_destination_slot_);
             ops::gated_delta_net(q_recurrent, k_recurrent, v_recurrent, g[r], beta[r], scale,
                                  /*normalize_qk=*/true, *ws[r], recurrent_state_in,
-                                 recurrent_state_out, o[r], s);
+                                 recurrent_state_out, o[r], rank_execution_view(rank));
         }
     });
 
@@ -1841,7 +1847,8 @@ void TextContext::gdn_mix_tp2(const RankBlocks& w, RankTensors& x, int gidx, Pha
         Tensor gate  = z[r].view({value_dim, value_heads, T});
         // The norm weight is per head dimension and replicated, so each rank applies all of it
         // over its own value heads.
-        ops::gated_rmsnorm(o[r], p[r]->norm, gate, config_.rms_norm_eps, on[r], rank_stream(rank));
+        ops::gated_rmsnorm(o[r], p[r]->norm, gate, config_.rms_norm_eps, on[r],
+                       rank_execution_view(rank));
     });
 
     gdn_output_split({on[0].view({value_width, T}), on[1].view({value_width, T})}, p, x, staging,

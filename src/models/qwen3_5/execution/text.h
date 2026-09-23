@@ -189,6 +189,10 @@ private:
     [[nodiscard]] const Parameters& rank_parameters(int rank) const noexcept;
     [[nodiscard]] std::array<WorkspaceArena*, kTensorParallelWidth> workspaces() const noexcept;
     [[nodiscard]] cudaStream_t rank_stream(int rank) const noexcept;
+    // The per-rank execution view: the rank's own stream and SM count. Ops that select launch
+    // shapes from the device take this, not a bare stream, so rank 1 never inherits rank 0's
+    // device properties.
+    [[nodiscard]] DeviceExecutionView rank_execution_view(int rank) const noexcept;
     [[nodiscard]] LinearAttentionStatePool& rank_state(int rank) const noexcept;
     [[nodiscard]] const qwen3_5::PagedKVCache& rank_text_cache(int rank) const;
     // Rank 0 reads the active_* bindings exactly as the single-device path does; rank 1 reads
