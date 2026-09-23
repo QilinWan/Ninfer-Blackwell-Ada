@@ -19,7 +19,7 @@ void launch_q8_ksplit(const Tensor& x, const Weight& weight, Tensor& out, cudaSt
     }
     const Q8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), Geometry::kOutputRows};
     constexpr std::size_t shared_bytes =
-        Q8KSplitSharedWindow<Schedule>::kBytes;
+        Q8KSplitAdaSharedWindow<Schedule>::kBytes;
     [[maybe_unused]] constexpr auto shared_kernel =
         q8_ksplit_kernel<Geometry, ColumnCapacity, Schedule, Q8ContiguousOutput, Epilogue,
                          Q8KSplitIdentityRows, false, true>();

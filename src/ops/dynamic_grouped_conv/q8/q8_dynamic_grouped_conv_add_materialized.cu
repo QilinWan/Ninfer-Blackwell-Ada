@@ -41,7 +41,7 @@ void tiled_projection(const Tensor& x, const Weight& weight, Tensor& out, cudaSt
     using Geometry            = Q8LinearGeometry<kRows, InputRows>;
     using Schedule            = Q8KSplitSchedule<Warps, TileColumns, Warps == 8 ? 2 : 3,
                                                  Q8KSplitScaleAccess::Shared, Activation>;
-    constexpr std::size_t SharedBytes = Q8KSplitSharedWindow<Schedule>::kBytes;
+    constexpr std::size_t SharedBytes = Q8KSplitSharedWindow<Schedule, TileColumns, true>::kBytes;
     [[maybe_unused]] constexpr auto SharedKernel =
         q8_ksplit_kernel<Geometry, TileColumns, Schedule, Q8ContiguousOutput,
                          Q8KSplitStoreEpilogue, Q8KSplitIdentityRows, false, true>();

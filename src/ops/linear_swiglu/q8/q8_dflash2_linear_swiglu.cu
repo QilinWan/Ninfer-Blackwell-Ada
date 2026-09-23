@@ -35,7 +35,7 @@ void launch_tile(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_
     const RowPolicy row_policy{};
     constexpr int kBlocks = kIntermediate / RowPolicy::kOutputRowsPerCta;
     constexpr std::size_t shared_bytes =
-        Q8KSplitSharedWindow<Schedule>::kBytes;
+        Q8KSplitAdaSharedWindow<Schedule>::kBytes;
     [[maybe_unused]] constexpr auto shared_kernel =
         q8_ksplit_kernel<Geometry, Capacity, Schedule, Q8ContiguousOutput, Q8SwiGluDirectEpilogue,
                          RowPolicy, true, true>();

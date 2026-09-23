@@ -44,7 +44,7 @@ void launch_small(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k, T
                         static_cast<__nv_bfloat16*>(v.data)};
     constexpr int kBlocks = Geometry::kOutputRows / Schedule::kRowsPerCta;
     constexpr std::size_t shared_bytes =
-        Q8KSplitSharedWindow<Schedule>::kBytes;
+        Q8KSplitAdaSharedWindow<Schedule>::kBytes;
     [[maybe_unused]] constexpr auto shared_kernel =
         q8_ksplit_kernel<Geometry, Columns, Schedule, Output, Q8KSplitStoreEpilogue,
                          Q8KSplitIdentityRows, false, !Exact>();

@@ -107,7 +107,11 @@ struct Q8RowSplitSharedWindow {
     static_assert(sizeof(Storage) <= 99 * 1024, "per-CTA shared memory limit");
     static constexpr std::size_t kStorageBytes = sizeof(Storage);
     static constexpr std::size_t kBytes =
+#ifdef NINFER_SM89
         kStorageBytes > 48 * 1024 ? kStorageBytes : std::size_t{0};
+#else
+        0;
+#endif
 };
 
 template <class Cfg, bool Full, Q8Epilogue Epilogue = Q8Epilogue::Store,

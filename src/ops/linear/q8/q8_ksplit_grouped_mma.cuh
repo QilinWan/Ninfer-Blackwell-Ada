@@ -29,7 +29,12 @@ struct Q8GroupedSharedWindow {
     static constexpr std::size_t kCodeBytes = q8_round16(kMmaRows * kGroupK);
     static constexpr std::size_t kFullBytes =
         kCodeBytes + q8_round16(kKernelWarps * kWarpCols * kTileK * sizeof(__nv_bfloat16));
-    static constexpr std::size_t kBytes = kFullBytes > 48 * 1024 ? kFullBytes : std::size_t{0};
+    static constexpr std::size_t kBytes =
+#ifdef NINFER_SM89
+        kFullBytes > 48 * 1024 ? kFullBytes : std::size_t{0};
+#else
+        0;
+#endif
 };
 
 template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks, class Output,

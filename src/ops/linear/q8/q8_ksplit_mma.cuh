@@ -71,15 +71,35 @@ union alignas(16) Q8KSplitSharedStorage {
     float partial[Schedule::kKWarps * (Schedule::kTileTokens / 8) * 32 * 4];
 };
 
-// Shared staging capacity of the k-split contraction. Routes whose staging union exceeds the
-// 48 KB static window take it from the dynamic window instead, which is what makes the same
-// schedule usable on Ada as well as Blackwell. Launchers pass kBytes as the dynamic shared memory
-// size, so both allocations address identical storage.
-template <class Schedule>
+// Shared staging capacity of the k-split contraction: how much dynamic shared memory a launcher
+// must request so the kernel can address `Q8KSplitSharedStorage`. Ada caps static shared memory at
+// 48 KB per block, so every route whose staging union is larger has to come from the dynamic
+// window; Blackwell keeps its original rule (only the tiled wide-column routes opt in), which keeps
+// the upstream architecture's behaviour and occupancy untouched.
+template <class Schedule, int ActiveCols = 0, bool TiledColumns = false>
 struct Q8KSplitSharedWindow {
     static constexpr std::size_t kStorageBytes = sizeof(Q8KSplitSharedStorage<Schedule>);
+#ifdef NINFER_SM89
     static constexpr std::size_t kBytes =
         kStorageBytes > 48 * 1024 ? kStorageBytes : std::size_t{0};
+#else
+    static constexpr std::size_t kBytes =
+        (TiledColumns && ActiveCols > 64) ? kStorageBytes : std::size_t{0};
+#endif
+};
+
+// Blackwell keeps the upstream request for routes that were launched with a zero dynamic window and
+// relied on a static declaration; only Ada moves them into the dynamic window. Use this instead of
+// Q8KSplitSharedWindow wherever the upstream launcher passed a literal 0.
+template <class Schedule>
+struct Q8KSplitAdaSharedWindow {
+    static constexpr std::size_t kBytes =
+#ifdef NINFER_SM89
+        sizeof(Q8KSplitSharedStorage<Schedule>) > 48 * 1024 ? sizeof(Q8KSplitSharedStorage<Schedule>)
+                                                            : std::size_t{0};
+#else
+        0;
+#endif
 };
 
 struct Q8KSplitIdentityColumns {
@@ -117,7 +137,8 @@ q8_ksplit_mma(const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restric
 
     using SharedStorage = Q8KSplitSharedStorage<Schedule>;
 
-    constexpr bool kDynamicShared = Q8KSplitSharedWindow<Schedule>::kBytes != 0;
+    constexpr bool kDynamicShared =
+        Q8KSplitSharedWindow<Schedule, ActiveCols, TiledColumns>::kBytes != 0;
     __shared__ __align__(
         16) unsigned char static_shared[kDynamicShared ? 1 : sizeof(SharedStorage)];
     extern __shared__ __align__(16) unsigned char dynamic_shared[];
