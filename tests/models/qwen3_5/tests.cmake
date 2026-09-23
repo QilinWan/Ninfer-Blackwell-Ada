@@ -134,3 +134,15 @@ set_tests_properties(
   ninfer_qwen3_5_sharded_load_real_test
   ninfer_qwen3_5_sharded_load_mtp_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
+
+ninfer_add_test(ninfer_qwen3_5_text_context_tp2_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_text_context_tp2.cpp"
+  LIBRARIES ninfer_model_runtime)
+
+add_test(NAME ninfer_qwen3_5_text_context_tp2_real_test
+  COMMAND ninfer_qwen3_5_text_context_tp2_test real)
+
+set_tests_properties(
+  ninfer_qwen3_5_text_context_tp2_test
+  ninfer_qwen3_5_text_context_tp2_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
