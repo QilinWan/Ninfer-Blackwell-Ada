@@ -25,6 +25,11 @@ inline constexpr std::size_t kMaximumExplicitPromptCacheMarkers  = 4;
 inline constexpr std::size_t kMaximumPromptMediaBytes = 256ULL << 20;
 inline constexpr std::size_t kDefaultMediaCacheBytes  = 1ULL << 30;
 inline constexpr std::size_t kDefaultMediaLiveBytes   = 2ULL << 30;
+// Bounds of EngineOptions::max_vision_tokens. One merged Vision token covers 32x32 pixels, so the
+// minimum is the registered 65,536-pixel image floor and the maximum the per-item execution
+// ceiling.
+inline constexpr std::uint32_t kMinimumMaxVisionTokens = 64;
+inline constexpr std::uint32_t kMaximumMaxVisionTokens = 16'384;
 
 enum class KvCacheStorage : std::uint8_t {
     BFloat16,
@@ -185,6 +190,18 @@ struct EngineOptions {
     // Zero selects a bounded worker count from the detected host concurrency.
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
+    // CUDA device that holds the Vision tower and runs its encoder; empty selects `device`. It
+    // must be one of `devices` and requires `enable_vision`. This tree rejects `--tp 2` together
+    // with Vision: the rank split that lets one rank encode while the other receives each item's
+    // merged embeddings is not implemented here (see the ledger's Vision-at-tp 2 task), so the
+    // selector only moves the tower between devices of a single-rank Engine.
+    std::optional<int> vision_device;
+    // Merged-token ceiling of one image or video item, in [kMinimumMaxVisionTokens,
+    // kMaximumMaxVisionTokens]; empty keeps the maximum. Larger images and videos are resized to
+    // at most N tokens (one token per 32x32 pixels of an image or of two video frames), a video
+    // too long for N tokens is rejected, and the Vision encode workspace is planned for N tokens.
+    // Requires `enable_vision`.
+    std::optional<std::uint32_t> max_vision_tokens;
     bool use_cuda_graph                    = true;
     // At tp 2 with CUDA Graphs, the captured decode all-reduces exchange through pinned host
     // memory (ops::PeerMailbox) instead of event-ordered cross-device copies; false keeps the
