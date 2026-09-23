@@ -22,6 +22,17 @@ namespace ninfer::models::qwen3_5::detail {
 
 static_assert(std::is_nothrow_move_assignable_v<SpeculativeStats>);
 
+namespace {
+
+// Both ranks of a tensor-parallel Program start from zeroed persistent and workspace arenas, so
+// the two ranks' KV pages, StateImages and scratch hold identical bytes before their first
+// write. A single-device Program's arenas start undefined, as every owner fills what it reads.
+ZeroFill tensor_parallel_zero_fill(const SequencePlanImpl& plan) noexcept {
+    return plan.peer_persistent ? ZeroFill::Yes : ZeroFill::No;
+}
+
+} // namespace
+
 const PersistentLayout& ProgramImpl::PeerRuntime::layout(const SequencePlanImpl& plan) {
     if (!plan.peer_persistent || plan.peer_persistent->dflash ||
         plan.peer_persistent->state_images.dflash_local) {
@@ -31,8 +42,8 @@ const PersistentLayout& ProgramImpl::PeerRuntime::layout(const SequencePlanImpl&
 }
 
 ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const SequencePlanImpl& plan)
-    : device(peer_device), persistent(layout(plan).bytes),
-      workspace_storage(plan.workspace.capacity),
+    : device(peer_device), persistent(layout(plan).bytes, ZeroFill::Yes),
+      workspace_storage(plan.workspace.capacity, ZeroFill::Yes),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}) {
     const PersistentLayout& own = layout(plan);
     const DeviceSpan backing    = persistent.alloc_bytes(own.bytes, 256);
@@ -65,7 +76,8 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
       vision_enabled(plan.features.vision), use_cuda_graph(plan.use_cuda_graph),
       causal_scoring(plan.causal_scoring), kv_payload_bytes(plan.persistent.kv_payload_bytes),
       graph_allowance_bytes(plan.graph_allowance_bytes), workspace_plan(plan.workspace),
-      persistent(plan.persistent.bytes), workspace_storage(plan.workspace.capacity),
+      persistent(plan.persistent.bytes, tensor_parallel_zero_fill(plan)),
+      workspace_storage(plan.workspace.capacity, tensor_parallel_zero_fill(plan)),
       work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}),
       round_host(plan.causal_scoring
                      ? std::nullopt

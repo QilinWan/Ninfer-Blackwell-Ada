@@ -558,7 +558,7 @@ resolver 由架构 binder 根据它绑定的逻辑参数给出。未安装 resol
 | `Rows` / `Columns` | 每个设备持有该轴上若干范围的拼接：同 format/layout、窄化 shape 的独立 parent |
 
 Shard 不重新打包：其几何就是窄化 shape 的 `weight_geometry`，内容是父编码的若干字节区间
-（`PlaneCopy`），放在 shard 自己的 plane 偏移处；plane 对齐间隙为零（device arena 创建时清零）。
+（`PlaneCopy`），放在 shard 自己的 plane 偏移处；plane 对齐间隙为零（持有 shard 的设备在上传前于其传输 stream 上清零整个 arena）。
 各 layout 的切分条件：`contiguous_le_v1` 的行、列都可取多个范围；`row_split_k128_v1` 行任意，
 列为单个 128 倍数范围；`block_scale_k16_m128x4_v1` 行为 128 的倍数（scale 以 128 行 tile 交织），
 列为 64 的倍数，weight divisor 复制到每个 shard；`row_scale_v1` 行任意，列切分时每行 scale 整份保留。

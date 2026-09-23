@@ -183,6 +183,20 @@ int main() {
     CUDA_CHECK(cudaMemset(external, 0, 512));
     CUDA_CHECK(cudaFree(external));
 
+    {
+        ninfer::DeviceArena zeroed(4096, ninfer::ZeroFill::Yes);
+        std::array<unsigned char, 4096> host{};
+        host.fill(0xff);
+        CUDA_CHECK(cudaMemcpy(host.data(), zeroed.base(), host.size(), cudaMemcpyDeviceToHost));
+        for (const unsigned char byte : host) {
+            if (byte != 0) {
+                ++failures;
+                std::cerr << "zero-filled arena holds a nonzero byte\n";
+                break;
+            }
+        }
+    }
+
     ninfer::PinnedHostBuffer pinned(128);
     if (pinned.data() == nullptr) {
         ++failures;

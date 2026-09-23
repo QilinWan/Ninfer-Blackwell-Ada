@@ -221,7 +221,17 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     out.stats_.owned_value_bytes     = plan.owned_value_bytes;
     out.stats_.device_capacity_bytes = plan.device_capacity_bytes;
     out.stats_.host_object_count     = plan.host_objects.size();
-    std::uint64_t capacity           = 0;
+    // A shard's plane alignment gaps are bytes no copy writes; they read as zero, like the
+    // padding of a stored parent, so a device holding a shard clears its arena first on its
+    // transfer stream, ahead of every upload.
+    std::array<bool, kMaximumDevices> holds_shard{};
+    for (const auto& placement : plan.device_objects) {
+        if (is_sharded(placement.axis) && placement.device >= 0 &&
+            placement.device < plan.device_count) {
+            holds_shard[static_cast<std::size_t>(placement.device)] = true;
+        }
+    }
+    std::uint64_t capacity = 0;
     for (std::size_t device = 0; device < devices.size(); ++device) {
         const auto bytes = plan.per_device_capacity_bytes[device];
         capacity         = checked_add(capacity, bytes, "device capacity");
@@ -232,6 +242,12 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
         if (bytes) {
             selection.select(device);
             out.arenas_[device] = std::make_unique<DeviceArena>(static_cast<std::size_t>(bytes));
+            if (holds_shard[device]) {
+                check_cuda(cudaMemsetAsync(out.arenas_[device]->base(), 0,
+                                           static_cast<std::size_t>(bytes),
+                                           devices[device]->transfer_stream),
+                           "clear sharded weight arena");
+            }
         }
     }
     if (capacity != plan.device_capacity_bytes) {

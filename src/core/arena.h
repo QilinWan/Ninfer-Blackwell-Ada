@@ -41,6 +41,9 @@ private:
     void require_range(std::size_t byte_offset, std::size_t count, const char* operation) const;
 };
 
+// Whether a new owning DeviceArena clears its allocation before returning.
+enum class ZeroFill : std::uint8_t { No, Yes };
+
 class DeviceArena {
 public:
     class Scope {
@@ -61,7 +64,10 @@ public:
         std::size_t saved_offset_ = 0;
     };
 
-    explicit DeviceArena(std::size_t capacity_bytes);
+    // Owners fill the regions they use; the bytes of a ZeroFill::No arena start undefined.
+    // ZeroFill::Yes completes a zeroing of the whole allocation before returning, since every
+    // NInfer stream is non-blocking and would not order after a default-stream memset.
+    explicit DeviceArena(std::size_t capacity_bytes, ZeroFill zero = ZeroFill::No);
     // Non-owning arena over an already allocated device region.
     explicit DeviceArena(DeviceSpan storage);
     ~DeviceArena();

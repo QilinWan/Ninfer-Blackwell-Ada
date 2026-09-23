@@ -138,7 +138,7 @@ DeviceArena::Scope::Scope(Scope&& other) noexcept
     other.arena_ = nullptr;
 }
 
-DeviceArena::DeviceArena(std::size_t capacity_bytes) {
+DeviceArena::DeviceArena(std::size_t capacity_bytes, ZeroFill zero) {
     if (capacity_bytes == 0) {
         throw std::invalid_argument("DeviceArena capacity must be nonzero");
     }
@@ -148,14 +148,13 @@ DeviceArena::DeviceArena(std::size_t capacity_bytes) {
     if (err != cudaSuccess) {
         throw std::runtime_error(cuda_error_message("cudaMalloc failed", err));
     }
-    // Owners fill their regions; bytes none of them writes (weight shard plane gaps, state
-    // padding before its first reuse) start as zero. Completed here because every NInfer
-    // stream is non-blocking and would not order after the default-stream memset.
-    err = cudaMemset(ptr, 0, capacity_bytes);
-    if (err == cudaSuccess) { err = cudaStreamSynchronize(nullptr); }
-    if (err != cudaSuccess) {
-        free_device(ptr);
-        throw std::runtime_error(cuda_error_message("cudaMemset failed", err));
+    if (zero == ZeroFill::Yes) {
+        err = cudaMemset(ptr, 0, capacity_bytes);
+        if (err == cudaSuccess) { err = cudaStreamSynchronize(nullptr); }
+        if (err != cudaSuccess) {
+            free_device(ptr);
+            throw std::runtime_error(cuda_error_message("cudaMemset failed", err));
+        }
     }
 
     base_ = ptr;
