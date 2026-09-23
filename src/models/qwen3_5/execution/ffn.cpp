@@ -1,5 +1,6 @@
 #include "models/qwen3_5/execution/ffn.h"
 
+#include "core/device_scope.h"
 #include "core/layout.h"
 #include "models/qwen3_5/execution/linear.h"
 #include "ninfer/ops/linear.h"
@@ -183,23 +184,23 @@ void mtp_ffn_split(const std::array<Tensor, 2>& hidden,
         activation[r] = workspace[r]->alloc(DType::BF16, {p[r]->gate_up.weight.n / 2, columns});
         delta[r]      = workspace[r]->alloc(DType::BF16, {p[r]->down.weight.n, columns});
     }
-    int previous = 0;
-    CUDA_CHECK(cudaGetDevice(&previous));
-    for (std::size_t r = 0; r < 2; ++r) {
-        const std::int32_t half = p[r]->gate_up.weight.n / 2;
-        CUDA_CHECK(cudaSetDevice(execution.dev[r]->device));
-        ops::silu_mul(gate_up[r].slice(0, 0, half), gate_up[r].slice(0, half, half), activation[r],
-                      execution.dev[r]->stream);
+    {
+        const ScopedCurrentDevice restore;
+        for (std::size_t r = 0; r < 2; ++r) {
+            const std::int32_t half = p[r]->gate_up.weight.n / 2;
+            ScopedCurrentDevice::select(execution.dev[r]->device);
+            ops::silu_mul(gate_up[r].slice(0, 0, half), gate_up[r].slice(0, half, half),
+                          activation[r], execution.dev[r]->stream);
+        }
     }
-    CUDA_CHECK(cudaSetDevice(previous));
     project_row_parallel(activation, {&p[0]->down, &p[1]->down}, delta, staging, workspace,
                          execution, events);
+    const ScopedCurrentDevice restore;
     for (std::size_t r = 0; r < 2; ++r) {
-        CUDA_CHECK(cudaSetDevice(execution.dev[r]->device));
-        Tensor target = residual[r];   // Tensor is a view: residual_add wants a mutable lvalue
+        ScopedCurrentDevice::select(execution.dev[r]->device);
+        Tensor target = residual[r]; // Tensor is a view: residual_add wants a mutable lvalue
         ops::residual_add(delta[r], target, execution.dev[r]->stream);
     }
-    CUDA_CHECK(cudaSetDevice(previous));
 }
 
 } // namespace ninfer::models::qwen3_5::execution

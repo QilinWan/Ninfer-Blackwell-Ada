@@ -125,7 +125,7 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
     const DeviceContext& rank1    = *execution.tp->execution->dev[1];
     const ops::PeerEvents& events = *execution.tp->events;
     CUDA_CHECK(cudaEventRecord(events.inputs_ready(0), execution.device.stream));
-    const detail::ScopedCurrentDevice scope(rank1.device);
+    const ScopedCurrentDevice scope(rank1.device);
     CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, events.inputs_ready(0), 0));
     CUDA_CHECK(cudaMemcpyAsync(peer.accepted_drafts.data, frame.accepted_drafts.data,
                                frame.accepted_drafts.bytes(), cudaMemcpyDeviceToDevice,

@@ -65,7 +65,7 @@ void project_split_output_head(PrefillContext& state, const Tensor& hidden, Tens
     const Tensor rank1_hidden = tp.work->alloc(DType::BF16, {H, 1});
     CUDA_CHECK(cudaEventRecord(tp.events->inputs_ready(0), state.execution.device.stream));
     {
-        const detail::ScopedCurrentDevice scope(rank1.device);
+        const ScopedCurrentDevice scope(rank1.device);
         CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, tp.events->inputs_ready(0), 0));
         CUDA_CHECK(cudaMemcpyAsync(rank1_hidden.data, rank0_hidden.data, rank1_hidden.bytes(),
                                    cudaMemcpyDeviceToDevice, rank1.stream));

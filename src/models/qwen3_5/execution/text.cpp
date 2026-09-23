@@ -6,6 +6,7 @@
 #include "models/qwen3_5/execution/mtp.h"
 #include "models/qwen3_5/execution/workspace.h"
 
+#include "core/device_scope.h"
 #include "core/nvtx.h"
 #include "models/qwen3_5/execution/visual_scatter.h"
 #include "models/qwen3_5/execution/vision.h"
@@ -151,31 +152,13 @@ private:
     T previous_;
 };
 
-// Current-device save/restore around per-rank issue: a kernel launch or a stream-ordered memcpy
-// targets the current device, and the caller's device is restored afterwards.
-class DeviceScope {
-public:
-    explicit DeviceScope(int device) {
-        CUDA_CHECK(cudaGetDevice(&previous_));
-        CUDA_CHECK(cudaSetDevice(device));
-    }
-
-    DeviceScope(const DeviceScope&)            = delete;
-    DeviceScope& operator=(const DeviceScope&) = delete;
-
-    ~DeviceScope() { (void)cudaSetDevice(previous_); }
-
-private:
-    int previous_ = 0;
-};
-
 // Issues `body(rank)` for rank 0 then rank 1 with that rank's device current. The calls only
 // enqueue, so the two ranks' work overlaps on the devices.
 template <class Body>
 void for_each_rank(const ExecutionContext& execution, Body&& body) {
-    const DeviceScope restore(execution.dev[0]->device);
+    const ScopedCurrentDevice restore;
     for (int rank = 0; rank < kTensorParallelWidth; ++rank) {
-        CUDA_CHECK(cudaSetDevice(execution.dev[static_cast<std::size_t>(rank)]->device));
+        ScopedCurrentDevice::select(execution.dev[static_cast<std::size_t>(rank)]->device);
         body(rank);
     }
 }
@@ -2048,7 +2031,7 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
         throw std::invalid_argument("text prefill chunk does not match its full prompt");
     }
     const ExecutionContext& execution = *tp_->execution;
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     cudaStream_t s  = ctx_.stream;
     const int T     = static_cast<int>(ids.size());
     const int chunk = static_cast<int>(prefill_chunk_);
@@ -2141,7 +2124,7 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
         if (prepare_mtp_prompt) {
             Tensor peer_hidden = tp_->prefill_hidden;
             peer_xf            = matrix_window(peer_hidden, len);
-            const DeviceScope peer(execution.dev[1]->device);
+            const ScopedCurrentDevice peer(execution.dev[1]->device);
             ops::rmsnorm(x[1], rank_parameters(1).text.final_norm, config_.rms_norm_eps, true,
                          peer_xf, rank_stream(1));
         }
@@ -2152,7 +2135,7 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
                 peer_last = peer_xf.slice(1, len - 1, 1);
             } else {
                 peer_last = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), 1});
-                const DeviceScope peer(execution.dev[1]->device);
+                const ScopedCurrentDevice peer(execution.dev[1]->device);
                 ops::rmsnorm(x[1].slice(1, len - 1, 1), rank_parameters(1).text.final_norm,
                              config_.rms_norm_eps, true, peer_last, rank_stream(1));
             }
@@ -2254,7 +2237,7 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
                                      {dimension(config_.hidden_size), 1},
                                      "rank 1 rewrite checkpoint hidden output");
                 const Tensor peer_checkpoint_hidden = peer_xf.slice(1, len - 1, 1);
-                const DeviceScope peer(execution.dev[1]->device);
+                const ScopedCurrentDevice peer(execution.dev[1]->device);
                 CUDA_CHECK(cudaMemcpyAsync(
                     peer_rewrite_checkpoint_hidden_output_->data, peer_checkpoint_hidden.data,
                     peer_checkpoint_hidden.bytes(), cudaMemcpyDeviceToDevice, rank_stream(1)));
@@ -2339,7 +2322,7 @@ void TextContext::target_verify_batch_tp2_impl(
     require_tensor_shape(target_tokens, DType::I32, {width, batch}, "target verify batch tokens");
 
     const ExecutionContext& execution = *tp_->execution;
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     const auto ws = workspaces();
     work_.reset();
     tp_->work->reset();
@@ -2823,7 +2806,7 @@ void TextContext::mtp_forward_decode_batch(const Tensor& ids, const RankTensors&
         require_tensor_shape(mtp_hidden[r], DType::BF16, {H, width, batch},
                              "MTP decode batch hidden");
     }
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     ScopedValue<const Tensor*> backend_binding(active_backend_kv_table_rows_, &kv_table_rows[0]);
     ScopedValue<const Tensor*> peer_backend_binding(peer_backend_kv_table_rows_, &kv_table_rows[1]);
     ScopedValue<const Tensor*> valid_binding(active_valid_columns_, &valid_columns[0]);
@@ -2846,7 +2829,7 @@ void TextContext::mtp_propose_batch(const RankTensors& hidden, Tensor& logits,
     require_tensor_shape(logits, DType::BF16, {dimension(config_.vocab_size), batch},
                          "MTP proposal batch logits");
     require_tensor_shape(draft_tokens, DType::I32, {batch}, "MTP proposal batch tokens");
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     auto proposal_scope0 = work_.scope();
     auto proposal_scope1 = tp_->work->scope();
     proposal_argmax_tp2(hidden, logits, draft_tokens);
@@ -2880,7 +2863,7 @@ void TextContext::mtp_forward_batch(const Tensor& ids, const RankTensors& hidden
                              "MTP logits");
         require_tensor_shape(*draft_token, DType::I32, {1}, "MTP draft token");
     }
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     // Unbatched: each rank appends and attends through its own prefill MTP row (io_ on rank 0,
     // TpExecution::backend_kv_table_row on rank 1), as the single-device bridge does.
     mtp_forward_core_tp2(ids, hidden, positions, rope_positions, envelope, mtp_hidden);
@@ -2912,7 +2895,7 @@ void TextContext::mtp_forward_ar_step(const Tensor& token, const RankTensors& pr
         require_tensor_shape(mtp_hidden[r], DType::BF16, {H, 1}, "MTP AR output hidden");
     }
     const ExecutionContext& execution = *tp_->execution;
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     const auto ws        = workspaces();
     auto position_scope0 = work_.scope();
     auto position_scope1 = tp_->work->scope();
@@ -2966,7 +2949,7 @@ void TextContext::ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cac
         peer_window(frame.state_destination_slots, "destination slots");
 
     const ExecutionContext& execution = *tp_->execution;
-    const DeviceScope device(ctx_.device);
+    const ScopedCurrentDevice device(ctx_.device);
     const auto ws = workspaces();
     work_.reset();
     tp_->work->reset();
@@ -3009,7 +2992,7 @@ void TextContext::ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cac
         ops::rmsnorm(x[0], *final_norm_, config_.rms_norm_eps, true, hidden, ctx_.stream);
         Tensor peer_hidden = ws[1]->alloc(DType::BF16, {dimension(config_.hidden_size), batch});
         {
-            const DeviceScope peer(execution.dev[1]->device);
+            const ScopedCurrentDevice peer(execution.dev[1]->device);
             ops::rmsnorm(x[1], rank_parameters(1).text.final_norm, config_.rms_norm_eps, true,
                          peer_hidden, rank_stream(1));
         }

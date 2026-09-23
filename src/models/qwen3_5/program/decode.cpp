@@ -41,7 +41,7 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                 throw std::logic_error("tensor-parallel decode requires rank 1's ordinary frame");
             }
             const DeviceContext& rank1 = *state.execution.tp->execution->dev[1];
-            const detail::ScopedCurrentDevice scope(rank1.device);
+            const ScopedCurrentDevice scope(rank1.device);
             CUDA_CHECK(cudaMemcpyAsync(state.peer_frame->ingress.data, &state.host_ingress,
                                        sizeof(qwen3_5::OrdinaryDecodeIngress),
                                        cudaMemcpyHostToDevice, rank1.stream));

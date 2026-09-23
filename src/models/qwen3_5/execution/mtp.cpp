@@ -1,5 +1,6 @@
 #include "models/qwen3_5/execution/mtp.h"
 
+#include "core/device_scope.h"
 #include "core/layout.h"
 #include "models/qwen3_5/execution/linear.h"
 #include "ninfer/ops/attn_input_proj.h"
@@ -164,17 +165,15 @@ void mtp_projection_split(const std::array<Tensor, 2>& hidden,
     const auto head_dim = dimension(shard.head_dim);
     const auto q_heads  = dimension(shard.num_attention_heads);
     const auto kv_heads = dimension(shard.num_key_value_heads);
-    int previous        = 0;
-    CUDA_CHECK(cudaGetDevice(&previous));
+    const ScopedCurrentDevice restore;
     for (std::size_t r = 0; r < 2; ++r) {
-        CUDA_CHECK(cudaSetDevice(execution.dev[r]->device));
+        ScopedCurrentDevice::select(execution.dev[r]->device);
         Tensor q = query[r].view({head_dim, q_heads, columns});
         Tensor k = key[r].view({head_dim, kv_heads, columns});
         Tensor g = gate[r].view({head_dim, q_heads, columns});
         Tensor v = value[r].view({head_dim, kv_heads, columns});
         ops::mtp_split_attn_in(packed[r], q, k, g, v, execution.dev[r]->stream);
     }
-    CUDA_CHECK(cudaSetDevice(previous));
 }
 
 void mtp_kv_projection_split(const std::array<Tensor, 2>& hidden,

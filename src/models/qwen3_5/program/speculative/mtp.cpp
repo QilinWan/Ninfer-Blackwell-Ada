@@ -161,7 +161,7 @@ void mtp_bridge_and_propose_tp2(PrefillContext& state, const Tensor& next_token,
     ops::set_i32_scalar(positions[0], position, state.execution.device.stream);
     ops::set_i32_scalar(rope_positions[0], rope_position[0], state.execution.device.stream);
     {
-        const detail::ScopedCurrentDevice scope(rank1.device);
+        const ScopedCurrentDevice scope(rank1.device);
         ops::set_i32_scalar(positions[1], position, rank1.stream);
         ops::set_i32_scalar(rope_positions[1], rope_position[0], rank1.stream);
     }
@@ -186,7 +186,7 @@ void mtp_bridge_and_propose_tp2(PrefillContext& state, const Tensor& next_token,
                                          peer_frame.position.slice(0, 0, 1)};
     ops::set_i32_scalar(ar_position[0], position + 1, state.execution.device.stream);
     {
-        const detail::ScopedCurrentDevice scope(rank1.device);
+        const ScopedCurrentDevice scope(rank1.device);
         ops::set_i32_scalar(ar_position[1], position + 1, rank1.stream);
     }
     for (int i = 1; i < static_cast<int>(state.mtp_proposal_extent); ++i) {
@@ -200,8 +200,7 @@ void mtp_bridge_and_propose_tp2(PrefillContext& state, const Tensor& next_token,
                                  logits, next_draft);
         for (std::size_t r = 0; r < 2; ++r) {
             const cudaStream_t stream = r == 0 ? state.execution.device.stream : rank1.stream;
-            const detail::ScopedCurrentDevice scope(r == 0 ? state.execution.device.device
-                                                           : rank1.device);
+            const ScopedCurrentDevice scope(r == 0 ? state.execution.device.device : rank1.device);
             CUDA_CHECK(cudaMemcpyAsync(mtp_hidden[r].data, next_hidden[r].data,
                                        mtp_hidden[r].bytes(), cudaMemcpyDeviceToDevice, stream));
             Tensor step_position = ar_position[r];
@@ -379,7 +378,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                 // rank 1 pulls them and prepares its copy of the next round from the same inputs.
                 const ops::PeerEvents& events = *tp->events;
                 CUDA_CHECK(cudaEventRecord(events.inputs_ready(0), stream));
-                const detail::ScopedCurrentDevice scope(rank1->device);
+                const ScopedCurrentDevice scope(rank1->device);
                 CUDA_CHECK(cudaStreamWaitEvent(rank1->stream, events.inputs_ready(0), 0));
                 for (const auto& [destination, source] :
                      {std::pair{peer->anchors, round.anchors},
@@ -421,7 +420,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                                         ar_hidden, stream);
             }
             if (peer) {
-                const detail::ScopedCurrentDevice scope(rank1->device);
+                const ScopedCurrentDevice scope(rank1->device);
                 Tensor ar_hidden = peer->ar_hidden;
                 ops::speculative_select_accepted_hidden(peer->alignment_hidden, peer->accepted,
                                                         ar_hidden, rank1->stream);
@@ -462,7 +461,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                                                    peer->next_hidden};
                     Tensor proposal_logits = round.proposal_logits;
                     card.mtp_propose_batch(proposal_hidden, proposal_logits, next);
-                    const detail::ScopedCurrentDevice scope(rank1->device);
+                    const ScopedCurrentDevice scope(rank1->device);
                     CUDA_CHECK(cudaMemcpyAsync(peer->ar_hidden.data, peer->next_hidden.data,
                                                peer->ar_hidden.bytes(), cudaMemcpyDeviceToDevice,
                                                rank1->stream));
