@@ -26,6 +26,7 @@
 #include "core/weight.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/split_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -44,8 +45,6 @@ namespace qw = ninfer::test::quantized_weight;
 
 namespace {
 
-constexpr double kBf16Ulp = 1.0 / 256.0;
-
 struct Case {
     const char* label;
     QType qtype;
@@ -55,50 +54,6 @@ struct Case {
     std::vector<std::int32_t> tokens;
     std::vector<ops::LinearPolicy> policies;
 };
-
-const char* policy_name(ops::LinearPolicy policy) {
-    switch (policy) {
-    case ops::LinearPolicy::A16Only:
-        return "A16Only";
-    case ops::LinearPolicy::AllowA8:
-        return "AllowA8";
-    case ops::LinearPolicy::AllowA4:
-        return "AllowA4";
-    }
-    return "?";
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Uploads run on each device's legacy default stream, which the non-blocking DeviceContext
-// streams do not order against, so they are retired before a split form runs.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
-}
-
-qw::PackedWeight make_weight(QType qtype, std::int32_t n, std::int32_t k, std::uint32_t seed,
-                             std::int32_t column_origin) {
-    qw::PatternedWeightOptions options;
-    options.column_origin           = column_origin;
-    options.decorrelate_coordinates = true;
-    if (qtype == QType::NVFP4) {
-        options.weight_scale_divisor = 0.125F;
-        options.input_scale_divisor  = 3.5F;
-    }
-    return qw::make_patterned_weight(qtype, n, k, seed, options);
-}
 
 // Coordinates straddling the NVFP4 32- and 128-row scale tiles, the quantization groups, and the
 // shard's own first and last index.
@@ -132,33 +87,12 @@ int verify_shard_is_parent_block(const std::string& label, const qw::PackedWeigh
     return 0;
 }
 
-struct RankWeight {
-    DeviceBuffer payload;
-    Weight weight{};
-};
-
-RankWeight upload(const qw::PackedWeight& packed) {
-    RankWeight result;
-    result.payload = to_device(packed.payload);
-    result.weight  = packed.device_weight(result.payload.p);
-    return result;
-}
-
-int compare(const std::string& label, const std::vector<double>& got,
-            const std::vector<double>& expected, const ReductionCriterion& criterion) {
-    const ReductionStats stats =
-        compute_reduction_stats(got.data(), expected.data(), static_cast<std::int64_t>(got.size()));
-    std::cout << "  " << label << ": max_abs=" << stats.maximum_absolute_error
-              << " rel_l2=" << stats.relative_l2
-              << " gross_limit=" << gross_error_limit(stats, criterion) << '\n';
-    return verify_reduction(label, got, expected, criterion);
-}
-
-// Two BF16 ulp of the largest output, and two ulp of relative L2: the split adds two BF16
-// roundings of partials comparable to the result, so about one ulp is the expected difference.
-constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16Ulp, 0.0, 2.0 * kBf16Ulp};
+// 2u of the largest output (one to two BF16 ulp, see kBf16UnitRoundoff) and of relative L2: the
+// split adds two BF16 roundings of partials comparable to the result, so about one ulp is the
+// expected difference.
+constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 // The FP8 A8 Linear tolerance: a row split changes each rank's per-token activation scale.
-constexpr ReductionCriterion kFp8A8RowSplitCriterion{0.04, kBf16Ulp, 0.06};
+constexpr ReductionCriterion kFp8A8RowSplitCriterion{0.04, kBf16UnitRoundoff, 0.06};
 
 ReductionCriterion criterion_for(const Case& test_case, ops::LinearPolicy policy) {
     if (test_case.qtype == QType::FP8_E4M3FN_ROW_BF16 && ops::allows_a8(policy)) {
@@ -175,12 +109,12 @@ int run_case(const Case& test_case, const ExecutionContext& ec, const ops::PeerE
     std::cout << head << " [" << n << ',' << k << "] -> [" << n << ',' << sk << "]\n";
 
     int failures                  = 0;
-    const qw::PackedWeight parent = make_weight(test_case.qtype, n, k, test_case.seed, 0);
+    const qw::PackedWeight parent = make_weight(test_case.qtype, n, k, test_case.seed, 0, 0);
     std::array<std::optional<qw::PackedWeight>, 2> packed_shard;
     for (std::size_t rank = 0; rank < 2; ++rank) {
         const std::int32_t column_origin = static_cast<std::int32_t>(rank) * sk;
         packed_shard[rank].emplace(
-            make_weight(test_case.qtype, n, sk, test_case.seed, column_origin));
+            make_weight(test_case.qtype, n, sk, test_case.seed, 0, column_origin));
         failures += verify_shard_is_parent_block(head + " shard " + std::to_string(rank), parent,
                                                  *packed_shard[rank], column_origin);
     }

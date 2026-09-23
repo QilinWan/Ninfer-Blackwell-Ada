@@ -35,6 +35,7 @@
 #include "core/device.h"
 #include "core/paged_kv_cache.h"
 #include "core/paged_kv_storage.h"
+#include "ops/attention_criteria.h"
 #include "ops/op_tester.h"
 
 #include <algorithm>
@@ -57,11 +58,6 @@ constexpr std::int32_t kGlobalQHeads  = 24;
 constexpr std::int32_t kGlobalKvHeads = 4;
 constexpr std::int32_t kLocalQHeads   = kGlobalQHeads / 2;
 constexpr std::int32_t kLocalKvHeads  = kGlobalKvHeads / 2;
-
-// Twice the causal Softmax Attention suite's oracle criteria for these cache storages: each
-// geometry may sit up to one criterion from the FP64 oracle, on either side.
-constexpr ReductionCriterion kBf16ParityCriterion{2 * 2.8e-3, 2 * 1.0e-3, 2 * 2.7e-3};
-constexpr ReductionCriterion kInt8ParityCriterion{2 * 3.15e-3, 2 * 1.1e-3, 2 * 3.0e-3};
 
 struct Case {
     KvCacheStorage storage;
@@ -340,8 +336,7 @@ int run_case(const ExecutionContext& ec, const Case& test_case, std::uint32_t se
     const std::string head =
         std::string(storage_name(test_case.storage)) + " B=" + std::to_string(test_case.batch) +
         " history=" + std::to_string(test_case.history) + " W=" + std::to_string(test_case.width);
-    const ReductionCriterion criterion =
-        test_case.storage == KvCacheStorage::BFloat16 ? kBf16ParityCriterion : kInt8ParityCriterion;
+    const ReductionCriterion criterion = attention_parity_criterion(test_case.storage);
 
     std::vector<Sequence> history;
     std::vector<Sequence> block;

@@ -17,6 +17,7 @@
 #include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/peer_mailbox.h"
 #include "ops/op_tester.h"
+#include "ops/split_test_support.h"
 
 #include "core/decode_graph.h"
 #include "core/device.h"
@@ -57,29 +58,6 @@ std::vector<double> allreduce_sum_oracle(const std::vector<float>& a, const std:
         expected[i] = static_cast<double>(a[i]) + static_cast<double>(b[i]);
     }
     return expected;
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Inputs are staged with cudaMemcpy/cudaMemset, which the runtime issues on each device's LEGACY
-// default stream. DeviceContext::stream is created with cudaStreamNonBlocking and therefore does
-// NOT implicitly synchronize with that default stream, so the staging writes must be retired
-// before the collective's transfers read them. This is the caller obligation the Op contract
-// documents; omitting the wait makes the suite intermittently read pre-staging bytes.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
 }
 
 // `ne0` is the contiguous dimension and `ne1` the outer one, so a 1-D buffer passes ne1 == 1 and

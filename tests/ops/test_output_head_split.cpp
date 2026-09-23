@@ -21,6 +21,7 @@
 #include "core/weight.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/split_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -38,44 +39,11 @@ namespace qw = ninfer::test::quantized_weight;
 
 namespace {
 
-constexpr double kBf16Ulp      = 1.0 / 256.0;
 constexpr std::int32_t kVocab  = 248320;
 constexpr std::int32_t kHidden = 5120;
 constexpr std::int32_t kHalf   = kVocab / 2;
 constexpr QType kQType         = QType::FP8_E4M3FN_ROW_BF16;
-constexpr ReductionCriterion kHeadCriterion{2.0 * kBf16Ulp, 0.0, 2.0 * kBf16Ulp};
-
-const char* policy_name(ops::LinearPolicy policy) {
-    switch (policy) {
-    case ops::LinearPolicy::A16Only:
-        return "A16Only";
-    case ops::LinearPolicy::AllowA8:
-        return "AllowA8";
-    case ops::LinearPolicy::AllowA4:
-        return "AllowA4";
-    }
-    return "?";
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Uploads and poison fills run on each device's legacy default stream, which the non-blocking
-// DeviceContext streams do not order against, so they are retired before a split form runs.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
-}
+constexpr ReductionCriterion kHeadCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 
 void* element_offset(void* base, std::size_t elements) {
     return static_cast<std::uint8_t*>(base) + elements * sizeof(std::uint16_t);
@@ -102,18 +70,6 @@ int verify_half_is_parent_block(const std::string& label, const qw::PackedWeight
         }
     }
     return 0;
-}
-
-struct RankWeight {
-    DeviceBuffer payload;
-    Weight weight{};
-};
-
-RankWeight upload(const qw::PackedWeight& packed) {
-    RankWeight result;
-    result.payload = to_device(packed.payload);
-    result.weight  = packed.device_weight(result.payload.p);
-    return result;
 }
 
 std::size_t workspace_bytes(std::int32_t rows, ops::LinearPolicy policy, std::int32_t tokens) {

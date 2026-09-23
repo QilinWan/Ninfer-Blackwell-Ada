@@ -24,6 +24,7 @@
 #include "core/weight.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/split_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -43,8 +44,6 @@ namespace qw = ninfer::test::quantized_weight;
 
 namespace {
 
-constexpr double kBf16Ulp = 1.0 / 256.0;
-
 constexpr std::int32_t kHidden     = 5120;
 constexpr std::int32_t kQRows      = 6144;
 constexpr std::int32_t kKvRows     = 1024;
@@ -60,40 +59,8 @@ constexpr std::array<std::int32_t, 4> kShardSectionRows{kShardQRows, kShardKv, k
                                                         kShardKv};
 constexpr std::array<const char*, 4> kSectionName{"q", "k", "gate", "v"};
 
-// Two BF16 ulp of the largest output, and two ulp of relative L2.
-constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16Ulp, 0.0, 2.0 * kBf16Ulp};
-
-const char* policy_name(ops::LinearPolicy policy) {
-    switch (policy) {
-    case ops::LinearPolicy::A16Only:
-        return "A16Only";
-    case ops::LinearPolicy::AllowA8:
-        return "AllowA8";
-    case ops::LinearPolicy::AllowA4:
-        return "AllowA4";
-    }
-    return "?";
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Uploads and poison fills run on each device's legacy default stream, which the non-blocking
-// DeviceContext streams do not order against, so they are retired before the split form runs.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
-}
+// 2u of the largest output (one to two BF16 ulp, see kBf16UnitRoundoff) and of relative L2.
+constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 
 qw::PackedWeight make_fp8(std::int32_t n, std::uint32_t seed, std::int32_t row_origin) {
     qw::PatternedWeightOptions options;
@@ -175,18 +142,6 @@ int verify_section(const std::string& label, const qw::PackedWeight& parent,
         }
     }
     return 0;
-}
-
-struct RankWeight {
-    DeviceBuffer payload;
-    Weight weight{};
-};
-
-RankWeight upload(const qw::PackedWeight& packed) {
-    RankWeight result;
-    result.payload = to_device(packed.payload);
-    result.weight  = packed.device_weight(result.payload.p);
-    return result;
 }
 
 int compare(const std::string& label, const std::vector<double>& got,

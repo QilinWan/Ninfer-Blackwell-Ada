@@ -29,6 +29,7 @@
 #include "ops/direct_bf16_weight.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/split_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -48,8 +49,6 @@ namespace bf16 = ninfer::test::direct_bf16_weight;
 
 namespace {
 
-constexpr double kBf16Ulp = 1.0 / 256.0;
-
 enum class SplitAxis : std::uint8_t {
     Column, // Output rows split; no communication.
     Row,    // Input columns split; all-reduced.
@@ -65,51 +64,6 @@ struct Case {
     std::vector<std::int32_t> tokens;
     std::vector<ops::LinearPolicy> policies;
 };
-
-const char* policy_name(ops::LinearPolicy policy) {
-    switch (policy) {
-    case ops::LinearPolicy::A16Only:
-        return "A16Only";
-    case ops::LinearPolicy::AllowA8:
-        return "AllowA8";
-    case ops::LinearPolicy::AllowA4:
-        return "AllowA4";
-    }
-    return "?";
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Uploads and poison fills run on each device's legacy default stream, which the non-blocking
-// DeviceContext streams do not order against, so they are retired before a split form runs.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
-}
-
-qw::PackedWeight make_weight(QType qtype, std::int32_t n, std::int32_t k, std::uint32_t seed,
-                             std::int32_t row_origin, std::int32_t column_origin) {
-    qw::PatternedWeightOptions options;
-    options.row_origin              = row_origin;
-    options.column_origin           = column_origin;
-    options.decorrelate_coordinates = true;
-    if (qtype == QType::NVFP4) {
-        options.weight_scale_divisor = 0.125F;
-        options.input_scale_divisor  = 3.5F;
-    }
-    return qw::make_patterned_weight(qtype, n, k, seed, options);
-}
 
 bf16::HostWeight bf16_block(const bf16::HostWeight& parent, std::int32_t n, std::int32_t k,
                             std::int32_t row_origin, std::int32_t column_origin) {
@@ -167,17 +121,8 @@ int verify_shards_are_distinct(const std::string& label, const Bytes& first, con
     return 1;
 }
 
-struct RankWeight {
-    DeviceBuffer payload;
-    Weight weight{};
-};
-
-RankWeight upload(const qw::PackedWeight& packed) {
-    RankWeight result;
-    result.payload = to_device(packed.payload);
-    result.weight  = packed.device_weight(result.payload.p);
-    return result;
-}
+// Beside split_test_support.h's packed-weight upload().
+using ninfer::test::upload;
 
 RankWeight upload(const bf16::HostWeight& host) {
     RankWeight result;
@@ -192,22 +137,12 @@ std::size_t workspace_bytes(QType qtype, std::int32_t n, std::int32_t k, ops::Li
         ops::linear_workspace_capacity_bytes(qtype, n, k, policy, tokens, tokens), 1);
 }
 
-int compare(const std::string& label, const std::vector<double>& got,
-            const std::vector<double>& expected, const ReductionCriterion& criterion) {
-    const ReductionStats stats =
-        compute_reduction_stats(got.data(), expected.data(), static_cast<std::int64_t>(got.size()));
-    std::cout << "  " << label << ": max_abs=" << stats.maximum_absolute_error
-              << " rel_l2=" << stats.relative_l2
-              << " gross_limit=" << gross_error_limit(stats, criterion) << '\n';
-    return verify_reduction(label, got, expected, criterion);
-}
-
-// Two BF16 ulp of the largest output, and two ulp of relative L2. A row split differs from the
-// whole-K evaluation by two extra BF16 roundings of partials comparable to the result, so about
-// one ulp is the expected difference rather than the limit.
-constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16Ulp, 0.0, 2.0 * kBf16Ulp};
+// 2u of the largest output (one to two BF16 ulp, see kBf16UnitRoundoff) and of relative L2. A row
+// split differs from the whole-K evaluation by two extra BF16 roundings of partials comparable to
+// the result, so about one ulp is the expected difference rather than the limit.
+constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 // The FP8 A8 Linear tolerance: a row split changes each rank's per-token activation scale.
-constexpr ReductionCriterion kFp8A8RowSplitCriterion{0.04, kBf16Ulp, 0.06};
+constexpr ReductionCriterion kFp8A8RowSplitCriterion{0.04, kBf16UnitRoundoff, 0.06};
 
 ReductionCriterion criterion_for(const Case& test_case, ops::LinearPolicy policy) {
     if (test_case.qtype == QType::FP8_E4M3FN_ROW_BF16 && test_case.axis == SplitAxis::Row &&

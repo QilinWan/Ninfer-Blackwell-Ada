@@ -28,6 +28,7 @@
 #include "ops/direct_bf16_weight.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
+#include "ops/split_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -50,8 +51,7 @@ namespace bf16 = ninfer::test::direct_bf16_weight;
 
 namespace {
 
-constexpr double kBf16Ulp = 1.0 / 256.0;
-constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16Ulp, 0.0, 2.0 * kBf16Ulp};
+constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 
 constexpr QType kFp8 = QType::FP8_E4M3FN_ROW_BF16;
 
@@ -68,38 +68,6 @@ constexpr std::int32_t kShardRows      = kShardChannels + kShardValueRows;
 
 constexpr std::int32_t kHeads      = 48;
 constexpr std::int32_t kShardHeads = 24;
-
-const char* policy_name(ops::LinearPolicy policy) {
-    switch (policy) {
-    case ops::LinearPolicy::A16Only:
-        return "A16Only";
-    case ops::LinearPolicy::AllowA8:
-        return "AllowA8";
-    case ops::LinearPolicy::AllowA4:
-        return "AllowA4";
-    }
-    return "?";
-}
-
-void set_device(const ExecutionContext& ec, int rank) {
-    cuda_check(cudaSetDevice(ec.dev[rank]->device), "cudaSetDevice");
-}
-
-void synchronize_both(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaStreamSynchronize(ec.dev[rank]->stream), "cudaStreamSynchronize");
-    }
-}
-
-// Uploads and poison fills run on each device's legacy default stream, which the non-blocking
-// DeviceContext streams do not order against, so they are retired before a split form runs.
-void retire_staging(const ExecutionContext& ec) {
-    for (int rank = 0; rank < 2; ++rank) {
-        set_device(ec, rank);
-        cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
-    }
-}
 
 // Parent row of rank `rank`'s shard-local row. Rows below kShardChannels are also the shard's
 // convolution channels, mapped to the parent's.
@@ -218,18 +186,6 @@ std::vector<double> extract_rows(const std::vector<double>& buffer, std::int32_t
                     block.begin() + static_cast<std::ptrdiff_t>(column) * rows);
     }
     return block;
-}
-
-struct RankWeight {
-    DeviceBuffer payload;
-    Weight weight{};
-};
-
-RankWeight upload(const qw::PackedWeight& packed) {
-    RankWeight result;
-    result.payload = to_device(packed.payload);
-    result.weight  = packed.device_weight(result.payload.p);
-    return result;
 }
 
 bool same_native_weight(const Weight& lhs, const Weight& rhs) {
