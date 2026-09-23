@@ -54,11 +54,9 @@ void launch_problem(const Weight& weight, Tensor& residual, Nvfp4A4Workspace wor
 void nvfp4_linear_add_a4_launch(const Tensor& x, const Weight& weight, Tensor& residual,
                                 Nvfp4A4Workspace workspace, cudaStream_t stream) {
     const std::int32_t tokens = x.ne[1];
-    // The fused-residual TMA launcher has instances for [5120,6144] and [5120,17408] only, so the
-    // two-device input-column half [5120,8704] stays on the fused A4 MMA route at every T (routing
-    // it through TMA is a separate step). The scale layout follows the route actually taken.
-    const bool tma_route =
-        uses_tma(tokens) && weight.k != Nvfp4N5120K8704::kInputRows;
+    // Every admitted contraction width, [5120,8704] included, has a fused-residual TMA instance
+    // that shares its parent's schedule; the scale layout follows the route actually taken.
+    const bool tma_route = uses_tma(tokens);
     const auto layout = tma_route ? Nvfp4ScaleLayout::Tiled256 : Nvfp4ScaleLayout::RowMajor;
     launch_nvfp4_a4_quantize(x, weight, workspace, layout, stream);
     if (tma_route) {
