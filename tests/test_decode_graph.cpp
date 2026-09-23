@@ -8,6 +8,7 @@
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -196,6 +197,31 @@ int main() {
         executable.launch(device.stream);
         device.synchronize();
         failures += expect_value(storage.base(), 0x22222222U, "updated graph launch");
+
+        // A definition the executable cannot take in place (two nodes against one): update()
+        // throws naming the result, and update_or_reinstantiate() installs it afresh.
+        ninfer::DecodeGraphDefinition reshaped;
+        reshaped.capture(device.stream, [&] {
+            CUDA_CHECK(cudaMemsetAsync(storage.base(), 0x44, sizeof(std::uint32_t), device.stream));
+            CUDA_CHECK(cudaMemsetAsync(storage.base(), 0x55, sizeof(std::uint32_t), device.stream));
+        });
+        bool rejected = false;
+        try {
+            executable.update(reshaped);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()).find("update result") != std::string::npos;
+        }
+        failures += expect(rejected, "an impossible graph update was not reported");
+        std::string diagnostic;
+        failures += expect(!executable.update_or_reinstantiate(reshaped, diagnostic),
+                           "an impossible graph update did not fall back to instantiation");
+        failures += expect(!diagnostic.empty(), "the instantiation fallback gave no diagnostic");
+        executable.launch(device.stream);
+        device.synchronize();
+        failures += expect_value(storage.base(), 0x55555555U, "re-instantiated graph launch");
+        failures += expect(executable.update_or_reinstantiate(reshaped, diagnostic),
+                           "a same-topology update fell back to instantiation");
+
         failures += check_external_event(device);
         // The peer device is tensor-parallel rank 1: a single-device host cannot exercise the
         // dual-device capture, so the gap is announced in the suite output, not passed vacuously.

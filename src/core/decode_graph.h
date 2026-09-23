@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <string>
 
 namespace ninfer {
 
@@ -107,7 +108,16 @@ public:
     DecodeGraphExecutable& operator=(DecodeGraphExecutable&& other) noexcept;
 
     void instantiate(const DecodeGraphDefinition& definition);
+    // Swaps `definition` into the executable in place. Throws if cudaGraphExecUpdate rejects it; the
+    // message names the update result and the rejected node (its type and, for a memset, its
+    // destination and extent in both graphs).
     void update(const DecodeGraphDefinition& definition);
+    // update(), except that a rejected update (cudaErrorGraphExecUpdateFailure) re-instantiates the
+    // executable from `definition` instead: same graph, only the instantiation time is lost. Returns
+    // false and sets `diagnostic` to the rejection when it re-instantiated. Other update errors,
+    // and a failed re-instantiation, throw.
+    [[nodiscard]] bool update_or_reinstantiate(const DecodeGraphDefinition& definition,
+                                               std::string& diagnostic);
     void upload(cudaStream_t stream);
     void launch(cudaStream_t stream);
     [[nodiscard]] bool ready() const noexcept;

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -73,7 +74,18 @@ void instantiate_graph_family(DecodeGraphFamily& family, const char* label, Devi
     const auto install_and_upload = [&](DecodeGraphTopology& topology, std::size_t profile_index) {
         DecodeGraphProfile& profile = family.profiles[profile_index];
         if (topology.installed_profile != profile_index) {
-            topology.executable.update(profile.definition);
+            // Every profile of a topology class is captured from one body, so the update is
+            // expected to succeed. It has been seen to fail intermittently at tp 2 (MTP with the
+            // optimized proposal head, cudaGraphExecUpdateErrorParametersChanged, only late in a
+            // long ctest run); a fresh instantiation of the same definition costs time, not
+            // memory, so the rejection is reported and the profile installed that way.
+            std::string diagnostic;
+            if (!topology.executable.update_or_reinstantiate(profile.definition, diagnostic)) {
+                std::fprintf(stderr,
+                             "warning: cuda graphs | %s profile %zu: exec update failed (%s) "
+                             "-- re-instantiating\n",
+                             label, profile_index, diagnostic.c_str());
+            }
             topology.installed_profile = profile_index;
         }
         topology.executable.upload(device.stream);

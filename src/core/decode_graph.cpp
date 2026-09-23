@@ -49,6 +49,72 @@ void destroy_graph(cudaGraph_t& graph) noexcept {
     }
 }
 
+const char* update_result_name(cudaGraphExecUpdateResult result) noexcept {
+    switch (result) {
+    case cudaGraphExecUpdateSuccess: return "success";
+    case cudaGraphExecUpdateError: return "error";
+    case cudaGraphExecUpdateErrorTopologyChanged: return "topology changed";
+    case cudaGraphExecUpdateErrorNodeTypeChanged: return "node type changed";
+    case cudaGraphExecUpdateErrorFunctionChanged: return "function changed";
+    case cudaGraphExecUpdateErrorParametersChanged: return "parameters changed";
+    case cudaGraphExecUpdateErrorNotSupported: return "not supported";
+    case cudaGraphExecUpdateErrorUnsupportedFunctionChange: return "unsupported function change";
+    case cudaGraphExecUpdateErrorAttributesChanged: return "attributes changed";
+    }
+    return "unknown";
+}
+
+const char* node_type_name(cudaGraphNodeType type) noexcept {
+    switch (type) {
+    case cudaGraphNodeTypeKernel: return "kernel";
+    case cudaGraphNodeTypeMemcpy: return "memcpy";
+    case cudaGraphNodeTypeMemset: return "memset";
+    case cudaGraphNodeTypeHost: return "host";
+    case cudaGraphNodeTypeGraph: return "child graph";
+    case cudaGraphNodeTypeEmpty: return "empty";
+    case cudaGraphNodeTypeWaitEvent: return "event wait";
+    case cudaGraphNodeTypeEventRecord: return "event record";
+    case cudaGraphNodeTypeExtSemaphoreSignal: return "external semaphore signal";
+    case cudaGraphNodeTypeExtSemaphoreWait: return "external semaphore wait";
+    case cudaGraphNodeTypeMemAlloc: return "memory allocation";
+    case cudaGraphNodeTypeMemFree: return "memory free";
+    case cudaGraphNodeTypeConditional: return "conditional";
+    default: return "other";
+    }
+}
+
+// ", <label> node <type>[ memset dst 0x.. width W height H]" for a node the update named, or
+// nothing when it named none. Diagnostic only: a failing query is reported, never thrown.
+std::string describe_node(const char* label, cudaGraphNode_t node) {
+    if (node == nullptr) { return {}; }
+    std::string text = std::string(", ") + label + " node ";
+    cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
+    if (cudaGraphNodeGetType(node, &type) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return text + "of unknown type";
+    }
+    text += node_type_name(type);
+    if (type == cudaGraphNodeTypeMemset) {
+        cudaMemsetParams params{};
+        if (cudaGraphMemsetNodeGetParams(node, &params) == cudaSuccess) {
+            char buffer[128];
+            std::snprintf(buffer, sizeof(buffer), " (dst %p, width %zu, height %zu, element %u)",
+                          params.dst, params.width, params.height, params.elementSize);
+            text += buffer;
+        } else {
+            (void)cudaGetLastError();
+        }
+    }
+    return text;
+}
+
+std::string describe_update_failure(cudaError_t err, const cudaGraphExecUpdateResultInfo& info) {
+    return std::string(cudaGetErrorName(err)) + " (update result " +
+           std::to_string(static_cast<int>(info.result)) + ", " +
+           update_result_name(info.result) + describe_node("rejected", info.errorNode) +
+           describe_node("installed", info.errorFromNode) + ")";
+}
+
 void destroy_event(cudaEvent_t& event) noexcept {
     if (event != nullptr) {
         log_cuda_error("cudaEventDestroy", cudaEventDestroy(event));
@@ -306,10 +372,33 @@ void DecodeGraphExecutable::update(const DecodeGraphDefinition& definition) {
     cudaGraphExecUpdateResultInfo result{};
     const cudaError_t err = cudaGraphExecUpdate(exec_, definition.graph_, &result);
     if (err != cudaSuccess || result.result != cudaGraphExecUpdateSuccess) {
-        throw std::runtime_error(
-            "CUDA Graph executable update failed: " + std::string(cudaGetErrorName(err)) +
-            " (update result " + std::to_string(static_cast<int>(result.result)) + ")");
+        const std::string detail = describe_update_failure(err, result);
+        if (err != cudaSuccess) { (void)cudaGetLastError(); }
+        throw std::runtime_error("CUDA Graph executable update failed: " + detail);
     }
+}
+
+bool DecodeGraphExecutable::update_or_reinstantiate(const DecodeGraphDefinition& definition,
+                                                    std::string& diagnostic) {
+    if (!ready() || !definition.ready()) {
+        throw std::logic_error("CUDA Graph update requires a definition and executable");
+    }
+    cudaGraphExecUpdateResultInfo result{};
+    cudaError_t err = cudaSuccess;
+    {
+        nvtx::ScopedRange update_range(nvtx::Name::CudaGraphUpdate, nvtx::Category::Graph);
+        err = cudaGraphExecUpdate(exec_, definition.graph_, &result);
+    }
+    if (err == cudaSuccess && result.result == cudaGraphExecUpdateSuccess) { return true; }
+    const std::string detail = describe_update_failure(err, result);
+    if (err != cudaSuccess) { (void)cudaGetLastError(); }
+    if (err != cudaErrorGraphExecUpdateFailure) {
+        throw std::runtime_error("CUDA Graph executable update failed: " + detail);
+    }
+    // A rejected update leaves the executable as it was; replace it with a fresh one.
+    instantiate(definition);
+    diagnostic = detail;
+    return false;
 }
 
 void DecodeGraphExecutable::upload(cudaStream_t stream) {
