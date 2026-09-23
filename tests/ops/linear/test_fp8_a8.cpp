@@ -299,13 +299,14 @@ int run_fp8_a8() {
     constexpr std::array residual8704_shard_decode_invocations{
         Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
         Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8},
-        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{19, CallForm::Policy, ops::LinearPolicy::AllowA8},
     };
     failures += run_shape(
         "FP8_A16", ActivationCompute::A16, make_fp8_weight,
         {5120, 8704, 917U, Comparison::Sampled, true, residual8704_shard_decode_invocations});
     constexpr std::array residual8704_shard_invocations{
-        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        // The half's A8 floor is the linear_add down family's 20, so the probe starts there.
+        Invocation{20, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
         Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
         Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8, true},

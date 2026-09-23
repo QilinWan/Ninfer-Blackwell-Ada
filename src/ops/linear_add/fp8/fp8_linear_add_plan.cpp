@@ -18,7 +18,8 @@ enum class Fp8LinearAddRoute : std::uint8_t {
 };
 
 // The two-device input-column halves [5120,3072] and [5120,8704] keep the crossover of the problem
-// they halve.
+// they halve, and linear() over each half uses the same one (shapes/n5120_k3072.cu and
+// n5120_k8704.cu), so both ranks of a row-parallel projection take the same route.
 Fp8LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                 LinearPolicy policy, std::int32_t tokens) {
     const bool output_family =

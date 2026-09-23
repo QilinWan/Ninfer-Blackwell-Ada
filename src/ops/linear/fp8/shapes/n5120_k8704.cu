@@ -51,7 +51,11 @@ void launch_a8(const Tensor& x, const Weight& weight, Tensor& out, Fp8A8Workspac
     launch_fp8_a8_tma<Geometry, Bulk>(x, weight, out, scratch, stream);
 }
 
-bool uses_a8(std::int32_t, std::int32_t max_tokens) { return max_tokens >= 17; }
+// The A8 floor is the fused residual projection's, not linear()'s own: at tp 2, rank 1 runs this
+// linear() over [5120,8704] while rank 0 runs linear_add over [5120,17408], whose family floor is
+// 20 (fp8_linear_add_plan.cpp). The row-parallel pair must take the same activation route at every
+// width, so the half inherits 20 and not its parent's 17.
+bool uses_a8(std::int32_t, std::int32_t max_tokens) { return max_tokens >= 20; }
 
 std::size_t partial_capacity_bytes(std::int32_t max_tokens) {
     // The parent's anchors are wave-boundary choices for these schedules at N=5120, and the halved

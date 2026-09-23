@@ -4,7 +4,10 @@
 
 namespace ninfer::ops::detail {
 // Two-device input-column half of [5120,6144]. It inherits the parent's measured schedules and
-// A16/A8 route thresholds; they have not been re-measured at this shape.
+// A16/A8 route thresholds; they have not been re-measured at this shape. Its A8 floor is the fused
+// residual projection's (fp8_linear_add_plan.cpp: 17 for the [5120,6144] family), which here equals
+// linear()'s own 17: at tp 2, rank 1 runs this linear() while rank 0 runs linear_add over the other
+// half of the same row-parallel projection, so the pair takes the same activation route.
 namespace {
 using Geometry  = Fp8Geometry<5120, 3072>;
 using Gemv      = Fp8A16GemvSchedule<8, 2, 8, 4, Fp8CodeCache::Default, 2, 2>;
