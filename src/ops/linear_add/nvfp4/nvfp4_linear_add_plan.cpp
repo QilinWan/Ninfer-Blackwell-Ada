@@ -18,15 +18,20 @@ enum class Nvfp4LinearAddRoute : std::uint8_t {
 // [5120,8704] is the two-device input-column half of [5120,17408] and keeps its crossover.
 Nvfp4LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                   LinearPolicy policy, std::int32_t tokens) {
-    if (tokens <= 0 || output_rows != 5120 ||
-        (input_rows != 6144 && input_rows != 17408 && input_rows != 8704)) {
+    const bool known_shape =
+        (output_rows == Nvfp4N5120K6144::kOutputRows &&
+         input_rows == Nvfp4N5120K6144::kInputRows) ||
+        (output_rows == Nvfp4N5120K17408::kOutputRows &&
+         input_rows == Nvfp4N5120K17408::kInputRows) ||
+        (output_rows == Nvfp4N5120K8704::kOutputRows && input_rows == Nvfp4N5120K8704::kInputRows);
+    if (tokens <= 0 || !known_shape) {
         throw std::invalid_argument("nvfp4 linear_add: unsupported shape");
     }
     if (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8) {
         return Nvfp4LinearAddRoute::A16;
     }
     if (!allows_a4(policy)) { throw std::invalid_argument("nvfp4 linear_add: unsupported policy"); }
-    const std::int32_t first_a4 = input_rows == 6144 ? 17 : 8;
+    const std::int32_t first_a4 = input_rows == Nvfp4N5120K6144::kInputRows ? 17 : 8;
     return tokens >= first_a4 ? Nvfp4LinearAddRoute::A4 : Nvfp4LinearAddRoute::A16;
 }
 

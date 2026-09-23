@@ -3,7 +3,9 @@
 
 #include "ops/common/split_launch.h"
 #include "ops/linear/fp8/fp8_format.h"
+#include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
+#include "ops/linear/nvfp4/nvfp4_geometry.h"
 #include "ops/linear_swiglu/fp8/fp8_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.h"
 #include "ops/linear_swiglu/q4/q4_linear_swiglu_plan.h"
@@ -32,9 +34,19 @@ void validate_policy(LinearPolicy policy) {
 }
 
 // The NVFP4 and FP8 gate/up problems: the single-device [34816,5120] and its two-device
-// output-row half [17408,5120].
+// output-row half [17408,5120]. Both formats register the same two geometries.
+constexpr std::int32_t kGateUpRows      = detail::Nvfp4N34816K5120::kOutputRows;
+constexpr std::int32_t kShardGateUpRows = detail::Nvfp4N17408K5120::kOutputRows;
+constexpr std::int32_t kGateUpInputRows = detail::Nvfp4N34816K5120::kInputRows;
+static_assert(detail::Fp8N34816K5120::kOutputRows == kGateUpRows &&
+              detail::Fp8N17408K5120::kOutputRows == kShardGateUpRows &&
+              detail::Fp8N34816K5120::kInputRows == kGateUpInputRows &&
+              detail::Fp8N17408K5120::kInputRows == kGateUpInputRows &&
+              detail::Nvfp4N17408K5120::kInputRows == kGateUpInputRows);
+
 bool fused_gate_up_problem(std::int32_t gate_up_rows, std::int32_t input_rows) {
-    return (gate_up_rows == 34816 || gate_up_rows == 17408) && input_rows == 5120;
+    return (gate_up_rows == kGateUpRows || gate_up_rows == kShardGateUpRows) &&
+           input_rows == kGateUpInputRows;
 }
 
 } // namespace
@@ -94,9 +106,10 @@ void validate_linear_swiglu(const Tensor& x, const Weight& gate_up_weight, const
         throw std::invalid_argument("linear_swiglu: x/out must be BF16");
     }
     const std::int32_t t   = x.ne[1];
-    const bool large_shape = matches_problem(x, gate_up_weight, out, 34816, 5120);
-    const bool shard_shape = matches_problem(x, gate_up_weight, out, 17408, 5120);
-    const bool q8_shape    = matches_problem(x, gate_up_weight, out, 12288, 2048);
+    const bool large_shape = matches_problem(x, gate_up_weight, out, kGateUpRows, kGateUpInputRows);
+    const bool shard_shape =
+        matches_problem(x, gate_up_weight, out, kShardGateUpRows, kGateUpInputRows);
+    const bool q8_shape = matches_problem(x, gate_up_weight, out, 12288, 2048);
     if (t <= 0 || x.ne[2] != 1 || x.ne[3] != 1 || out.ne[1] != t || out.ne[2] != 1 ||
         out.ne[3] != 1 || (!large_shape && !shard_shape && !q8_shape)) {
         throw std::invalid_argument("linear_swiglu: invalid tensor shape");
