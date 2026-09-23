@@ -222,8 +222,13 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
     out.stats_.device_capacity_bytes = plan.device_capacity_bytes;
     out.stats_.host_object_count     = plan.host_objects.size();
     // A shard's plane alignment gaps are bytes no copy writes; they read as zero, like the
-    // padding of a stored parent, so a device holding a shard clears its arena first on its
-    // transfer stream, ahead of every upload.
+    // padding of a stored parent, so a device holding a shard gets a ZeroFill::Yes arena, whose
+    // zeroing completes before the constructor returns (as every arena did before). A
+    // stream-ordered memset on the transfer stream was tried instead and broke the tp 2 MTP
+    // Engine with the optimized proposal head: its CUDA Graph family failed
+    // cudaGraphExecUpdate with cudaGraphExecUpdateErrorParametersChanged (result 5), while
+    // reverting to the completed zeroing passed. Which dependent needs the completed zeroing is
+    // not yet identified; keep it until it is.
     std::array<bool, kMaximumDevices> holds_shard{};
     for (const auto& placement : plan.device_objects) {
         if (is_sharded(placement.axis) && placement.device >= 0 &&
@@ -241,13 +246,9 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
         out.stats_.per_device_capacity_bytes[device] = bytes;
         if (bytes) {
             selection.select(device);
-            out.arenas_[device] = std::make_unique<DeviceArena>(static_cast<std::size_t>(bytes));
-            if (holds_shard[device]) {
-                check_cuda(cudaMemsetAsync(out.arenas_[device]->base(), 0,
-                                           static_cast<std::size_t>(bytes),
-                                           devices[device]->transfer_stream),
-                           "clear sharded weight arena");
-            }
+            out.arenas_[device] = std::make_unique<DeviceArena>(
+                static_cast<std::size_t>(bytes),
+                holds_shard[device] ? ZeroFill::Yes : ZeroFill::No);
         }
     }
     if (capacity != plan.device_capacity_bytes) {
