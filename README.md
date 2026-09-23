@@ -69,8 +69,8 @@ configure time rather than producing a binary that cannot launch.
 Build the product binaries:
 
 ```bash
-git clone https://github.com/QilinWan/Ninfer-sm89.git
-cd Ninfer-sm89
+git clone https://github.com/QilinWan/Ninfer-Blackwell-Ada.git
+cd Ninfer-Blackwell-Ada
 
 # Ada (RTX 4090 / 4090D / 4080 SUPER / 4070 / 4060)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=89
