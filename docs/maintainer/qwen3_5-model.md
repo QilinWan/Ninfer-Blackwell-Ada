@@ -365,6 +365,24 @@ consumed per rank on two RTX 5070 Ti at 32K context and concurrency 1: 2 MiB ord
 (one class each, 8 MiB), 18/12 MiB on rank 0/1 for DFlash2 K=4 (five classes, 11 MiB each). The
 server logs observed against allowance per rank and warns on an overrun.
 
+The collectives have two transports ([`allreduce.h`](../../include/ninfer/ops/allreduce.h)). The
+staged transport serves every eager call, every `allgather_rows` and every payload wider than a
+mailbox slot: each rank pulls the peer's operand with a stream-ordered `cudaMemcpyAsync`, which
+the driver stages through host memory without peer access, ordered by the Program's
+`PeerEvents`, then combines locally; in a graph the events become edges. With CUDA Graphs the
+Program also owns a `PeerMailbox` ([`peer_mailbox.h`](../../include/ninfer/ops/peer_mailbox.h))
+attached to its `PeerEvents`, unless `EngineOptions::tp_mailbox` is false. An `allreduce_sum`
+captured with both ranks' streams in one capture and a payload within a slot (`hidden x (K+1)`
+BF16: every single-request decode, MTP-head and verification all-reduce) becomes one exchange
+kernel per device that publishes its partial to pinned host memory, releases a per-slot epoch
+flag, waits for the peer's and combines with the staged path's arithmetic, so both transports are
+bit-identical. Epoch flags need no host reset between launches, and two alternating slots cover
+any capture (see [`peer_exchange.cuh`](../../src/ops/kernel/peer_exchange.cuh)), so the pinned
+slab is `2 x 2 x slot` bytes (160 KiB for MTP3 at hidden 5120). The mailbox is declared before
+`peer_events` and the graph families and so outlives the kernels that address it. A poller that
+waits about 0.4 s sets a sticky hang word; `synchronize_devices()` checks it after every retired
+round and throws, since the ranks' results diverged.
+
 ## Vision and multimodal positions
 
 The current native processor uses 16×16 spatial patches, pairs of frames, and 2×2 spatial merge.

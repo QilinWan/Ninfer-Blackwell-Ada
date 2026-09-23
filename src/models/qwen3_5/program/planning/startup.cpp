@@ -1244,6 +1244,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->causal_scoring       = inputs.causal_scoring;
     impl->device               = inputs.device;
     impl->tp                  = inputs.tp;
+    impl->tp_mailbox          = inputs.tp_mailbox;
     impl->multiprocessor_count = inputs.multiprocessor_count;
     impl->context_cache        = inputs.context_cache;
     impl->kv_storage           = inputs.kv_storage;
@@ -1342,6 +1343,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         .device               = options.device,
         .multiprocessor_count = device.multiprocessor_count(),
         .tp                   = options.tp,
+        .tp_mailbox           = options.tp_mailbox,
         .context_cache        = options.context_cache,
     };
     const std::uint32_t logical_pages = page_count(inputs.capacity);

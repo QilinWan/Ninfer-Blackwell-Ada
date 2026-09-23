@@ -11,6 +11,8 @@ namespace ninfer::models::qwen3_5::execution {
 // A tensor-parallel decode graph holds both ranks' nodes and is launched once, on rank 0's stream.
 // Its edges order rank 1's nodes after the graph root, not after work already issued on rank 1's
 // own stream (the mirrored KV page and table updates of the round), so the launch is gated on it.
+// Captured mailbox all-reduces need no host step per launch: their epoch flags advance with every
+// launch on both ranks, and ProgramImpl::synchronize_devices() reports a timed-out exchange.
 template <class Context, class Body>
 void run_prepared(Context& state, DecodeGraphExecutable* executable, Body&& body) {
     if (executable != nullptr) {

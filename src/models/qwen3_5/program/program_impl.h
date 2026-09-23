@@ -8,6 +8,7 @@
 #include "core/host_kv_arena.h"
 #include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/gdn_replay.h"
+#include "ninfer/ops/peer_mailbox.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
@@ -406,6 +407,10 @@ public:
     ExecutionContext* execution_context          = nullptr;
     const execution::Parameters* peer_parameters = nullptr;
     std::unique_ptr<PeerRuntime> peer;
+    // The captured all-reduces' pinned-host transport (tp 2 with CUDA Graphs, unless disabled),
+    // attached to peer_events. Declared before peer_events, which points to it, and before the
+    // graph families, whose kernels address its slab: both are destroyed first.
+    std::optional<ops::PeerMailbox> peer_mailbox;
     std::optional<ops::PeerEvents> peer_events;
     std::optional<DecodeGraphPeerBridge> graph_bridge;
     std::optional<execution::TpExecution> tp_execution;
@@ -425,7 +430,8 @@ public:
     [[nodiscard]] std::optional<execution::TpExecution>
     prefill_tp_binding(const SequenceState& sequence) const;
 
-    // Waits for rank 1 and then rank 0; at width 1 only rank 0.
+    // Waits for rank 1 and then rank 0; at width 1 only rank 0. Throws std::runtime_error when a
+    // captured mailbox exchange of the retired work timed out: the two ranks' results diverged.
     void synchronize_devices() const;
 
     DeviceArena persistent;

@@ -154,6 +154,15 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             if (use_cuda_graph) {
                 graph_bridge.emplace(execution_context->dev[0]->device,
                                      execution_context->dev[1]->device);
+                if (plan.tp_mailbox) {
+                    // One slot carries the widest single-request exchange, the [hidden, K+1]
+                    // verification activation; wider (multi-request) payloads stay staged.
+                    const std::size_t slot_bytes =
+                        static_cast<std::size_t>(parameters.model.config().text.hidden_size) *
+                        (static_cast<std::size_t>(draft_window) + 1U) * sizeof(std::uint16_t);
+                    peer_mailbox.emplace(*execution_context, slot_bytes);
+                    peer_events->attach_mailbox(&*peer_mailbox);
+                }
             }
         }
     }
@@ -404,6 +413,10 @@ ProgramImpl::prefill_tp_binding(const SequenceState& sequence) const {
 void ProgramImpl::synchronize_devices() const {
     if (peer) { peer->device.synchronize(); }
     device.synchronize();
+    if (peer_mailbox && peer_mailbox->hang_reported()) {
+        throw std::runtime_error("tensor-parallel mailbox exchange timed out waiting for the peer "
+                                 "device; the two ranks' results diverged");
+    }
 }
 
 void ProgramImpl::set_peer_i32(Tensor& tensor, std::int32_t value) {

@@ -186,6 +186,10 @@ struct EngineOptions {
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
     bool use_cuda_graph                    = true;
+    // At tp 2 with CUDA Graphs, the captured decode all-reduces exchange through pinned host
+    // memory (ops::PeerMailbox) instead of event-ordered cross-device copies; false keeps the
+    // copies. Both transports produce identical results. Unused at tp 1.
+    bool tp_mailbox = true;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
     StartupObserver startup_observer;
