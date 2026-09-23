@@ -334,8 +334,7 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
         commit_sequence_kv(sequence, end, backend_kv_valid(sequence));
         settle_state_fork(sequence);
         timing.resume_submit();
-        copy_tail(sequence, prefill_hidden.slice(
-                                1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
+        copy_tail(sequence, static_cast<std::int32_t>(result.processed_tokens) - 1);
         timing.begin_wait();
         device.synchronize();
         timing.end_wait();

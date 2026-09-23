@@ -111,8 +111,12 @@ public:
         prefill_split_frontier_ = position;
     }
 
-    void set_rewrite_checkpoint_hidden_output(Tensor* output) noexcept {
-        rewrite_checkpoint_hidden_output_ = output;
+    // `peer_output` is rank 1's StateImage column at tensor-parallel width 2 under MTP, the only
+    // backend whose rank 1 reads a retained hidden (the MTP bridge); null otherwise.
+    void set_rewrite_checkpoint_hidden_output(Tensor* output,
+                                              Tensor* peer_output = nullptr) noexcept {
+        rewrite_checkpoint_hidden_output_      = output;
+        peer_rewrite_checkpoint_hidden_output_ = peer_output;
     }
 
     void set_mtp_proposal_extent(std::uint32_t extent) noexcept { mtp_proposal_extent_ = extent; }
@@ -374,11 +378,12 @@ private:
     std::int32_t rope_delta_                                                       = 0;
     std::int32_t linear_state_source_slot_                                         = 0;
     std::int32_t linear_state_destination_slot_                                    = 0;
-    GdnStateAction gdn_state_action_          = GdnStateAction::UpdateInPlace;
-    const GdnReplayRecords* replay_records_   = nullptr;
-    std::int64_t prefill_split_frontier_      = -1;
-    Tensor* rewrite_checkpoint_hidden_output_ = nullptr;
-    std::uint32_t mtp_proposal_extent_        = 0;
+    GdnStateAction gdn_state_action_               = GdnStateAction::UpdateInPlace;
+    const GdnReplayRecords* replay_records_        = nullptr;
+    std::int64_t prefill_split_frontier_           = -1;
+    Tensor* rewrite_checkpoint_hidden_output_      = nullptr;
+    Tensor* peer_rewrite_checkpoint_hidden_output_ = nullptr;
+    std::uint32_t mtp_proposal_extent_             = 0;
 
     const Weight* embed_                        = nullptr;
     const Tensor* final_norm_                   = nullptr;

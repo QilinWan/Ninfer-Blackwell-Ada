@@ -120,14 +120,23 @@ void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& requ
                                device.stream));
 }
 
-void ProgramImpl::copy_tail(SequenceState& sequence, const Tensor& source) {
-    if (source.dtype != DType::BF16 ||
-        source.ne[0] != dimension(parameters.model.config().text.hidden_size) ||
-        source.ne[1] != 1) {
-        throw std::logic_error("target tail hidden has an invalid shape");
+void ProgramImpl::copy_tail(SequenceState& sequence, std::int32_t column) {
+    if (column < 0 || column >= prefill_hidden.ne[1] || sequence.tail_hidden.data == nullptr) {
+        throw std::logic_error("target tail hidden column is invalid");
     }
+    const Tensor source = prefill_hidden.slice(1, column, 1);
     CUDA_CHECK(cudaMemcpyAsync(sequence.tail_hidden.data, source.data, sequence.tail_hidden.bytes(),
                                cudaMemcpyDeviceToDevice, device.stream));
+    if (peer_retains_hidden()) {
+        // The hidden axis is replicated, so rank 1's final-normed chunk holds the same column:
+        // a local copy on rank 1's stream, after the chunk that wrote it.
+        const Tensor peer_source      = peer->prefill_hidden.slice(1, column, 1);
+        const Tensor peer_destination = peer_tail_hidden(sequence);
+        const ScopedCurrentDevice rank1(peer->device.device);
+        CUDA_CHECK(cudaMemcpyAsync(peer_destination.data, peer_source.data,
+                                   peer_destination.bytes(), cudaMemcpyDeviceToDevice,
+                                   peer->device.stream));
+    }
     sequence.tail_hidden_valid = true;
 }
 

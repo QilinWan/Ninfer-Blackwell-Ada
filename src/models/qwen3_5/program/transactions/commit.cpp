@@ -313,9 +313,7 @@ runtime::ExecutionTiming ProgramImpl::append_forced_tokens(
                 }
                 commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
                 settle_state_fork(sequence);
-                copy_tail(sequence,
-                          prefill_hidden.slice(
-                              1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
+                copy_tail(sequence, static_cast<std::int32_t>(result.processed_tokens) - 1);
             }
             timing.begin_wait();
             synchronize_devices();

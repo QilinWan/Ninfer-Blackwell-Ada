@@ -79,7 +79,8 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
                         state.state_destination_slot, state.mtp_proposal_extent);
     card.set_prefill_gpu_timer(state.prefill_gpu_timer);
     card.set_rope_delta(state.rope_delta);
-    card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden);
+    card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden,
+                                             state.peer_rewrite_checkpoint_hidden);
     card.set_prefill_split_frontier(split_frontier ? static_cast<std::int64_t>(*split_frontier)
                                                    : -1);
     const std::span<const int> prompt(ids.data(), ids.size());
@@ -105,7 +106,8 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                         state.state_destination_slot, state.mtp_proposal_extent);
     card.set_prefill_gpu_timer(state.prefill_gpu_timer);
     card.set_rope_delta(state.rope_delta);
-    card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden);
+    card.set_rewrite_checkpoint_hidden_output(state.rewrite_checkpoint_hidden,
+                                             state.peer_rewrite_checkpoint_hidden);
     card.set_prefill_split_frontier(split_frontier ? static_cast<std::int64_t>(*split_frontier)
                                                    : -1);
     if (state.dflash != nullptr) {
@@ -216,7 +218,6 @@ PrefillProgress ProgramImpl::advance_prefill(SequenceHandle handle,
         set_device_i32(io.backend_kv_table_row,
                        backend_kv_addresses->bound_row(*state.kv->backend));
     }
-    // Every prefill step publishes its own rows on every rank.
     publish_peer_kv_rows(state);
     grammar_dead_positions[0] = 0;
     if (requests[lane].prefill && permit.main_frontier >= requests[lane].prefill->prompt_tokens &&
@@ -411,6 +412,25 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
                                                     device.stream);
             ops::scatter(selected, destinations, state_images->continuation_hidden_store(),
                          device.stream);
+            if (peer_retains_hidden()) {
+                // Rank 1's round verified the same columns into its own frame; it retains the
+                // same committed column of its own hidden in the same slots.
+                if (!peer->io.mtp_decode) {
+                    throw std::logic_error("tensor-parallel MTP commit has no rank 1 frame");
+                }
+                qwen3_5::MtpDecodeState& peer_frame = *peer->io.mtp_decode;
+                Tensor peer_selectors               = peer_frame.current_extents.slice(0, 0, batch);
+                Tensor peer_selected = peer_frame.target_continuation_hidden.slice(1, 0, batch);
+                const ScopedCurrentDevice rank1(peer->device.device);
+                CUDA_CHECK(cudaMemcpyAsync(peer_selectors.data, hidden_selectors.data(),
+                                           lanes.size() * sizeof(std::int32_t),
+                                           cudaMemcpyHostToDevice, peer->device.stream));
+                ops::speculative_select_accepted_hidden(peer_frame.target_hidden.slice(2, 0, batch),
+                                                        peer_selectors, peer_selected,
+                                                        peer->device.stream);
+                ops::scatter(peer_selected, peer_frame.state_destination_slots.slice(0, 0, batch),
+                             peer->state_images->continuation_hidden_store(), peer->device.stream);
+            }
         }
 
         if (is_masked_draft_backend(speculative_backend)) {
@@ -528,11 +548,24 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
     try {
         StateImageSelectors selectors = state_selectors(sequence);
         Tensor rewrite_capture_hidden;
-        Tensor* rewrite_capture_hidden_ptr = nullptr;
-        if (request.next_capture < request.capture_groups.size()) {
+        Tensor peer_rewrite_capture_hidden;
+        Tensor* rewrite_capture_hidden_ptr      = nullptr;
+        Tensor* peer_rewrite_capture_hidden_ptr = nullptr;
+        // Each chunk that may reach a capture frontier retains the frontier's hidden in the
+        // destination StateImage; under MTP at tp 2 rank 1 retains its copy in the same slot.
+        const auto bind_rewrite_capture_hidden = [&] {
+            rewrite_capture_hidden_ptr      = nullptr;
+            peer_rewrite_capture_hidden_ptr = nullptr;
+            if (request.next_capture >= request.capture_groups.size()) { return; }
             rewrite_capture_hidden = state_images->continuation_hidden_slot(selectors.destination);
             rewrite_capture_hidden_ptr = &rewrite_capture_hidden;
-        }
+            if (peer_retains_hidden()) {
+                peer_rewrite_capture_hidden =
+                    peer->state_images->continuation_hidden_slot(selectors.destination);
+                peer_rewrite_capture_hidden_ptr = &peer_rewrite_capture_hidden;
+            }
+        };
+        bind_rewrite_capture_hidden();
         const std::optional<execution::TpExecution> tp = prefill_tp_binding(sequence);
         execution::PrefillContext schedule_state{
             {device, parameters, work, state_images->linear(),
@@ -553,7 +586,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             0,
             dflash_prefill_host_ingress,
             sequence.rope_delta};
-        schedule_state.prefill_gpu_timer = &prefill_gpu_timer_;
+        schedule_state.prefill_gpu_timer          = &prefill_gpu_timer_;
+        schedule_state.peer_rewrite_checkpoint_hidden = peer_rewrite_capture_hidden_ptr;
 
         if (staged.mtp_bridge == MtpBridgeMode::BeforeSuffix) {
             if (staged.cursor != staged.base || staged.base == 0 ||
@@ -606,9 +640,21 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                     rewrite_capture_hidden =
                         state_images->continuation_hidden_slot(selectors.destination);
                     schedule_state.rewrite_checkpoint_hidden = &rewrite_capture_hidden;
+                    // Tensor-parallel width 2 under MTP: rank 1 retains the same column in the same
+                    // slot of its mirror pool, so a mirrored Fork never carries zeros.
+                    if (peer_retains_hidden()) {
+                        peer_rewrite_capture_hidden = peer->state_images
+                                                          ->continuation_hidden_slot(
+                                                              selectors.destination);
+                        peer_rewrite_capture_hidden_ptr = &peer_rewrite_capture_hidden;
+                    } else {
+                        peer_rewrite_capture_hidden_ptr = nullptr;
+                    }
                 } else {
                     schedule_state.rewrite_checkpoint_hidden = nullptr;
+                    peer_rewrite_capture_hidden_ptr          = nullptr;
                 }
+                schedule_state.peer_rewrite_checkpoint_hidden = peer_rewrite_capture_hidden_ptr;
 
                 const bool final_candidate = staged.cursor + remaining == staged.prompt_tokens;
                 const std::optional<std::uint32_t> capture_frontier =
@@ -658,10 +704,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 // Prompt transitions are canonical immediately. If this was the first write after
                 // an immutable source, close the Fork before potentially freezing a new rewrite.
                 settle_state_fork(sequence);
-                copy_tail(sequence,
-                          prefill_hidden.slice(
-                              1, static_cast<std::int32_t>(result.processed_tokens) - 1, 1));
-                sequence.tail_hidden_valid = true;
+                copy_tail(sequence, static_cast<std::int32_t>(result.processed_tokens) - 1);
                 const bool reached_capture = capture_frontier && staged.cursor == *capture_frontier;
                 if (reached_capture) {
                     if (result.finalized) {
@@ -700,8 +743,7 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 throw std::logic_error("staged prefill sampled before the prompt frontier");
             }
             timing.resume_submit();
-            copy_tail(sequence, prefill_hidden.slice(
-                                    1, static_cast<std::int32_t>(final_chunk_tokens) - 1, 1));
+            copy_tail(sequence, static_cast<std::int32_t>(final_chunk_tokens) - 1);
         } else {
             mark_workspace_usage(workspace_plan.ordinary_round);
             if (!sequence.tail_hidden_valid) {

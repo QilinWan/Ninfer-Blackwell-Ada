@@ -2245,6 +2245,22 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
             CUDA_CHECK(cudaMemcpyAsync(rewrite_checkpoint_hidden_output_->data,
                                        checkpoint_hidden.data, checkpoint_hidden.bytes(),
                                        cudaMemcpyDeviceToDevice, s));
+            if (peer_rewrite_checkpoint_hidden_output_ != nullptr) {
+                // Rank 1 retains the same column of its own final-normed chunk: the hidden axis is
+                // replicated, so this is a local copy on rank 1, not a transfer.
+                if (!prepare_mtp_prompt) {
+                    throw std::logic_error(
+                        "rank 1 retains a checkpoint hidden only with its MTP prompt chunk");
+                }
+                require_tensor_shape(*peer_rewrite_checkpoint_hidden_output_, DType::BF16,
+                                     {dimension(config_.hidden_size), 1},
+                                     "rank 1 rewrite checkpoint hidden output");
+                const Tensor peer_checkpoint_hidden = peer_xf.slice(1, len - 1, 1);
+                const DeviceScope peer(execution.dev[1]->device);
+                CUDA_CHECK(cudaMemcpyAsync(
+                    peer_rewrite_checkpoint_hidden_output_->data, peer_checkpoint_hidden.data,
+                    peer_checkpoint_hidden.bytes(), cudaMemcpyDeviceToDevice, rank_stream(1)));
+            }
         }
     }
 

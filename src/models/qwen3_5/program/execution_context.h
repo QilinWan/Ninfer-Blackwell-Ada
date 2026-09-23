@@ -62,6 +62,10 @@ struct PrefillContext {
     qwen3_5::DFlashPrefillIngress* dflash_prefill_host_ingress = nullptr;
     std::int32_t rope_delta                                    = 0;
     CudaEventTimer* prefill_gpu_timer                          = nullptr;
+    // Tensor-parallel width 2 under MTP: rank 1's column of the StateImage that rank 0's
+    // `rewrite_checkpoint_hidden` names (the same slot of rank 1's mirror pool). Appended at the
+    // end of this tree's field order and assigned at the prefill sites after construction.
+    Tensor* peer_rewrite_checkpoint_hidden = nullptr;
 };
 
 struct OrdinaryBatchContext {

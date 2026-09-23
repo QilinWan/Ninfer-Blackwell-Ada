@@ -64,9 +64,33 @@ StateImageSelectors ProgramImpl::state_selectors(const SequenceState& sequence) 
             state_store->physical_slot(sequence.state.write)};
 }
 
+std::optional<std::int32_t> ProgramImpl::committed_state_slot(const SequenceState& sequence) const {
+    // The slot whose continuation-hidden image names the sequence's retained target tail hidden.
+    // This tree's view is the read side of the active binding (settle_state_fork promotes write to
+    // read), so the same slot names rank 1's copy in its mirror pool.
+    if (!state_store->valid(sequence.state.read) ||
+        state_store->residency(sequence.state.read) == StateReplicaResidency::HostOnly) {
+        return std::nullopt;
+    }
+    return state_store->physical_slot(sequence.state.read);
+}
+
 void ProgramImpl::refresh_state_views(SequenceState& sequence) {
     sequence.tail_hidden =
         state_images->continuation_hidden_slot(state_store->physical_slot(sequence.state.read));
+}
+
+Tensor ProgramImpl::peer_tail_hidden(const SequenceState& sequence) const {
+    if (!peer_retains_hidden()) {
+        throw std::logic_error("tensor-parallel rank 1 retains no target hidden");
+    }
+    const std::optional<std::int32_t> slot = committed_state_slot(sequence);
+    // Rank 0's view is refreshed with every binding change; the same slot names rank 1's copy.
+    if (!slot || sequence.tail_hidden.data == nullptr ||
+        state_images->continuation_hidden_slot(*slot).data != sequence.tail_hidden.data) {
+        throw std::logic_error("sequence tail hidden does not name its committed StateImage");
+    }
+    return peer->state_images->continuation_hidden_slot(*slot);
 }
 
 void ProgramImpl::settle_state_fork(SequenceState& sequence) {

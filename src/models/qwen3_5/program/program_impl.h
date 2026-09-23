@@ -634,7 +634,19 @@ public:
     // Writes rank 1's prefill Text KV row scalar to the row rank 0 just published, and checks the
     // mirrored execution tables agree. No-op at width 1.
     void publish_peer_kv_rows(const SequenceState& sequence);
-    void copy_tail(SequenceState& sequence, const Tensor& source);
+    // True when rank 1 keeps its own copy of every retained target hidden: at tensor-parallel
+    // width 2 under MTP, whose bridge reads it on both ranks.
+    [[nodiscard]] bool peer_retains_hidden() const noexcept {
+        return peer != nullptr && speculative_backend == SpeculativeBackend::Mtp;
+    }
+    // Rank 1's copy of `sequence.tail_hidden` (peer_retains_hidden() only), named by the same
+    // StateImage slot as rank 0's view; nullopt slot means the binding is not device-resident.
+    [[nodiscard]] Tensor peer_tail_hidden(const SequenceState& sequence) const;
+    [[nodiscard]] std::optional<std::int32_t>
+    committed_state_slot(const SequenceState& sequence) const;
+    // Retains column `column` of the final-normed prefill chunk as the sequence's target tail
+    // hidden, and under MTP at tp 2 retains rank 1's copy of the same column in the same slot.
+    void copy_tail(SequenceState& sequence, std::int32_t column);
     void copy_round_token();
     void
     commit_generated_prefix_identity(SequenceState& sequence, std::uint32_t base_ledger_frontier,
