@@ -189,18 +189,11 @@ void merge_axis(ParentState& state, const LogicalShard& shard, const std::string
     }
 }
 
-} // namespace
-
-LogicalShard logical_shard(std::string_view name, const artifact::Shape& shape,
-                           const Config& config, const LoadOptions& options) {
+// logical_shard() for options that validate_tensor_parallel_ranks() accepted.
+LogicalShard shard_rule(std::string_view name, const artifact::Shape& shape, const Config& config,
+                        const LoadOptions& options) {
     const int tp = options.tp;
-    if (tp < 1 || tp > static_cast<int>(artifact::kMaximumDevices)) {
-        throw std::invalid_argument("tensor parallelism must be 1 or 2");
-    }
     if (tp == 1) { return {}; }
-    if (options.vision_rank < 0 || options.vision_rank >= tp) {
-        throw std::invalid_argument("vision_rank must name a tensor-parallel rank");
-    }
     if (in_component(name, "vision")) {
         return whole(ShardAxis::SingleDevice, options.vision_rank);
     }
@@ -230,16 +223,34 @@ LogicalShard logical_shard(std::string_view name, const artifact::Shape& shape,
     reject(name, "has no placement for this parameter");
 }
 
+} // namespace
+
+void validate_tensor_parallel_ranks(const LoadOptions& options) {
+    if (options.tp < 1 || options.tp > static_cast<int>(artifact::kMaximumDevices)) {
+        throw std::invalid_argument("tensor parallelism must be 1 or 2");
+    }
+    if (options.vision_rank < 0 || options.vision_rank >= options.tp) {
+        throw std::invalid_argument("vision_rank must name a tensor-parallel rank");
+    }
+}
+
+LogicalShard logical_shard(std::string_view name, const artifact::Shape& shape,
+                           const Config& config, const LoadOptions& options) {
+    validate_tensor_parallel_ranks(options);
+    return shard_rule(name, shape, config, options);
+}
+
 std::vector<std::optional<artifact::ShardPlacement>>
 parent_placements(std::span<const PendingWeight> weights, std::size_t object_count,
                   const GeometryLookup& geometry, const Config& config,
                   const LoadOptions& options) {
+    validate_tensor_parallel_ranks(options);
     std::vector<ParentState> states(object_count);
     std::vector<std::string> ids(object_count);
     for (const auto& weight : weights) {
         const auto& reference = weight.reference;
         const auto& name      = reference.name;
-        const auto shard      = logical_shard(name, reference.shape, config, options);
+        const auto shard      = shard_rule(name, reference.shape, config, options);
         const auto row        = row_elements(reference.shape);
         std::uint64_t logical = 0; // Logical element offset of the current part.
         for (std::size_t i = 0; i < reference.binding.parts.size(); ++i) {

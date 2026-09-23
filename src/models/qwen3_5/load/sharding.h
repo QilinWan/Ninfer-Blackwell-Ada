@@ -41,8 +41,14 @@ struct LogicalShard {
     std::array<std::vector<artifact::SliceRange>, artifact::kMaximumDevices> ranges;
 };
 
+// Throws std::invalid_argument unless options.tp is in [1, 2] and options.vision_rank names one
+// of its ranks. plan_load() checks this once before binding; logical_shard() and
+// parent_placements() check it again for their direct callers.
+void validate_tensor_parallel_ranks(const LoadOptions& options);
+
 // Throws std::invalid_argument for a parameter without a tensor-parallel rule, for a head or
-// width that does not divide by options.tp, and for options.tp outside [1, 2].
+// width that does not divide by options.tp, and for options validate_tensor_parallel_ranks()
+// rejects.
 [[nodiscard]] LogicalShard logical_shard(std::string_view name, const artifact::Shape& shape,
                                          const Config& config, const LoadOptions& options);
 

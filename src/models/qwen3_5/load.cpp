@@ -49,12 +49,7 @@ std::span<const WeightUse> LoadPlan::uses(WeightId id) const {
 namespace {
 
 void validate_tensor_parallel(const LoadOptions& options) {
-    if (options.tp < 1 || options.tp > static_cast<int>(artifact::kMaximumDevices)) {
-        throw std::invalid_argument("tensor parallelism must be 1 or 2");
-    }
-    if (options.vision_rank < 0 || options.vision_rank >= options.tp) {
-        throw std::invalid_argument("vision_rank must name a tensor-parallel rank");
-    }
+    loading::validate_tensor_parallel_ranks(options);
     // The drafter runs on rank 0 only while the full output head is split by vocabulary rows, and
     // the DFlash2 candidate ranking (linear_topk) has no vocabulary-split form: the drafter
     // proposes through the optimized head, which rank 0 holds whole.
