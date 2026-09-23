@@ -1132,7 +1132,9 @@ int main() {
     }
     failures += run_q4_q5();
     failures += run_q8();
+#ifndef NINFER_SM89
     failures += run_nvfp4();
+#endif
     failures += run_fp8();
     std::cout << (failures == 0 ? "OK" : "FAIL") << " gdn_input_proj_conv_snapshot\n";
     return failures == 0 ? 0 : 1;
