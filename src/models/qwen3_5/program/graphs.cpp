@@ -217,32 +217,31 @@ void ProgramImpl::prepare_graphs() {
     synchronize_devices();
     const auto synchronize_all = [&] { synchronize_devices(); };
 
-    const auto clear_stable_controls = [&] {
+    // The round controls every rank's captures read. The DFlash prefill count is added for rank 0
+    // alone, whose drafter produces it.
+    const auto stable_controls = [](const qwen3_5::RoundState& state) {
         std::vector<Tensor> controls{
-            io.token,
-            io.pos,
-            io.rope_pos,
-            io.rope_delta,
+            state.token,
+            state.pos,
+            state.rope_pos,
+            state.rope_delta,
         };
-        if (io.mtp) {
-            controls.push_back(io.mtp->position);
-            controls.push_back(io.mtp->draft_tokens);
-            controls.push_back(io.mtp->target_input_ids);
-            controls.push_back(io.mtp->target_positions);
+        if (state.mtp) {
+            controls.push_back(state.mtp->position);
+            controls.push_back(state.mtp->draft_tokens);
+            controls.push_back(state.mtp->target_input_ids);
+            controls.push_back(state.mtp->target_positions);
         }
+        return controls;
+    };
+    const auto clear_stable_controls = [&] {
+        std::vector<Tensor> controls = stable_controls(io);
         if (io.dflash_prefill) { controls.push_back(io.dflash_prefill->local_append_count); }
         for (const Tensor& tensor : controls) {
             CUDA_CHECK(cudaMemsetAsync(tensor.data, 0, tensor.bytes(), device.stream));
         }
         if (peer) {
-            std::vector<Tensor> peer_controls{peer->io.token, peer->io.pos, peer->io.rope_pos,
-                                              peer->io.rope_delta};
-            if (peer->io.mtp) {
-                peer_controls.push_back(peer->io.mtp->position);
-                peer_controls.push_back(peer->io.mtp->draft_tokens);
-                peer_controls.push_back(peer->io.mtp->target_input_ids);
-                peer_controls.push_back(peer->io.mtp->target_positions);
-            }
+            const std::vector<Tensor> peer_controls = stable_controls(peer->io);
             const ScopedCurrentDevice rank1(peer->device.device);
             for (const Tensor& tensor : peer_controls) {
                 CUDA_CHECK(cudaMemsetAsync(tensor.data, 0, tensor.bytes(), peer->device.stream));
