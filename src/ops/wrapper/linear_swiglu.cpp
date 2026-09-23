@@ -191,27 +191,21 @@ void linear_swiglu_column_parallel(const std::array<Tensor, 2>& x,
                                    const std::array<Tensor, 2>& out, LinearPolicy policy,
                                    const std::array<WorkspaceArena*, 2>& workspace,
                                    const ExecutionContext& ec) {
-    detail::require_split_context(ec,
-                                  "linear_swiglu column-parallel: requires two distinct devices");
-    if (x[0].ne[1] != x[1].ne[1]) {
-        throw std::invalid_argument("linear_swiglu column-parallel: ranks must agree on T");
-    }
-    if (gate_up_weight[0].qtype != gate_up_weight[1].qtype ||
-        gate_up_weight[0].layout != gate_up_weight[1].layout) {
-        throw std::invalid_argument(
-            "linear_swiglu column-parallel: ranks must agree on the weight format");
-    }
-    if (gate_up_weight[0].k != gate_up_weight[1].k) {
-        throw std::invalid_argument("linear_swiglu column-parallel: ranks must agree on K");
-    }
+    constexpr const char* kOp = "linear_swiglu column-parallel";
+    detail::require_split_pair(ec, x, gate_up_weight, detail::SplitAxis::Output, kOp);
     // Both ranks are validated before either issues work, so a rejected pair enqueues nothing.
     std::array<Tensor, 2> destination{out[0], out[1]};
+    std::array<std::size_t, 2> required{};
     for (std::size_t rank = 0; rank < 2; ++rank) {
         validate_linear_swiglu(x[rank], gate_up_weight[rank], destination[rank], policy);
         detail::require_rank_residency(
             ec, static_cast<int>(rank), x[rank].data, gate_up_weight[rank].payload, out[rank].data,
             "linear_swiglu column-parallel: rank arguments must reside on its device");
+        required[rank] = linear_swiglu_workspace_capacity_bytes(
+            gate_up_weight[rank].qtype, gate_up_weight[rank].n, gate_up_weight[rank].k, policy,
+            x[rank].ne[1], x[rank].ne[1]);
     }
+    detail::require_split_workspace(workspace, required, kOp);
     detail::for_each_rank(ec, [&](int rank) {
         const auto slot = static_cast<std::size_t>(rank);
         dispatch_linear_swiglu(x[slot], gate_up_weight[slot], destination[slot], policy,

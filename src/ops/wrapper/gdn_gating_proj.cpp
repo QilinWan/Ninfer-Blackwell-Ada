@@ -210,17 +210,10 @@ void validate_shard_rank(const Tensor& x, const Weight& a_weight, const Weight& 
 
 void validate_shard_pair(const std::array<Tensor, 2>& x, const std::array<WorkspaceArena*, 2>& ws,
                          const ExecutionContext& ec) {
-    detail::require_split_context(ec,
-                                  "gdn_gating_proj column-parallel: requires two distinct devices");
-    if (x[0].ne[1] != x[1].ne[1]) {
-        throw std::invalid_argument(
-            "gdn_gating_proj column-parallel: ranks must agree on the token count");
-    }
-    if (detail::bf16_gdn_gating_shard_workspace_bytes(x[0].ne[1]) != 0 &&
-        (ws[0] == nullptr || ws[1] == nullptr)) {
-        throw std::invalid_argument(
-            "gdn_gating_proj column-parallel: T>=2 requires a workspace on every rank");
-    }
+    constexpr const char* kOp = "gdn_gating_proj column-parallel";
+    detail::require_split_ranks(ec, x, kOp);
+    const std::size_t bytes = detail::bf16_gdn_gating_shard_workspace_bytes(x[0].ne[1]);
+    detail::require_split_workspace(ws, {bytes, bytes}, kOp);
 }
 
 void issue_shards(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& a_weight,

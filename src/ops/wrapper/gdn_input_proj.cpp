@@ -1051,24 +1051,10 @@ void require_shard_weight(const Weight& weight, const char* operation) {
     require_shard_profile(weight.qtype, weight.n, weight.k, operation);
 }
 
-void require_shard_pair(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& weight,
-                        const ExecutionContext& ec, const char* operation) {
-    const std::string prefix(operation);
-    detail::require_split_context(ec, (prefix + ": requires two distinct devices").c_str());
-    if (x[0].ne[1] != x[1].ne[1] || x[0].ne[2] != x[1].ne[2]) {
-        throw std::invalid_argument(prefix + ": ranks must agree on the column extents");
-    }
-    if (weight[0].qtype != weight[1].qtype || weight[0].layout != weight[1].layout) {
-        throw std::invalid_argument(prefix + ": ranks must agree on the weight format");
-    }
-}
-
 void require_shard_workspace(const std::array<WorkspaceArena*, 2>& workspace, bool required,
                              const char* operation) {
-    if (required && (workspace[0] == nullptr || workspace[1] == nullptr)) {
-        throw std::invalid_argument(std::string(operation) +
-                                    ": the selected route requires a workspace on every rank");
-    }
+    const std::size_t bytes = required ? 1U : 0U;
+    detail::require_split_workspace(workspace, {bytes, bytes}, operation);
 }
 
 void require_shard_residency(const ExecutionContext& ec, int rank, const Tensor& x,
@@ -1122,7 +1108,7 @@ void gdn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
                                     const ExecutionContext& ec) {
     constexpr const char* kOp = "gdn_input_proj column-parallel";
     validate_policy(policy);
-    require_shard_pair(x, query_key_value_z_weight, ec, kOp);
+    detail::require_split_pair(ec, x, query_key_value_z_weight, detail::SplitAxis::Output, kOp);
     const std::int32_t cols = x[0].ne[1];
     if (cols <= 0) {
         throw std::invalid_argument("gdn_input_proj column-parallel: T must be positive");
@@ -1179,7 +1165,7 @@ void gdn_input_proj_conv_snapshot_column_parallel(
     const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& ec) {
     constexpr const char* kOp = "gdn_input_proj_conv_snapshot column-parallel";
     validate_policy(policy);
-    require_shard_pair(x, query_key_value_z_weight, ec, kOp);
+    detail::require_split_pair(ec, x, query_key_value_z_weight, detail::SplitAxis::Output, kOp);
     require_shard_workspace(workspace, true, kOp);
     std::array<ConvGeometry, 2> geometry{};
     for (int rank = 0; rank < 2; ++rank) {
@@ -1261,7 +1247,7 @@ void gdn_input_proj_conv_record_column_parallel(
     const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& ec) {
     constexpr const char* kOp = "gdn_input_proj_conv_record column-parallel";
     validate_policy(policy);
-    require_shard_pair(x, query_key_value_z_weight, ec, kOp);
+    detail::require_split_pair(ec, x, query_key_value_z_weight, detail::SplitAxis::Output, kOp);
     require_shard_workspace(workspace, true, kOp);
     std::array<ConvGeometry, 2> geometry{};
     for (int rank = 0; rank < 2; ++rank) {

@@ -29,12 +29,20 @@
 // LEGACY DEFAULT stream, which does NOT implicitly synchronize with DeviceContext::stream, and
 // must be retired before a split form reads them.
 
+#include "core/arena.h"  // WorkspaceArena
 #include "core/device.h" // DeviceContext, ExecutionContext, CUDA_CHECK
 #include "core/device_scope.h"
+#include "core/tensor.h"
+#include "core/weight.h"
 
 #include <cuda_runtime.h>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace ninfer::ops::detail {
 
@@ -42,6 +50,55 @@ inline void require_split_context(const ExecutionContext& ec, const char* messag
     if (ec.tp != 2 || !ec.dev[0].has_value() || !ec.dev[1].has_value() ||
         ec.dev[0]->device == ec.dev[1]->device) {
         throw std::invalid_argument(message);
+    }
+}
+
+// The weight axis a split form divides across the ranks; they agree on the other one.
+enum class SplitAxis : std::uint8_t {
+    Output, // column-parallel: rank r holds a block of the output rows N; K agrees.
+    Input,  // row-parallel: rank r holds a block of the input columns K; N agrees.
+};
+
+// Cross-rank checks every split form makes before either rank issues work, so a rejected pair
+// enqueues nothing: two distinct devices and one column extent (`ne[1]`, and `ne[2]` for
+// batched activations). Messages start with `op`.
+inline void require_split_ranks(const ExecutionContext& ec, const std::array<Tensor, 2>& x,
+                                std::string_view op) {
+    const std::string prefix(op);
+    require_split_context(ec, (prefix + ": requires two distinct devices").c_str());
+    if (x[0].ne[1] != x[1].ne[1] || x[0].ne[2] != x[1].ne[2]) {
+        throw std::invalid_argument(prefix + ": ranks must agree on the token count");
+    }
+}
+
+// require_split_ranks() plus one weight format and one extent of the unsplit weight axis.
+inline void require_split_pair(const ExecutionContext& ec, const std::array<Tensor, 2>& x,
+                               const std::array<Weight, 2>& w, SplitAxis axis,
+                               std::string_view op) {
+    require_split_ranks(ec, x, op);
+    const std::string prefix(op);
+    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
+        throw std::invalid_argument(prefix + ": ranks must agree on the weight format");
+    }
+    if (axis == SplitAxis::Output && w[0].k != w[1].k) {
+        throw std::invalid_argument(prefix + ": ranks must agree on K");
+    }
+    if (axis == SplitAxis::Input && w[0].n != w[1].n) {
+        throw std::invalid_argument(prefix + ": ranks must agree on N");
+    }
+}
+
+// Rank r's route at this call needs `required_bytes[r]` of transient storage; a rank that needs
+// some must have a workspace. Checked with the pair, so rank 0 cannot enqueue work before rank 1
+// fails in its dispatch and a row-parallel form skips its all-reduce.
+inline void require_split_workspace(const std::array<WorkspaceArena*, 2>& workspace,
+                                    const std::array<std::size_t, 2>& required_bytes,
+                                    std::string_view op) {
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        if (required_bytes[rank] != 0 && workspace[rank] == nullptr) {
+            throw std::invalid_argument(std::string(op) +
+                                        ": the selected route requires a workspace on every rank");
+        }
     }
 }
 

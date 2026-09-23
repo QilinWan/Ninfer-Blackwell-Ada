@@ -307,16 +307,8 @@ void attn_input_proj_column_parallel(
     const std::array<Tensor, 2>& k, const std::array<Tensor, 2>& v, LinearPolicy policy,
     const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& ec) {
     const std::array<Weight, 2>& w = query_key_gate_value_weight;
-    detail::require_split_context(ec, "attn_input_proj split: requires two distinct devices");
-    if (x[0].ne[1] != x[1].ne[1]) {
-        throw std::invalid_argument("attn_input_proj split: ranks must agree on the token count");
-    }
-    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
-        throw std::invalid_argument("attn_input_proj split: ranks must agree on the weight format");
-    }
-    if (w[0].k != w[1].k) {
-        throw std::invalid_argument("attn_input_proj split: ranks must agree on K");
-    }
+    constexpr const char* kOp      = "attn_input_proj column-parallel";
+    detail::require_split_pair(ec, x, w, detail::SplitAxis::Output, kOp);
     // Validate both ranks before issuing either, so a rejected pair enqueues nothing.
     for (std::size_t rank = 0; rank < 2; ++rank) {
         validate_column_parallel_rank(x[rank], w[rank], q[rank], gate[rank], k[rank], v[rank],
@@ -328,6 +320,9 @@ void attn_input_proj_column_parallel(
         detail::require_rank_residency(ec, static_cast<int>(rank), gate[rank].data, k[rank].data,
                                        v[rank].data, kResidency);
     }
+    const std::size_t bytes = attn_input_proj_column_parallel_workspace_capacity_bytes(
+        w[0].qtype, policy, x[0].ne[1], x[0].ne[1]);
+    detail::require_split_workspace(workspace, {bytes, bytes}, kOp);
     std::array<Tensor, 2> q_out{q[0], q[1]};
     std::array<Tensor, 2> gate_out{gate[0], gate[1]};
     std::array<Tensor, 2> k_out{k[0], k[1]};

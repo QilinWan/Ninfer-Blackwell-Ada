@@ -175,27 +175,22 @@ namespace {
 // the split axis itself may be uneven.
 std::array<Tensor, 2> validate_split(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                                      const std::array<Tensor, 2>& out, LinearPolicy policy,
-                                     const ExecutionContext& ec, bool column_parallel) {
-    detail::require_split_context(ec, "linear split: requires two distinct devices");
-    if (x[0].ne[1] != x[1].ne[1]) {
-        throw std::invalid_argument("linear split: ranks must agree on the token count");
-    }
-    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
-        throw std::invalid_argument("linear split: ranks must agree on the weight format");
-    }
-    if (column_parallel && w[0].k != w[1].k) {
-        throw std::invalid_argument("linear column-parallel: ranks must agree on K");
-    }
-    if (!column_parallel && w[0].n != w[1].n) {
-        throw std::invalid_argument("linear row-parallel: ranks must agree on N");
-    }
+                                     const std::array<WorkspaceArena*, 2>& workspace,
+                                     const ExecutionContext& ec, detail::SplitAxis axis) {
+    const char* op =
+        axis == detail::SplitAxis::Output ? "linear column-parallel" : "linear row-parallel";
+    detail::require_split_pair(ec, x, w, axis, op);
     std::array<Tensor, 2> destination{out[0], out[1]};
+    std::array<std::size_t, 2> required{};
     for (std::size_t rank = 0; rank < 2; ++rank) {
         detail::validate_linear_semantics(x[rank], w[rank], destination[rank], policy);
         detail::require_rank_residency(ec, static_cast<int>(rank), x[rank].data, w[rank].payload,
                                        out[rank].data,
                                        "linear split: rank arguments must reside on its device");
+        required[rank] = linear_workspace_capacity_bytes(w[rank].qtype, w[rank].n, w[rank].k,
+                                                         policy, x[rank].ne[1], x[rank].ne[1]);
     }
+    detail::require_split_workspace(workspace, required, op);
     return destination;
 }
 
@@ -215,7 +210,8 @@ void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Wei
                             const std::array<Tensor, 2>& out, LinearPolicy policy,
                             const std::array<WorkspaceArena*, 2>& workspace,
                             const ExecutionContext& ec) {
-    std::array<Tensor, 2> destination = validate_split(x, w, out, policy, ec, true);
+    std::array<Tensor, 2> destination =
+        validate_split(x, w, out, policy, workspace, ec, detail::SplitAxis::Output);
     issue_ranks(x, w, destination, policy, workspace, ec);
 }
 
@@ -228,7 +224,8 @@ void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
                          LinearPolicy policy, const std::array<WorkspaceArena*, 2>& workspace,
                          const ExecutionContext& ec, const PeerEvents& events) {
-    std::array<Tensor, 2> destination = validate_split(x, w, out, policy, ec, false);
+    std::array<Tensor, 2> destination =
+        validate_split(x, w, out, policy, workspace, ec, detail::SplitAxis::Input);
     if (!events.live()) { throw std::invalid_argument("linear row-parallel: events must be live"); }
     // Each partial lands in out[r] on rank r's stream; allreduce_sum records its inputs_ready event
     // on that same stream, which orders the peer's read after the partial, and checks staging.

@@ -318,17 +318,8 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
                              const std::array<Tensor, 2>& staging, LinearPolicy policy,
                              const std::array<WorkspaceArena*, 2>& workspace,
                              const ExecutionContext& ec, const PeerEvents& events) {
-    detail::require_split_context(ec, "linear_add row-parallel: requires two distinct devices");
-    if (x[0].ne[1] != x[1].ne[1]) {
-        throw std::invalid_argument("linear_add row-parallel: ranks must agree on T");
-    }
-    if (w[0].qtype != w[1].qtype || w[0].layout != w[1].layout) {
-        throw std::invalid_argument(
-            "linear_add row-parallel: ranks must agree on the weight format");
-    }
-    if (w[0].n != w[1].n) {
-        throw std::invalid_argument("linear_add row-parallel: ranks must agree on N");
-    }
+    constexpr const char* kOp = "linear_add row-parallel";
+    detail::require_split_pair(ec, x, w, detail::SplitAxis::Input, kOp);
     if (!events.live()) {
         throw std::invalid_argument("linear_add row-parallel: events must be live");
     }
@@ -340,6 +331,13 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
             ec, static_cast<int>(rank), x[rank].data, w[rank].payload, residual[rank].data,
             "linear_add row-parallel: rank arguments must reside on its device");
     }
+    // Rank 0 runs linear_add() and rank 1 linear(), each at its own route.
+    const std::int32_t tokens = x[0].ne[1];
+    detail::require_split_workspace(
+        workspace,
+        {linear_add_workspace_capacity_bytes(w[0].qtype, w[0].n, w[0].k, policy, tokens, tokens),
+         linear_workspace_capacity_bytes(w[1].qtype, w[1].n, w[1].k, policy, tokens, tokens)},
+        kOp);
     // The residual must enter the sum once: rank 0 adds its partial into its copy, and rank 1
     // overwrites its copy with the residual-free partial. allreduce_sum() then leaves
     // `residual + partial_0 + partial_1` on both ranks. It records its inputs-ready event on each
