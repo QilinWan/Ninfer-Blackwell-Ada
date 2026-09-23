@@ -292,10 +292,14 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
     summary.architecture = models::architecture_name(instance->model->config().text.architecture);
     summary.model_name   = instance->model->info().name;
     summary.prefill_signature = signature;
+    // Every rank's resident formats: at tp 2 the Vision tower may sit on rank 1 alone and the
+    // drafter and proposal head on rank 0 alone, so neither rank's views list them all.
     std::set<std::string> formats;
-    for (const auto& weight : instance->model->weight_data()) {
-        for (const auto& part : weight.view.parts) {
-            formats.emplace(artifact::format_name(part.parent->geometry.format));
+    for (int rank = 0; rank < instance->model->device_count(); ++rank) {
+        for (const auto& weight : instance->model->weight_data(rank)) {
+            for (const auto& part : weight.view.parts) {
+                formats.emplace(artifact::format_name(part.parent->geometry.format));
+            }
         }
     }
     summary.weight_formats.assign(formats.begin(), formats.end());
