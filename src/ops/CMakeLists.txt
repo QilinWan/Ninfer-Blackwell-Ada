@@ -29,3 +29,6 @@ include("${CMAKE_CURRENT_LIST_DIR}/linear_topk/sources.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/rmsnorm_rope/sources.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/softmax_attention/sources.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/sparse_moe/sources.cmake")
+
+# Ada drops the Blackwell-only kernel routes and links explicit stubs instead.
+include("${PROJECT_SOURCE_DIR}/cmake/Sm89Compat.cmake")

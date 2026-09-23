@@ -801,8 +801,19 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         }
         break;
     }
-    if (device.compute_capability() != 120) {
-        throw std::invalid_argument("Qwen3.5 family runtime requires compute capability 12.0");
+    // The image is compiled for exactly one architecture, and a cubin only loads on the
+    // device family it was built for, so the requirement is the compile-time target.
+#ifdef NINFER_SM89
+    constexpr int kRequiredComputeCapability = 89;
+    constexpr const char* kRequiredDeviceClass =
+        "compute capability 8.9 (Ada: RTX 4090 / 4090D / 4080 SUPER / 4070 family)";
+#else
+    constexpr int kRequiredComputeCapability = 120;
+    constexpr const char* kRequiredDeviceClass = "compute capability 12.0 (Blackwell sm_120a)";
+#endif
+    if (device.compute_capability() != kRequiredComputeCapability) {
+        throw std::invalid_argument(std::string("This NInfer build requires ") +
+                                    kRequiredDeviceClass);
     }
 }
 
