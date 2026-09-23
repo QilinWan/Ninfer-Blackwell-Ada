@@ -53,8 +53,7 @@ ninfer::EngineOptions engine_options(const char* artifact, bool dflash2) {
     options.max_pending_requests = 4;
     // Rank 1's KV and StateImages have no Host tier; the Device StateImage and private catalog
     // floors come from the Engine's tp 2 defaults.
-    options.context_cache.host_state_slots       = 0;
-    options.context_cache.host_kv_capacity_bytes = 0;
+    options.context_cache.host_capacity_bytes = 0;
     if (dflash2) {
         options.speculative.backend       = ninfer::SpeculativeBackend::DFlash2;
         options.speculative.draft_tokens  = kDraftTokens;
@@ -203,7 +202,6 @@ int exercise_prefix_reuse(ninfer::Engine& engine) {
         ninfer::PromptInput input = user_prompt(
             "Tieni a mente il codice 4817 e il colore verde. Per ora rispondi soltanto: OK.");
         input.context_cache.session_key = "dflash2-tp2-real";
-        input.context_cache.retention   = ninfer::CacheRetentionHint::LiveSession;
         return input;
     };
     const ninfer::GenerationResult first =

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -969,6 +970,11 @@ struct MemorySummary {
     std::size_t planned_slack_bytes               = 0;
     std::size_t workspace_logical_peak_bytes      = 0;
     std::size_t cuda_graph_allowance_bytes        = 0;
+    // Device memory CUDA Graph preparation took on each tensor-parallel rank (index = rank): free
+    // memory before the eager warmups and captures minus free memory after the instantiated
+    // graphs are uploaded. The allowance above is planned per device before it; this is the
+    // observation it must cover. Zero without CUDA Graphs; entry 1 is zero at tp 1.
+    std::array<std::size_t, 2> cuda_graph_observed_bytes{};
     std::size_t kv_payload_bytes                  = 0;
     // One shared physical Host context backing. Reserved bytes are included in occupied bytes;
     // State/KV occupancy below is a breakdown and must not be added to this ledger again.

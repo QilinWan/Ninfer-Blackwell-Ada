@@ -459,6 +459,16 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                       "conversations)",
                       engine.devices.at(0), engine.devices.at(1),
                       cache.enabled ? *cache.device_state_slots : 0U);
+        // Measured against the planned per-device allowance, to calibrate the tp 2 constants.
+        if (engine.use_cuda_graph) {
+            constexpr double kMiB = 1024.0 * 1024.0;
+            for (std::size_t rank = 0; rank < memory.cuda_graph_observed_bytes.size(); ++rank) {
+                logger_->info("cuda graphs | rank {}: observed {:.1f} MiB, allowance {:.1f} MiB",
+                              rank,
+                              static_cast<double>(memory.cuda_graph_observed_bytes[rank]) / kMiB,
+                              static_cast<double>(memory.cuda_graph_allowance_bytes) / kMiB);
+            }
+        }
     }
 
     logger_->info("context | history {} | {} active + {} extra device states | host {}",
