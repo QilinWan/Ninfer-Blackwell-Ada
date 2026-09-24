@@ -394,5 +394,6 @@ architecture with `bf16` or `int8` KV. The MTP head is split like a Text layer a
 runs on both ranks; `--draft-tokens` and `--lm-head-draft` work as on one GPU (the optimized
 proposal head is loaded on rank 0 only and proposes there alone). The DFlash2 drafter runs on rank
 0 alone and requires `--lm-head-draft`, since the full output head is split by vocabulary across
-the ranks. `--spec dflash`, `--vision`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and
+the ranks; a drafter with full-attention layers is not supported there (its KV has no rank 1
+mirror). `--spec dflash`, `--vision`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and
 `rk4v4-e8` KV types are rejected at startup, as is a nonzero `--host-context-mib`.

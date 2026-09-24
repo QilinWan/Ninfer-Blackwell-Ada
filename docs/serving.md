@@ -1025,7 +1025,8 @@ the recurrent-state commit run on both ranks, and acceptance and sampling run on
 while the drafter ranks its candidates over one complete head.
 
 Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2 --lm-head-draft`
-with `bf16` or `int8` KV. `--spec dflash`, `--spec dflash2` without `--lm-head-draft`, `--vision`,
+with `bf16` or `int8` KV. `--spec dflash`, `--spec dflash2` without `--lm-head-draft` or with a drafter that has
+full-attention layers, `--vision`,
 the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8` KV types are rejected at startup.
 
 Serve writes human-readable operational records to stderr using

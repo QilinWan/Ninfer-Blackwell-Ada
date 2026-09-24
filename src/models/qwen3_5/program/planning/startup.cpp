@@ -1199,6 +1199,14 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 "tensor-parallel DFlash2 requires the optimized proposal head (--lm-head-draft)");
         }
+        // The drafter's full-attention KV lives on rank 0 only and has no rank 1 mirror, while the
+        // tensor-parallel KV row publication expects every paged pool to have one.
+        if (options.speculative.backend == SpeculativeBackend::DFlash2 &&
+            parameters.model.config().draft &&
+            parameters.model.config().draft->full_layer_count() != 0) {
+            throw std::invalid_argument(
+                "tensor-parallel DFlash2 supports only drafters without full-attention layers");
+        }
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
             options.kv_cache != KvCacheStorage::Int8Group64) {
             throw std::invalid_argument(
