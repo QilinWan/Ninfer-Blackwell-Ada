@@ -45,8 +45,8 @@ namespace ninfer::ops {
  *   [2048,4096], [2048,6144], [5120,6144] or [5120,17408], NVFP4
  *   BlockScaleK16M128x4 [5120,6144] or [5120,17408], row-scaled
  *   FP8_E4M3FN_ROW_BF16 [5120,6144] or [5120,17408], or BF16 Contiguous [5120,6144]. For
- *   two-device execution, NVFP4 also registers the input-column half [5120,8704] and FP8 the
- *   halves [5120,3072] and [5120,8704], each keeping the activation-quantization crossover of the
+ *   two-device execution, NVFP4 and FP8 also register the input-column halves [5120,3072] and
+ *   [5120,8704], each keeping the activation-quantization crossover of the
  *   problem it halves; linear() over the same half switches at the same T, so both ranks of a
  *   row-parallel projection take the same route.
  *   T may be any positive value.

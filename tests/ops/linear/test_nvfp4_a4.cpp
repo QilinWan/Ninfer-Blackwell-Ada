@@ -54,6 +54,12 @@ int run_nvfp4_a4() {
                           {17408, 5120, 722U, Comparison::Sampled, true, invocations});
     failures += run_shape("NVFP4_A4", ActivationCompute::A4, make_nvfp4_weight,
                           {5120, 8704, 729U, Comparison::Sampled, true, invocations});
+    // Two-device half of the attention and GDN output projections, across its A16 floor (A4 from
+    // T=7, as linear_add over the same half) and its MMA and TMA routes.
+    auto n3072_invocations = invocations;
+    n3072_invocations.push_back({6, CallForm::Policy, ops::LinearPolicy::AllowA4});
+    failures += run_shape("NVFP4_A4", ActivationCompute::A4, make_nvfp4_weight,
+                          {5120, 3072, 731U, Comparison::Sampled, true, n3072_invocations});
     return failures;
 }
 

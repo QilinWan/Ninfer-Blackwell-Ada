@@ -15,23 +15,25 @@ enum class Nvfp4LinearAddRoute : std::uint8_t {
     A4,
 };
 
-// [5120,8704] is the two-device input-column half of [5120,17408] and keeps its crossover.
+// The two-device input-column halves [5120,3072] and [5120,8704] keep the crossover of the problem
+// they halve, and linear() over each half uses the same one (shapes/n5120_k3072.cu and
+// n5120_k8704.cu), so both ranks of a row-parallel projection take the same route.
 Nvfp4LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                   LinearPolicy policy, std::int32_t tokens) {
-    const bool known_shape =
-        (output_rows == Nvfp4N5120K6144::kOutputRows &&
-         input_rows == Nvfp4N5120K6144::kInputRows) ||
-        (output_rows == Nvfp4N5120K17408::kOutputRows &&
-         input_rows == Nvfp4N5120K17408::kInputRows) ||
-        (output_rows == Nvfp4N5120K8704::kOutputRows && input_rows == Nvfp4N5120K8704::kInputRows);
-    if (tokens <= 0 || !known_shape) {
+    const bool output_family =
+        input_rows == Nvfp4N5120K6144::kInputRows || input_rows == Nvfp4N5120K3072::kInputRows;
+    const bool down_family =
+        input_rows == Nvfp4N5120K17408::kInputRows || input_rows == Nvfp4N5120K8704::kInputRows;
+    if (tokens <= 0 || output_rows != Nvfp4N5120K6144::kOutputRows ||
+        (!output_family && !down_family)) {
         throw std::invalid_argument("nvfp4 linear_add: unsupported shape");
     }
     if (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8) {
         return Nvfp4LinearAddRoute::A16;
     }
     if (!allows_a4(policy)) { throw std::invalid_argument("nvfp4 linear_add: unsupported policy"); }
-    const std::int32_t first_a4 = input_rows == Nvfp4N5120K6144::kInputRows ? 17 : 8;
+    const std::int32_t first_a4 =
+        output_family ? kNvfp4OutputFamilyFirstA4Tokens : kNvfp4DownFamilyFirstA4Tokens;
     return tokens >= first_a4 ? Nvfp4LinearAddRoute::A4 : Nvfp4LinearAddRoute::A16;
 }
 

@@ -84,7 +84,10 @@ enum class LinearPolicy : std::uint8_t {
  * linear_add() over the same half does (the `[5120,3072]` half needs no exception: its A8 floor is
  * 17, which is already linear_add()'s over the [5120,6144] family). The current NVFP4 problems
  * register the seven non-vocabulary FP8 geometries — the five parents plus the shards
- * `[17408,5120]` and `[5120,8704]` — and accept every positive T. Q8 and BF16 register the exact
+ * `[17408,5120]`, `[5120,8704]` and `[5120,3072]` — and accept every positive T, NVFP4
+ * `[5120,3072]` taking the A4 route from T=17 exactly as linear_add() over the [5120,6144] family
+ * does (one crossover constant per family in `nvfp4_geometry.h`, so rank 1's linear() and rank 0's
+ * linear_add never split routes in one row-parallel pair). Q8 and BF16 register the exact
  * physical N/K problems in their format-owned shape registries; the BF16 registry includes the
  * two-device shards `[7168,5120]` and `[5120,3072]`, and the Q8 registry includes the MTP halves
  * `[5120,5120]`, `[7168,5120]`, `[17408,5120]`, `[5120,3072]` and `[5120,8704]`. Text/MTP problems

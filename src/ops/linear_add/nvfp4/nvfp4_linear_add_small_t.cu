@@ -18,8 +18,11 @@ using Launch = void (*)(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 
 template <class Geometry, int ActiveTokens>
 void launch_exact(const Tensor& x, const Weight& weight, Tensor& residual, cudaStream_t stream) {
+    // The [5120,3072] half takes the warp crossover of the [5120,6144] problem it halves.
+    constexpr bool kOutputFamily = Geometry::kInputRows == Nvfp4N5120K6144::kInputRows ||
+                                   Geometry::kInputRows == Nvfp4N5120K3072::kInputRows;
     using Schedule = Nvfp4A16SimtSchedule<
-        (ActiveTokens <= 16 && ActiveTokens >= (Geometry::kInputRows == 6144 ? 14 : 8)) ? 16 : 4, 1,
+        (ActiveTokens <= 16 && ActiveTokens >= (kOutputFamily ? 14 : 8)) ? 16 : 4, 1,
         2, (ActiveTokens >= 17 && ActiveTokens <= 20) ? 8 : 16, ActiveTokens, 1,
         Nvfp4SimtActivationAccess::TokenPacked, Nvfp4ScaleAccess::Direct, Nvfp4CodeCache::Default,
         1, Nvfp4SimtBlockOrder::RowsContiguous, 1>;
@@ -44,6 +47,7 @@ constexpr auto make_launchers() {
 constexpr auto kResidual6144Launchers  = make_launchers<Nvfp4N5120K6144>();
 constexpr auto kResidual17408Launchers = make_launchers<Nvfp4N5120K17408>();
 constexpr auto kResidual8704Launchers  = make_launchers<Nvfp4N5120K8704>();
+constexpr auto kResidual3072Launchers  = make_launchers<Nvfp4N5120K3072>();
 
 } // namespace
 
@@ -59,6 +63,9 @@ void nvfp4_linear_add_small_t_launch(const Tensor& x, const Weight& weight, Tens
         return;
     case Nvfp4GeometryId::N5120K8704:
         kResidual8704Launchers[index](x, weight, residual, stream);
+        return;
+    case Nvfp4GeometryId::N5120K3072:
+        kResidual3072Launchers[index](x, weight, residual, stream);
         return;
     case Nvfp4GeometryId::N14336K5120:
     case Nvfp4GeometryId::N16384K5120:

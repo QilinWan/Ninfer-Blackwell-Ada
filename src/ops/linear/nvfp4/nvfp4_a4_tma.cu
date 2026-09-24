@@ -42,6 +42,9 @@ void launch_nvfp4_a4_tma_linear(Nvfp4GeometryId problem, const Nvfp4A4Operands& 
     case Nvfp4GeometryId::N5120K8704:
         launch<8704>(p, output, stream);
         return;
+    case Nvfp4GeometryId::N5120K3072:
+        launch<3072>(p, output, stream);
+        return;
     }
     throw std::invalid_argument("NVFP4 TMA linear: unsupported geometry");
 }

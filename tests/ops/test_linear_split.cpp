@@ -322,6 +322,7 @@ int verify_registry() {
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 8704},
         {QType::NVFP4, 17408, 5120},
         {QType::NVFP4, 5120, 8704},
+        {QType::NVFP4, 5120, 3072},
         {QType::BF16, 7168, 5120},
         {QType::BF16, 5120, 3072},
     };
@@ -535,6 +536,16 @@ int main() {
              5120,
              17408,
              23U,
+             {1, 8, 48, 128, 512, 1024},
+             {kA16, kA4}},
+            // T=7 is left to the linear_add split suite: the half takes A4 from 7, as linear_add
+            // over [5120,6144] does, while linear() over the whole weight takes it from 8.
+            {"nvfp4 output",
+             QType::NVFP4,
+             SplitAxis::Row,
+             5120,
+             6144,
+             25U,
              {1, 8, 48, 128, 512, 1024},
              {kA16, kA4}},
             {"bf16 output", QType::BF16, SplitAxis::Row, 5120, 6144, 24U, {1, 8, 48}, {kA16}},

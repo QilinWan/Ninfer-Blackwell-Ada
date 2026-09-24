@@ -55,7 +55,9 @@ Nvfp4A4Route select_a4(std::int32_t tokens) {
     return nvfp4_a4_mma_route<Geometry, T128R128Resident>();
 }
 
-bool uses_a4(std::int32_t, std::int32_t max_tokens) { return max_tokens >= 8; }
+bool uses_a4(std::int32_t, std::int32_t max_tokens) {
+    return max_tokens >= kNvfp4DownFamilyFirstA4Tokens;
+}
 } // namespace
 
 const Nvfp4LinearShape kNvfp4N5120K8704{5120, 8704, launch_a16, launch_nvfp4_a4<select_a4>,

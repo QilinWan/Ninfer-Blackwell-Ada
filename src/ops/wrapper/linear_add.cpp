@@ -86,16 +86,19 @@ void validate_policy(LinearPolicy policy) {
     throw std::invalid_argument("linear_add: invalid compute policy");
 }
 
-// The registered NVFP4 residual problems. [5120,8704] is the two-device input-column half of
-// [5120,17408].
+// The registered NVFP4 residual problems. [5120,3072] and [5120,8704] are the two-device
+// input-column halves of [5120,6144] and [5120,17408].
 bool nvfp4_residual_problem(std::int32_t output_rows, std::int32_t input_rows) {
     using detail::Nvfp4N5120K17408;
+    using detail::Nvfp4N5120K3072;
     using detail::Nvfp4N5120K6144;
     using detail::Nvfp4N5120K8704;
     return (output_rows == Nvfp4N5120K6144::kOutputRows &&
             input_rows == Nvfp4N5120K6144::kInputRows) ||
            (output_rows == Nvfp4N5120K17408::kOutputRows &&
             input_rows == Nvfp4N5120K17408::kInputRows) ||
+           (output_rows == Nvfp4N5120K3072::kOutputRows &&
+            input_rows == Nvfp4N5120K3072::kInputRows) ||
            (output_rows == Nvfp4N5120K8704::kOutputRows &&
             input_rows == Nvfp4N5120K8704::kInputRows);
 }

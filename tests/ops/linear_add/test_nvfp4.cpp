@@ -89,7 +89,7 @@ int verify_preserved(const GuardedDeviceBuffer& device, std::span<const std::uin
 }
 
 int run_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
-    const std::int32_t first_a4 = k == 6144 ? 17 : 8;
+    const std::int32_t first_a4 = k == 6144 || k == 3072 ? 17 : 8;
     const std::array invocations{
         Invocation{1, ops::LinearPolicy::A16Only},
         Invocation{4, ops::LinearPolicy::A16Only},
@@ -242,6 +242,10 @@ int main() {
     // The two-device input-column half, which keeps the crossover of [5120,17408], including its
     // TMA route from T=1024.
     failures += run_shape(5120, 8704, 831U);
+    // The half of [5120,6144] that the attention and GDN output projections run at tp 2: it keeps
+    // the crossover at T=7 and gains a TMA route from T=1024 that [5120,6144]'s tp 1 linear_add
+    // shares.
+    failures += run_shape(5120, 3072, 841U);
     std::cout << (failures == 0 ? "OK" : "FAIL") << " NVFP4 linear_add\n";
     return failures == 0 ? 0 : 1;
 }

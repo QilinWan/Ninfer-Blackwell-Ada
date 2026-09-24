@@ -244,6 +244,8 @@ int verify_registry() {
     const std::vector<Entry> admitted{
         {QType::NVFP4, 5120, 8704, ops::LinearPolicy::A16Only},
         {QType::NVFP4, 5120, 8704, ops::LinearPolicy::AllowA4},
+        {QType::NVFP4, 5120, 3072, ops::LinearPolicy::A16Only},
+        {QType::NVFP4, 5120, 3072, ops::LinearPolicy::AllowA4},
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 3072, ops::LinearPolicy::A16Only},
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 3072, ops::LinearPolicy::AllowA8},
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 8704, ops::LinearPolicy::A16Only},
@@ -265,7 +267,6 @@ int verify_registry() {
     }
     // Halves no format registers.
     const std::vector<Entry> rejected{
-        {QType::NVFP4, 5120, 3072, ops::LinearPolicy::A16Only},
         {QType::BF16, 5120, 3072, ops::LinearPolicy::A16Only},
         {QType::Q5_G64_FP16, 5120, 8704, ops::LinearPolicy::A16Only},
     };
@@ -406,6 +407,13 @@ int main() {
              17408,
              31U,
              {1, 7, 8, 48, 128, 384, 512, 1024},
+             {kA16, kA4}},
+            {"nvfp4 output",
+             QType::NVFP4,
+             5120,
+             6144,
+             34U,
+             {1, 6, 7, 8, 32, 48, 128, 384, 512, 1024},
              {kA16, kA4}},
             {"fp8 output",
              QType::FP8_E4M3FN_ROW_BF16,
