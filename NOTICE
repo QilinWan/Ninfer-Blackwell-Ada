@@ -1,0 +1,52 @@
+NInfer
+======
+
+This product includes software developed as the NInfer project.
+
+Original work
+-------------
+Copyright the Neroued/ninfer contributors.
+Source: https://github.com/Neroued/ninfer
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Two-GPU tensor parallelism: prior work
+--------------------------------------
+The tensor-parallel design in this tree descends from the following forks of
+Neroued/ninfer, each licensed under the Apache License, Version 2.0:
+
+  * Wael Mansour -- https://github.com/wamansou/ninfer-tp2-1m
+    Copyright 2026 Wael Mansour. The original two-GPU tensor-parallel port:
+    two-device ExecutionContext, all-reduce collectives, column- and
+    row-parallel split forms of the sharded Op families, the 12/2 head-local
+    attention geometry, sharded weight materialization and the two-rank
+    Program wiring.
+
+  * natpate -- https://github.com/natpate/ninfer-windows
+    Native Windows build of NInfer, on which the Windows TP2 fork below builds.
+
+  * ivanov84 -- https://github.com/ivanov84/ninfer-windows-tp2
+    Native Windows TP2 and the pinned-host peer-mailbox all-reduce transport
+    for GPUs without peer access.
+
+  * parallelno -- https://github.com/parallelno/ninfer-dflash2-tp2
+    DFlash2 speculative decoding at tensor-parallel width 2, per-device kernel
+    attributes, mirrored rank-1 KV tables and state slots, and the per-rank
+    startup memory report.
+
+Modifications
+-------------
+Copyright 2026 Valerio Dolci.
+Source: https://github.com/ValerioDolci/ninfer-tp2
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This tree ports the two-GPU tensor-parallel mode onto upstream Neroued/ninfer
+(commit bace20dc), largely rewritten against the upstream v3 artifact format
+and execution packages. Beyond the prior work above it adds: correct
+concurrent requests at tp 2 (per-lane KV binding), prefix reuse at tp 2 with
+and without MTP, --spec mtp at tp 2, Vision at tp 2 (--vision-device), the
+epoch-flagged PeerMailbox inside captured decode graphs, logits gathered on
+rank 0, a CUDA Graph allowance sized from measurement, and the tests that
+qualify them. Single-GPU (--tp 1) behaviour is intended to match upstream.
+The full list of changes is the git history on top of the upstream commit.
+
+Vendored dependencies retain their own license files under third_party/.
