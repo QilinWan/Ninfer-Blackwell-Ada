@@ -388,16 +388,14 @@ void DecodeGraphExecutable::instantiate(const DecodeGraphDefinition& definition)
     if (!definition.ready()) {
         throw std::logic_error("cannot instantiate an empty CUDA Graph definition");
     }
+    reset();
 
-    // Instantiate before releasing the current executable, so a failed instantiation (out of
-    // memory, for one) leaves the executable this object already held usable.
     cudaGraphExec_t exec  = nullptr;
     const cudaError_t err = cudaGraphInstantiate(&exec, definition.graph_, 0);
     if (err != cudaSuccess) {
         destroy_graph_exec(exec);
         CUDA_CHECK(err);
     }
-    reset();
     exec_ = exec;
 }
 
@@ -414,30 +412,6 @@ void DecodeGraphExecutable::update(const DecodeGraphDefinition& definition) {
         if (err != cudaSuccess) { (void)cudaGetLastError(); }
         throw std::runtime_error("CUDA Graph executable update failed: " + detail);
     }
-}
-
-bool DecodeGraphExecutable::update_or_reinstantiate(const DecodeGraphDefinition& definition,
-                                                    std::string& diagnostic) {
-    if (!ready() || !definition.ready()) {
-        throw std::logic_error("CUDA Graph update requires a definition and executable");
-    }
-    cudaGraphExecUpdateResultInfo result{};
-    cudaError_t err = cudaSuccess;
-    {
-        nvtx::ScopedRange update_range(nvtx::Name::CudaGraphUpdate, nvtx::Category::Graph);
-        err = cudaGraphExecUpdate(exec_, definition.graph_, &result);
-    }
-    if (err == cudaSuccess && result.result == cudaGraphExecUpdateSuccess) { return true; }
-    const std::string detail = describe_update_failure(err, result);
-    if (err != cudaSuccess) { (void)cudaGetLastError(); }
-    if (err != cudaErrorGraphExecUpdateFailure ||
-        result.result != cudaGraphExecUpdateErrorParametersChanged) {
-        throw std::runtime_error("CUDA Graph executable update failed: " + detail);
-    }
-    // A rejected update leaves the executable as it was; replace it with a fresh one.
-    instantiate(definition);
-    diagnostic = detail;
-    return false;
 }
 
 void DecodeGraphExecutable::upload(cudaStream_t stream) {

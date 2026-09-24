@@ -283,7 +283,7 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         if (use_cuda_graph) {
             DecodeGraphProfile& profile =
                 ordinary_graphs.select(static_cast<std::uint32_t>(lanes.size()), maximum_frontier);
-            executable = &ordinary_graphs.install(profile, "ordinary");
+            executable = &ordinary_graphs.install(profile);
             envelope   = {profile.min_execution_frontier + 1, profile.max_execution_frontier + 1};
         }
 
@@ -423,10 +423,9 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
         if (use_cuda_graph) {
             const auto batch = static_cast<std::uint32_t>(lanes.size());
             auto& profile    = speculative_forward_graphs.select(batch, maximum_frontier);
-            forward          = &speculative_forward_graphs.install(profile, "speculative forward");
+            forward          = &speculative_forward_graphs.install(profile);
             finish           = &speculative_finish_graphs.install(
-                speculative_finish_graphs.select(batch, maximum_frontier),
-                "speculative finish");
+                speculative_finish_graphs.select(batch, maximum_frontier));
             envelopes = mtp_causal_attention_envelopes(profile.max_execution_frontier, draft_window,
                                                        capacity);
         }
@@ -635,10 +634,9 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
         if (use_cuda_graph) {
             const auto batch = static_cast<std::uint32_t>(lanes.size());
             auto& profile    = speculative_forward_graphs.select(batch, maximum_frontier);
-            forward          = &speculative_forward_graphs.install(profile, "speculative forward");
+            forward          = &speculative_forward_graphs.install(profile);
             finish           = &speculative_finish_graphs.install(
-                speculative_finish_graphs.select(batch, maximum_frontier),
-                "speculative finish");
+                speculative_finish_graphs.select(batch, maximum_frontier));
             envelopes       = dflash_envelopes(profile.max_execution_frontier, draft_window);
             target_envelope = {
                 1, static_cast<std::uint32_t>(std::min<std::uint64_t>(

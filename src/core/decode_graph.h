@@ -112,14 +112,6 @@ public:
     // message names the update result and the rejected node (its type and, for a memset, its
     // destination and extent in both graphs).
     void update(const DecodeGraphDefinition& definition);
-    // update(), except that an update rejected because a node's parameters cannot change in place
-    // (cudaGraphExecUpdateErrorParametersChanged) re-instantiates the executable from `definition`
-    // instead: same graph, only the instantiation time is lost. Returns false and sets `diagnostic`
-    // to the rejection when it re-instantiated. Every other rejection (a topology change is a
-    // profile classification bug), every other update error and a failed re-instantiation throw;
-    // a failed re-instantiation leaves the previous executable installed.
-    [[nodiscard]] bool update_or_reinstantiate(const DecodeGraphDefinition& definition,
-                                               std::string& diagnostic);
     void upload(cudaStream_t stream);
     void launch(cudaStream_t stream);
     [[nodiscard]] bool ready() const noexcept;
