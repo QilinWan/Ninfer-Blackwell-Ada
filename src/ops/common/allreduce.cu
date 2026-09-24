@@ -222,8 +222,10 @@ PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
     return *this;
 }
 
-void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
-                   const ExecutionContext& ec, const PeerEvents& events) {
+void detail::require_allreduce_sum_arguments(const std::array<Tensor, 2>& buffer,
+                                             const std::array<Tensor, 2>& staging,
+                                             const ExecutionContext& ec,
+                                             const PeerEvents& events) {
     require_two_devices(ec,
                         "allreduce_sum: requires an ExecutionContext with two distinct devices");
     for (int rank = 0; rank < 2; ++rank) {
@@ -239,11 +241,8 @@ void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor,
         }
     }
     require(events.live(), "allreduce_sum: events must be live");
-
-    const std::size_t bytes = buffer[0].bytes();
-    if (bytes == 0) { return; }
-
 #ifndef NDEBUG
+    const std::size_t bytes = buffer[0].bytes();
     for (int rank = 0; rank < 2; ++rank) {
         require_resident_on(buffer[rank].data, ec.dev[rank]->device,
                             "allreduce_sum: buffer[r] must be resident on ec.dev[r]");
@@ -253,6 +252,13 @@ void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor,
                          "allreduce_sum: staging[r] must not overlap buffer[r]");
     }
 #endif
+}
+
+void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
+                   const ExecutionContext& ec, const PeerEvents& events) {
+    detail::require_allreduce_sum_arguments(buffer, staging, ec, events);
+    const std::size_t bytes = buffer[0].bytes();
+    if (bytes == 0) { return; }
 
     const CurrentDeviceGuard guard;
 

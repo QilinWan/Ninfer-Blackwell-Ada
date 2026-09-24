@@ -180,6 +180,15 @@ private:
 void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
                    const ExecutionContext& ec, const PeerEvents& events);
 
+namespace detail {
+// allreduce_sum()'s argument checks alone; allreduce_sum() runs them itself. A row-parallel form
+// calls this before issuing either rank's partial, so a call rejected for its all-reduce
+// arguments enqueues nothing.
+void require_allreduce_sum_arguments(const std::array<Tensor, 2>& buffer,
+                                     const std::array<Tensor, 2>& staging,
+                                     const ExecutionContext& ec, const PeerEvents& events);
+} // namespace detail
+
 /**
  * Two-device row gather, exact (no arithmetic). The gathered axis is `ne[1]`, so each rank
  * contributes one contiguous block of a `[C, R]` tensor (`ne[0] == C` is the row length,

@@ -227,8 +227,9 @@ void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight
     std::array<Tensor, 2> destination =
         validate_split(x, w, out, policy, workspace, ec, detail::SplitAxis::Input);
     if (!events.live()) { throw std::invalid_argument("linear row-parallel: events must be live"); }
+    detail::require_allreduce_sum_arguments(out, staging, ec, events);
     // Each partial lands in out[r] on rank r's stream; allreduce_sum records its inputs_ready event
-    // on that same stream, which orders the peer's read after the partial, and checks staging.
+    // on that same stream, which orders the peer's read after the partial.
     issue_ranks(x, w, destination, policy, workspace, ec);
     allreduce_sum(out, staging, ec, events);
 }

@@ -336,6 +336,17 @@ int verify_split_rejections(const ExecutionContext& ec, const ops::PeerEvents& e
                                             Tensor(stage1.p, DType::BF16, {kN / 2, 1})};
         ops::linear_add_row_parallel(x, {weight, other}, r, staging, ec, events);
     });
+    // The weight has no payload: a pair whose staging is rejected only by the all-reduce would
+    // have dispatched both GEMMs first. The staging is checked before either rank issues work.
+    expect_throw("staging shape", [&] {
+        const std::array<Tensor, 2> x{Tensor(x0.p, DType::BF16, {kK, 1}),
+                                      Tensor(x1.p, DType::BF16, {kK, 1})};
+        const std::array<Tensor, 2> r{Tensor(r0.p, DType::BF16, {kN, 1}),
+                                      Tensor(r1.p, DType::BF16, {kN, 1})};
+        const std::array<Tensor, 2> staging{Tensor(stage0.p, DType::BF16, {kN, 1}),
+                                            Tensor(stage1.p, DType::BF16, {kN, 2})};
+        ops::linear_add_row_parallel(x, {weight, weight}, r, staging, ec, events);
+    });
     expect_throw("single-device context", [&] {
         const ExecutionContext single({ec.dev[0]->device});
         const std::array<Tensor, 2> x{Tensor(x0.p, DType::BF16, {kK, 1}),

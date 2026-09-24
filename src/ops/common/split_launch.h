@@ -91,15 +91,20 @@ inline void require_split_pair(const ExecutionContext& ec, const std::array<Tens
 }
 
 // Rank r's route at this call needs `required_bytes[r]` of transient storage; a rank that needs
-// some must have a workspace. Checked with the pair, so rank 0 cannot enqueue work before rank 1
-// fails in its dispatch and a row-parallel form skips its all-reduce.
+// some must have a workspace with that much left. Checked with the pair, so rank 0 cannot enqueue
+// work before rank 1 fails in its dispatch and a row-parallel form skips its all-reduce.
 inline void require_split_workspace(const std::array<WorkspaceArena*, 2>& workspace,
                                     const std::array<std::size_t, 2>& required_bytes,
                                     std::string_view op) {
     for (std::size_t rank = 0; rank < 2; ++rank) {
-        if (required_bytes[rank] != 0 && workspace[rank] == nullptr) {
+        if (required_bytes[rank] == 0) { continue; }
+        if (workspace[rank] == nullptr) {
             throw std::invalid_argument(std::string(op) +
                                         ": the selected route requires a workspace on every rank");
+        }
+        if (workspace[rank]->capacity() - workspace[rank]->used() < required_bytes[rank]) {
+            throw std::invalid_argument(std::string(op) + ": rank " + std::to_string(rank) +
+                                        "'s workspace is smaller than the selected route needs");
         }
     }
 }

@@ -338,10 +338,11 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
         {linear_add_workspace_capacity_bytes(w[0].qtype, w[0].n, w[0].k, policy, tokens, tokens),
          linear_workspace_capacity_bytes(w[1].qtype, w[1].n, w[1].k, policy, tokens, tokens)},
         kOp);
+    detail::require_allreduce_sum_arguments(residual, staging, ec, events);
     // The residual must enter the sum once: rank 0 adds its partial into its copy, and rank 1
     // overwrites its copy with the residual-free partial. allreduce_sum() then leaves
     // `residual + partial_0 + partial_1` on both ranks. It records its inputs-ready event on each
-    // rank's stream after the partial, which orders the peer's read, and checks staging.
+    // rank's stream after the partial, which orders the peer's read.
     detail::for_each_rank(ec, [&](int rank) {
         const auto slot           = static_cast<std::size_t>(rank);
         const cudaStream_t stream = ec.dev[slot]->stream;
