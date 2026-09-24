@@ -110,7 +110,7 @@ std::string usage_text(const char* argv0) {
            "media sources may be local paths, HTTP(S) URLs, or base64 data URIs.\n"
            "--vision enables image/video input and loads the fixed Vision GPU allocations.\n"
            "--vision-device N places the Vision tower and its encoder on GPU N (default: rank 0);\n"
-           "with --tp 2 it must be one of --devices.\n"
+           "it must equal --device on one GPU and be one of --devices with --tp 2.\n"
            "--max-vision-tokens N (64-16384, default 16384) caps one image or video item's Vision\n"
            "tokens: larger media are resized and the encode workspace is planned for N.\n"
            "--tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A);\n"

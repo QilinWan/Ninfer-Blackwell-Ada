@@ -37,7 +37,9 @@ inline void validate_vision_options(bool enable_vision, const std::optional<int>
     }
     if (vision_device &&
         std::find(devices.begin(), devices.end(), *vision_device) == devices.end()) {
-        throw std::invalid_argument("--vision-device must be one of the --devices ids");
+        throw std::invalid_argument(devices.size() == 1
+                                        ? "--vision-device must equal --device without --tp 2"
+                                        : "--vision-device must be one of the --devices ids");
     }
 }
 

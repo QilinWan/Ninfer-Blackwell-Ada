@@ -317,8 +317,9 @@ prefill chunks and in verification, and only rank 0 appends to the draft context
    and publishes its own accepted hidden.
 
 The commit folds both ranks' records with the same rows. Graph capture enrolls rank 1's stream in
-one two-device graph per profile; each topology class is budgeted 24 MiB on each rank. Retained
-prefixes resume as on one device, since no DFlash state is needed outside rank 0.
+one two-device graph per profile; each topology class is budgeted 11 MiB on each rank
+(`kTp2DFlash2GraphClassAllowance`). Retained prefixes resume as on one device, since no DFlash
+state is needed outside rank 0.
 
 ## Execution flow
 

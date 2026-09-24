@@ -375,7 +375,7 @@ models whose weights do not fit one device (Qwen3.8-27B NVFP4 on two 16 GB board
 
 ```bash
 ./build/apps/ninfer models/qwen3_8_27b_nvfp4.ninfer --tp 2 --devices 0,1 \
-  --max-context 8192 --prompt "Quanto fa 17*23?"
+  --max-context 8192 --prompt "What is 17*23?"
 ```
 
 Rank 0 runs on `A` and owns scheduling and sampling; `--device`, when given, must equal `A`.

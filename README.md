@@ -373,7 +373,8 @@ The product boundary remains intentionally small:
 - one RTX 5090 and one resident model per Engine;
 - one to eight resident execution lanes with bounded FIFO ingress;
 - resource-pressure preemption with snapshot or token-replay recovery;
-- no priority/QoS, weight offload, multi-GPU, or distributed serving;
+- no priority/QoS, weight offload, multi-GPU beyond the experimental two-GPU mode described
+  below, or distributed serving;
 - one shared startup-fixed KV pool across active requests and retained prefixes;
 - model architectures and format/shape combinations use explicitly implemented native paths;
 - parsed tool calls are returned to the client; NInfer does not execute tools;
@@ -381,8 +382,8 @@ The product boundary remains intentionally small:
 
 Note: an experimental two-GPU tensor-parallel mode (`--tp 2 --devices A,B`, see
 [Two GPUs](docs/cli.md#two-gpus)) splits a dense model across two 16 GB boards that cannot hold it
-alone. It is verified only on two RTX 5070 Ti without peer access and does not change the
-single-GPU product boundary above.
+alone. It is verified only on two RTX 5070 Ti without peer access and leaves every other point of
+the product boundary above unchanged.
 
 `--max-context` is each sequence's logical limit. `--kv-capacity` sizes the shared Main Text KV pool
 used by active requests and retained prefixes; `auto` resolves the largest legal capacity at

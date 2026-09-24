@@ -18,7 +18,7 @@
 // The logit gather itself is exact.
 //
 // `real` mode: consistency on NINFER_TEST_ARTIFACT, which does not fit one 16 GB device. The
-// model is loaded at tp 2 only; a chat-formatted "Quanto fa 17*23?" is prefilled and decoded
+// model is loaded at tp 2 only; a chat-formatted "What is 17*23?" is prefilled and decoded
 // greedily with thinking off, asking for the number alone; every logit must be finite and the
 // answer (at most 64 tokens) must contain "391".
 //
@@ -905,7 +905,7 @@ int consistency() {
 
     const auto& tokenizer = *model->resources().tokenizer;
     const std::vector<int> prompt =
-        tokenizer.encode("<|im_start|>user\nQuanto fa 17*23? Rispondi col solo numero.<|im_end|>\n"
+        tokenizer.encode("<|im_start|>user\nWhat is 17*23? Answer with the number only.<|im_end|>\n"
                          "<|im_start|>assistant\n<think>\n\n</think>\n\n");
     constexpr std::size_t kAnswerTokens = 64;
     require(!prompt.empty() && prompt.size() + kAnswerTokens < kCapacity,

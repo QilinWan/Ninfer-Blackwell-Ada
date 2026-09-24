@@ -14,7 +14,7 @@
 //     request runs DFlash2 rounds. Rank 0's drafter reads the target features its tap captures
 //     from the replicated residual; features captured from a partial residual collapse the
 //     acceptance while the output stays right.
-//   * concurrent: "Quanto fa 17*23?" answers 391 while a long answer holds the other lane, in
+//   * concurrent: "What is 17*23?" answers 391 while a long answer holds the other lane, in
 //     shared two-row DFlash2 rounds.
 //   * prefix reuse: a second turn repeats the first turn's conversation and asks a new question.
 //     It resumes the retained prefix (restored KV pages and StateImages on both ranks, the
@@ -110,9 +110,9 @@ struct Probe {
 
 const std::vector<Probe>& probes() {
     static const std::vector<Probe> list{
-        {"product", "Quanto fa 17*23? Rispondi col solo numero.", "391"},
-        {"square", "Quanto fa 12*12? Rispondi col solo numero.", "144"},
-        {"capital", "Qual e' la capitale d'Italia? Rispondi con una sola parola.", "Roma"},
+        {"product", "What is 17*23? Answer with the number only.", "391"},
+        {"square", "What is 12*12? Answer with the number only.", "144"},
+        {"capital", "What is the capital of Italy? Answer with one word.", "Rome"},
     };
     return list;
 }
@@ -171,11 +171,11 @@ int exercise_concurrent(ninfer::Engine& engine) {
     int failures                      = 0;
     const ninfer::RuntimeStats before = engine.runtime_stats();
     ninfer::GenerationHandle counting = engine.submit(
-        engine.prepare(user_prompt("Scrivi i numeri interi da 1 a 40, separati da una virgola e "
-                                   "uno spazio, senza nient'altro.")),
+        engine.prepare(user_prompt("Write the integers from 1 to 40, separated by a comma and a "
+                                   "space, and nothing else.")),
         greedy(160));
     ninfer::GenerationHandle product = engine.submit(
-        engine.prepare(user_prompt("Quanto fa 17*23? Rispondi col solo numero.")), greedy(32));
+        engine.prepare(user_prompt("What is 17*23? Answer with the number only.")), greedy(32));
     const ninfer::GenerationResult counted    = counting.wait();
     const ninfer::GenerationResult multiplied = product.wait();
     const ninfer::RuntimeStats after          = engine.runtime_stats();
@@ -200,7 +200,7 @@ int exercise_concurrent(ninfer::Engine& engine) {
 int exercise_prefix_reuse(ninfer::Engine& engine) {
     const auto conversation = [] {
         ninfer::PromptInput input = user_prompt(
-            "Tieni a mente il codice 4817 e il colore verde. Per ora rispondi soltanto: OK.");
+            "Remember the code 4817 and the color green. For now, reply only: OK.");
         input.context_cache.session_key = "dflash2-tp2-real";
         return input;
     };
@@ -221,7 +221,7 @@ int exercise_prefix_reuse(ninfer::Engine& engine) {
     question.role = ninfer::ChatRole::User;
     question.parts.push_back(
         ninfer::MessagePart{.kind  = ninfer::MessagePartKind::Text,
-                            .text  = "Quanto fa 17*23? Rispondi col solo numero.",
+                            .text  = "What is 17*23? Answer with the number only.",
                             .media = {}});
     followup.messages.push_back(std::move(question));
     const ninfer::GenerationResult second =

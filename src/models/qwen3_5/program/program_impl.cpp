@@ -651,8 +651,10 @@ MemorySummary ProgramImpl::memory_summary() const noexcept {
     out.kv_capacity     = kv_capacity;
     out.kv_cache        = kv_storage;
     const auto& weights = parameters.model.storage_stats();
-    out.weights = ArenaMemorySummary{weights.device_capacity_bytes, weights.device_capacity_bytes,
-                                     weights.device_capacity_bytes};
+    // The summary describes rank 0's device; at tp 2 the model's total spans both ranks.
+    const std::size_t weight_bytes =
+        peer ? weights.per_device_capacity_bytes[0] : weights.device_capacity_bytes;
+    out.weights = ArenaMemorySummary{weight_bytes, weight_bytes, weight_bytes};
     out.sequence =
         ArenaMemorySummary{persistent.capacity(), persistent.used(), persistent.peak_used()};
     std::size_t active_handoff_bytes = 0;
