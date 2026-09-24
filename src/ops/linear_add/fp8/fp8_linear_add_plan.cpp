@@ -32,10 +32,11 @@ Fp8LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_row
     }
     if (policy == LinearPolicy::A16Only) { return Fp8LinearAddRoute::A16; }
     if (!allows_a8(policy)) { throw std::invalid_argument("fp8 linear_add: unsupported policy"); }
-    // This tree's measured frontier (17 for the [5120,6144] family, 20 for the down family); the
-    // two-device halves inherit the frontier of the family they halve, per resolve_route's
-    // output_family/down_family grouping. The donor's 22/25 belong to its own 5070Ti tuning.
-    const std::int32_t first_a8 = output_family ? 17 : 20;
+    // One constant per family, in fp8_geometry.h (this tree's measured 17 / 20; the fork's
+    // 22 / 25 are its own 5070 Ti tuning). The two-device halves inherit the frontier of the
+    // family they halve, per resolve_route's output_family/down_family grouping.
+    const std::int32_t first_a8 =
+        output_family ? kFp8OutputFamilyFirstA8Tokens : kFp8DownFamilyFirstA8Tokens;
     return tokens >= first_a8 ? Fp8LinearAddRoute::A8 : Fp8LinearAddRoute::A16;
 }
 

@@ -33,6 +33,17 @@ using Fp8N17408K5120             = Fp8Geometry<17408, 5120>;
 using Fp8N124160K5120            = Fp8Geometry<124160, 5120>;
 using Fp8N5120K3072              = Fp8Geometry<5120, 3072>;
 using Fp8N5120K8704              = Fp8Geometry<5120, 8704>;
+
+// First token count at which fp8 linear_add over the attention output ([5120,6144] and its
+// two-device half [5120,3072]) and over the MLP down projection ([5120,17408] and [5120,8704])
+// takes the A8 route. linear() over each half uses the same crossover, so rank 0's linear_add
+// and rank 1's linear() in one row-parallel pair always take the same route.
+// This tree's measured frontiers (the fork's 22 / 25 are its own 5070 Ti tuning): 17 for the
+// [5120,6144] attention-output family and 20 for the MLP down family; the two-device halves
+// inherit the frontier of the family they halve, so rank 0's linear_add and rank 1's linear() in
+// one row-parallel pair always take the same route.
+inline constexpr std::int32_t kFp8OutputFamilyFirstA8Tokens = 17;
+inline constexpr std::int32_t kFp8DownFamilyFirstA8Tokens   = 20;
 using Fp8Activation3072Geometry  = Fp8ActivationGeometry<3072>;
 using Fp8Activation5120Geometry  = Fp8ActivationGeometry<5120>;
 using Fp8Activation6144Geometry  = Fp8ActivationGeometry<6144>;
