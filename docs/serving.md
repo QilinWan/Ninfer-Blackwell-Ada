@@ -969,9 +969,11 @@ have no peer access. In CUDA Graph decode, an all-reduce of one request's activa
 state across the verified columns) instead runs one kernel per GPU that exchanges the two halves
 through a small pinned host mailbox, which costs far less than the staged copies' event chain;
 wider multi-request payloads keep the copies. Both transports give identical results.
-`--no-tp-mailbox` keeps every all-reduce on the copies, for comparison. If a mailbox exchange ever
-waits about half a second for the other GPU, the round fails with an error instead of returning a
-diverged result.
+The mailbox is used only when the two GPUs have no peer access (the P2P line of the startup log
+says which); with direct P2P the copies stay the transport. `--no-tp-mailbox` keeps every
+all-reduce on the copies, for comparison. If a mailbox exchange ever waits too long for the other
+GPU, the two ranks' results have diverged: the round fails with an error, and so does every later
+round, so the server must be restarted.
 
 Rank 1 has no Host copy of its KV or state, so the Host tiers are off: an omitted
 `--host-state-slots` or `--host-kv-mib` becomes `0`, and a nonzero value is rejected. Every

@@ -25,8 +25,9 @@
 // leak nothing. The only preconditions are those of every captured decode graph: its launches
 // are issued on one stream, and every launch executes each captured exchange on both devices.
 //
-// FAULTS. A poller that waits ~0.4 s for its peer gives up, skips its combine and sets a sticky
-// hang word; hang_reported() exposes it to the owner, which fails the round.
+// FAULTS. A poller that waits too long for its peer (kPeerSpinLimit, qualified below the 2 s display
+// watchdog by test_allreduce) gives up, skips its combine and sets a sticky hang word;
+// hang_reported() exposes it to the owner, which fails that round and every later one.
 
 #include "core/device.h" // ExecutionContext
 

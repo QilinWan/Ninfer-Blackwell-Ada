@@ -58,10 +58,11 @@
 
 namespace ninfer::ops::detail {
 
-// ~0.4 s of __nanosleep(100) polling before the poller gives up and reports: long enough for any
-// legitimate skew between the two ranks' schedules, short enough to surface a missing peer well
-// before a display watchdog would reset the device.
-inline constexpr std::uint32_t kPeerSpinLimit = 4000000u;
+// Probes of __nanosleep(100) polling before the poller gives up and reports. One probe costs about
+// 0.8 us (4M probes measured 3.25 s on two RTX 5070 Ti), so the limit is ~0.8 s: long enough for
+// any legitimate skew between the two ranks' schedules, short enough to surface a missing peer
+// before a 2 s display watchdog would reset the device (test_allreduce checks the bound).
+inline constexpr std::uint32_t kPeerSpinLimit = 1000000u;
 
 // A poller re-reads the pinned hang word once every this many probes, so a round that already
 // reported a hang does not spin the full limit again at every later exchange.

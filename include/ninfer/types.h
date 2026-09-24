@@ -203,9 +203,10 @@ struct EngineOptions {
     // Requires `enable_vision`.
     std::optional<std::uint32_t> max_vision_tokens;
     bool use_cuda_graph                    = true;
-    // At tp 2 with CUDA Graphs, the captured decode all-reduces exchange through pinned host
-    // memory (ops::PeerMailbox) instead of event-ordered cross-device copies; false keeps the
-    // copies. Both transports produce identical results. Unused at tp 1.
+    // At tp 2 with CUDA Graphs and GPUs without peer access, the captured decode all-reduces
+    // exchange through pinned host memory (ops::PeerMailbox) instead of event-ordered
+    // cross-device copies; false keeps the copies, and so does direct P2P. Both transports
+    // produce identical results. Unused at tp 1.
     bool tp_mailbox = true;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;

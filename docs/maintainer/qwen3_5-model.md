@@ -380,7 +380,7 @@ bit-identical. Epoch flags need no host reset between launches, and two alternat
 any capture (see [`peer_exchange.cuh`](../../src/ops/kernel/peer_exchange.cuh)), so the pinned
 slab is `2 x 2 x slot` bytes (160 KiB for MTP3 at hidden 5120). The mailbox is declared before
 `peer_events` and the graph families and so outlives the kernels that address it. A poller that
-waits about 0.4 s sets a sticky hang word; `synchronize_devices()` checks it after every retired
+waits about 0.8 s sets a sticky hang word; `synchronize_devices()` checks it after every retired
 round and throws, since the ranks' results diverged.
 
 ## Vision and multimodal positions

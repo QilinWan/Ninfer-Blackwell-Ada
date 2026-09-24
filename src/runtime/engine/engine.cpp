@@ -162,6 +162,9 @@ public:
         : options(runtime::normalize_engine_options(std::move(engine_options))),
           execution(initialize_execution(options, peer_access)), device(execution.primary()) {
         nvtx::ScopedRange load_range(nvtx::Name::EngineLoad, nvtx::Category::Runtime);
+        // The mailbox is qualified between GPUs without peer access, where the staged copies go
+        // through host memory. With direct P2P the copies stay the captured transport.
+        if (peer_access) { options.tp_mailbox = false; }
         auto constructed  = runtime::construct_model(options, execution);
         active              = std::move(constructed.instance);
         load                = std::move(constructed.load);

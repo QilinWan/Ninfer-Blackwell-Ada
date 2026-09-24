@@ -545,6 +545,36 @@ void run_captured_microbenchmark(const char* label, const ExecutionContext& ec,
               << " (informative)\n";
 }
 
+// A peer that never arrives: only rank 0 enqueues its half. The poller must give up, report the
+// hang and return before a display watchdog (about 2 s on Windows WDDM) would reset the device.
+int run_mailbox_hang_case(const ExecutionContext& ec) {
+    constexpr std::size_t kBytes         = 256;
+    constexpr double kWatchdogSeconds    = 2.0;
+    ops::PeerMailbox lonely(ec, kBytes);
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(kBytes);
+    buffer_0.fill(0);
+    cuda_check(cudaDeviceSynchronize(), "mailbox hang setup");
+    const int slot   = lonely.take_capture_slot();
+    const auto start = std::chrono::steady_clock::now();
+    lonely.enqueue_exchange_sum(0, slot, buffer_0.data(), kBytes, ec.dev[0]->stream);
+    cuda_check(cudaStreamSynchronize(ec.dev[0]->stream), "mailbox hang exchange");
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::cout << "mailbox hang reported after " << seconds << " s\n";
+    int failures = 0;
+    if (!lonely.hang_reported()) {
+        std::cerr << "mailbox hang: a missing peer was not reported\n";
+        ++failures;
+    }
+    if (seconds > kWatchdogSeconds) {
+        std::cerr << "mailbox hang: the poller gave up after " << seconds
+                  << " s, past the display watchdog\n";
+        ++failures;
+    }
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -607,6 +637,8 @@ int main() {
     // Unaligned vector count: 5121 elements are not whole 16-byte vectors.
     failures += run_captured_case("captured [5121] stays staged", 5121, 1, 3, false, ec,
                                   mailbox_events, &mailbox);
+
+    failures += run_mailbox_hang_case(ec);
 
     failures += run_microbenchmark(ec, events);
     run_captured_microbenchmark("staged", ec, events);
