@@ -17,6 +17,9 @@ namespace ninfer::ops::detail {
                                                                     std::int32_t min_tokens,
                                                                     std::int32_t max_tokens);
 
+// Every launcher and nvfp4_attn_input_dispatch() serves the whole [14336,5120] parent and one
+// device's [7168,5120] two-device shard (nvfp4_attn_input_output.cuh), selected by `weight.n`. Both
+// keep the parent's K, so their routes, route cutoffs and workspace capacity are the same.
 void nvfp4_attn_input_a16_launch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
                                  Tensor& k, Tensor& v, cudaStream_t stream);
 

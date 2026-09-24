@@ -36,6 +36,10 @@ using Nvfp4N5120K17408 = Nvfp4Geometry<5120, 17408>;
 using Nvfp4N17408K5120 = Nvfp4Geometry<17408, 5120>;
 using Nvfp4N5120K8704  = Nvfp4Geometry<5120, 8704>;
 using Nvfp4N5120K3072  = Nvfp4Geometry<5120, 3072>;
+// Two-device head-local shards of the fused attention [14336,5120] and GDN [16384,5120] input
+// parents. They are problems of those projections' own kernels only, not Linear registrations.
+using Nvfp4N7168K5120 = Nvfp4Geometry<7168, 5120>;
+using Nvfp4N8192K5120 = Nvfp4Geometry<8192, 5120>;
 
 // First token count at which nvfp4 linear_add over the attention output ([5120,6144] and its
 // two-device half [5120,3072]) and over the MLP down projection ([5120,17408] and [5120,8704])

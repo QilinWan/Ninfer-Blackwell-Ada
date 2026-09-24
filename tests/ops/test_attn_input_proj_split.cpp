@@ -14,9 +14,10 @@
 // defect fails as a weight mismatch instead of passing as a comparison with itself.
 //
 // Each rank evaluates, per output row, the dot product the single-device kernel evaluates for the
-// same parent row, so two BF16 ulp of the largest output bounds the difference. Only FP8 shards
-// are registered. Every case needs two CUDA devices in one process and the suite reports 77 with
-// fewer. The registry probe is host-only and runs first.
+// same parent row, so two BF16 ulp of the largest output bounds the difference. FP8 and NVFP4
+// shards are registered; an NVFP4 shard's A4 route quantizes the same activation with the same
+// input divisor as the parent's. Every case needs two CUDA devices in one process and the suite
+// reports 77 with fewer. The registry probe is host-only and runs first.
 #include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/attn_input_proj.h"
 
@@ -62,29 +63,38 @@ constexpr std::array<const char*, 4> kSectionName{"q", "k", "gate", "v"};
 // 2u of the largest output (one to two BF16 ulp, see kBf16UnitRoundoff) and of relative L2.
 constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 
-qw::PackedWeight make_fp8(std::int32_t n, std::uint32_t seed, std::int32_t row_origin) {
-    qw::PatternedWeightOptions options;
-    options.row_origin              = row_origin;
-    options.decorrelate_coordinates = true;
-    return qw::make_patterned_weight(QType::FP8_E4M3FN_ROW_BF16, n, kHidden, seed, options);
-}
-
-// Stacks FP8 row blocks of one K into one standalone weight: the codes, then the row scales at the
-// next 256-byte boundary, the layout the fixture and validate_fp8_weight() use.
-qw::PackedWeight stack_fp8_rows(const std::vector<qw::PackedWeight>& blocks) {
-    std::int32_t n = 0;
+// Stacks NVFP4 or FP8 row blocks of one K into one standalone weight: the codes, then the scales
+// at the next 256-byte boundary, the layout the fixture and the format validators use, then the
+// NVFP4 weight divisor. Every plane of both formats is addressed by whole rows (the NVFP4 scale
+// plane by 128-row tiles, which every section height is a multiple of), so the planes concatenate.
+qw::PackedWeight stack_rows(const std::vector<qw::PackedWeight>& blocks) {
+    const Weight& first = blocks.front().weight;
+    const bool nvfp4    = first.qtype == QType::NVFP4;
+    std::int32_t n      = 0;
     for (const qw::PackedWeight& block : blocks) {
-        if (block.weight.qtype != QType::FP8_E4M3FN_ROW_BF16 || block.weight.k != kHidden) {
-            throw std::invalid_argument("stack_fp8_rows: blocks must be FP8 with K=5120");
+        if (block.weight.qtype != first.qtype || block.weight.k != kHidden ||
+            (!nvfp4 && first.qtype != QType::FP8_E4M3FN_ROW_BF16) ||
+            (nvfp4 && ((block.weight.n % 128) != 0 ||
+                       block.weight.weight_scale_divisor != first.weight_scale_divisor))) {
+            throw std::invalid_argument("stack_rows: blocks do not stack");
         }
         n += block.weight.n;
     }
     qw::PackedWeight stacked = blocks.front();
-    stacked.code_plane_bytes = static_cast<std::uint64_t>(n) * kHidden;
+    stacked.code_plane_bytes = 0;
+    stacked.scale_plane_bytes = 0;
+    for (const qw::PackedWeight& block : blocks) {
+        stacked.code_plane_bytes += block.code_plane_bytes;
+        stacked.scale_plane_bytes += block.scale_plane_bytes;
+    }
     stacked.scale_plane_offset =
         (stacked.code_plane_bytes + 255U) & ~static_cast<std::uint64_t>(255U);
-    stacked.scale_plane_bytes = static_cast<std::uint64_t>(n) * 2;
-    stacked.payload.assign(stacked.scale_plane_offset + stacked.scale_plane_bytes, 0);
+    std::size_t total = stacked.scale_plane_offset + stacked.scale_plane_bytes;
+    if (nvfp4) {
+        stacked.weight_divisor_offset = total;
+        total += sizeof(float);
+    }
+    stacked.payload.assign(total, 0);
     std::size_t code_offset  = 0;
     std::size_t scale_offset = stacked.scale_plane_offset;
     for (const qw::PackedWeight& block : blocks) {
@@ -95,6 +105,11 @@ qw::PackedWeight stack_fp8_rows(const std::vector<qw::PackedWeight>& blocks) {
         code_offset += block.code_plane_bytes;
         scale_offset += block.scale_plane_bytes;
     }
+    if (nvfp4) {
+        std::memcpy(stacked.payload.data() + stacked.weight_divisor_offset,
+                    blocks.front().payload.data() + blocks.front().weight_divisor_offset,
+                    sizeof(float));
+    }
     Weight& weight         = stacked.weight;
     weight.payload         = stacked.payload.data();
     weight.payload_bytes   = stacked.payload.size();
@@ -103,15 +118,19 @@ qw::PackedWeight stack_fp8_rows(const std::vector<qw::PackedWeight>& blocks) {
     weight.n               = n;
     weight.shape[0]        = n;
     weight.padded_shape[0] = n;
-    weight.scale_ne[0]     = n;
-    weight.scale_nb[1]     = static_cast<std::int64_t>(n) * 2;
-    weight.scale_nb[2]     = weight.scale_nb[1];
-    weight.scale_nb[3]     = weight.scale_nb[1];
+    if (!nvfp4) {
+        // One BF16 multiplier per output row.
+        weight.scale_ne[0] = n;
+        weight.scale_nb[1] = static_cast<std::int64_t>(n) * 2;
+        weight.scale_nb[2] = weight.scale_nb[1];
+        weight.scale_nb[3] = weight.scale_nb[1];
+    }
     stacked.dequant.clear();
     return stacked;
 }
 
-// Rows and columns straddling the FP8 tiles, the section boundaries, and the block's last index.
+// Rows and columns straddling the FP8 tiles, the NVFP4 32- and 128-row scale tiles, the section
+// boundaries, and the block's last index.
 std::vector<std::int32_t> seam_samples(std::int32_t extent) {
     const std::vector<std::int32_t> probes{0,  1,   15,  16,  31,  32,         63,
                                            64, 127, 128, 511, 512, extent / 2, extent - 1};
@@ -172,27 +191,28 @@ std::size_t bf16_bytes(std::int32_t rows, std::int32_t tokens) {
            sizeof(std::uint16_t);
 }
 
-int run_fp8_case(const ExecutionContext& ec, std::uint32_t seed,
-                 const std::vector<std::int32_t>& token_counts,
-                 const std::vector<ops::LinearPolicy>& policies) {
-    const std::string head = "fp8 attn_input_proj";
+int run_case(const ExecutionContext& ec, QType qtype, std::uint32_t seed,
+             const std::vector<std::int32_t>& token_counts,
+             const std::vector<ops::LinearPolicy>& policies) {
+    const std::string head =
+        std::string(qtype == QType::NVFP4 ? "nvfp4" : "fp8") + " attn_input_proj";
     std::cout << head << " [" << kParentRows << ',' << kHidden << "] -> [" << kShardRows << ','
               << kHidden << "] per rank\n";
 
     int failures                  = 0;
-    const qw::PackedWeight parent = make_fp8(kParentRows, seed, 0);
+    const qw::PackedWeight parent = make_weight(qtype, kParentRows, kHidden, seed, 0, 0);
     std::array<std::optional<qw::PackedWeight>, 2> shard;
     for (int rank = 0; rank < 2; ++rank) {
         std::vector<qw::PackedWeight> blocks;
         for (std::size_t section = 0; section < 4; ++section) {
             const std::int32_t rows       = kShardSectionRows[section];
             const std::int32_t parent_row = kSectionBegin[section] + rank * rows;
-            blocks.push_back(make_fp8(rows, seed, parent_row));
+            blocks.push_back(make_weight(qtype, rows, kHidden, seed, parent_row, 0));
             failures += verify_section(head + " rank " + std::to_string(rank) + " " +
                                            kSectionName[section] + " block",
                                        parent, blocks.back(), parent_row, 0, rows);
         }
-        shard[static_cast<std::size_t>(rank)].emplace(stack_fp8_rows(blocks));
+        shard[static_cast<std::size_t>(rank)].emplace(stack_rows(blocks));
         std::int32_t shard_row = 0;
         for (std::size_t section = 0; section < 4; ++section) {
             const std::int32_t rows = kShardSectionRows[section];
@@ -243,7 +263,7 @@ int run_fp8_case(const ExecutionContext& ec, std::uint32_t seed,
                 reference[section]->fill(0xff);
             }
             const std::size_t reference_capacity = ops::attn_input_proj_workspace_capacity_bytes(
-                QType::FP8_E4M3FN_ROW_BF16, kParentRows, kHidden, policy, tokens, tokens);
+                qtype, kParentRows, kHidden, policy, tokens, tokens);
             DeviceArena reference_arena(std::max<std::size_t>(reference_capacity, 1));
             const Tensor reference_x(parent_x.p, DType::BF16, {kHidden, tokens});
             Tensor reference_q(reference[0]->data(), DType::BF16, {kQRows, tokens});
@@ -266,8 +286,8 @@ int run_fp8_case(const ExecutionContext& ec, std::uint32_t seed,
 
             // Split form: rank r owns heads r of every section.
             const std::size_t split_capacity =
-                ops::attn_input_proj_column_parallel_workspace_capacity_bytes(
-                    QType::FP8_E4M3FN_ROW_BF16, policy, tokens, tokens);
+                ops::attn_input_proj_column_parallel_workspace_capacity_bytes(qtype, policy, tokens,
+                                                                              tokens);
             std::array<std::array<std::optional<GuardedDeviceBuffer>, 4>, 2> output;
             std::array<std::optional<DeviceArena>, 2> arena;
             for (std::size_t rank = 0; rank < 2; ++rank) {
@@ -324,29 +344,33 @@ int run_fp8_case(const ExecutionContext& ec, std::uint32_t seed,
 // The workspace query is host-only, so the registry is checked even where parity must skip.
 int verify_registry() {
     int failures = 0;
-    for (const ops::LinearPolicy policy :
-         {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4}) {
-        for (const std::int32_t tokens : {1, 4, 5, 33, 1024}) {
-            try {
-                const std::size_t shard =
-                    ops::attn_input_proj_column_parallel_workspace_capacity_bytes(
-                        QType::FP8_E4M3FN_ROW_BF16, policy, tokens, tokens);
-                const std::size_t whole = ops::attn_input_proj_workspace_capacity_bytes(
-                    QType::FP8_E4M3FN_ROW_BF16, kParentRows, kHidden, policy, tokens, tokens);
-                if (shard != whole) {
-                    std::cerr << "registry: FP8 shard capacity " << shard
-                              << " differs from the parent's " << whole << " at "
-                              << policy_name(policy) << " T=" << tokens << '\n';
+    for (const QType qtype : {QType::FP8_E4M3FN_ROW_BF16, QType::NVFP4}) {
+        for (const ops::LinearPolicy policy :
+             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4}) {
+            for (const std::int32_t tokens : {1, 3, 4, 5, 33, 1024}) {
+                try {
+                    const std::size_t shard =
+                        ops::attn_input_proj_column_parallel_workspace_capacity_bytes(
+                            qtype, policy, tokens, tokens);
+                    const std::size_t whole = ops::attn_input_proj_workspace_capacity_bytes(
+                        qtype, kParentRows, kHidden, policy, tokens, tokens);
+                    if (shard != whole) {
+                        std::cerr << "registry: qtype " << static_cast<int>(qtype)
+                                  << " shard capacity " << shard << " differs from the parent's "
+                                  << whole << " at " << policy_name(policy) << " T=" << tokens
+                                  << '\n';
+                        ++failures;
+                    }
+                } catch (const std::exception& error) {
+                    std::cerr << "registry: qtype " << static_cast<int>(qtype) << " shard "
+                              << policy_name(policy) << " T=" << tokens
+                              << " rejected: " << error.what() << '\n';
                     ++failures;
                 }
-            } catch (const std::exception& error) {
-                std::cerr << "registry: FP8 shard " << policy_name(policy) << " T=" << tokens
-                          << " rejected: " << error.what() << '\n';
-                ++failures;
             }
         }
     }
-    for (const QType qtype : {QType::BF16, QType::NVFP4, QType::Q4_G64_FP16, QType::Q8_G32_FP16}) {
+    for (const QType qtype : {QType::BF16, QType::Q4_G64_FP16, QType::Q8_G32_FP16}) {
         try {
             (void)ops::attn_input_proj_column_parallel_workspace_capacity_bytes(
                 qtype, ops::LinearPolicy::A16Only, 1, 1);
@@ -416,7 +440,7 @@ int verify_split_rejections(const ExecutionContext& ec) {
         other.layout = QuantLayout::BlockScaleK16M128x4;
         call({1, 1}, {weight, other}, {kHidden, kHidden}, ec);
     });
-    expect_throw("unregistered NVFP4 shard", [&] {
+    expect_throw("NVFP4 shard without a payload", [&] {
         Weight nvfp4 = weight;
         nvfp4.qtype  = QType::NVFP4;
         nvfp4.layout = QuantLayout::BlockScaleK16M128x4;
@@ -463,9 +487,14 @@ int main() {
         failures += verify_split_rejections(ec);
         // T reaches the A16 decode (1), SIMT (2..5), K-split MMA (6..33) and GEMM routes, the A8
         // crossover (5) and each A8 tile band up to the prefill tile.
-        failures += run_fp8_case(
-            ec, 46U, {1, 2, 4, 5, 6, 33, 34, 64, 65, 129, 145, 1024},
+        failures += run_case(
+            ec, QType::FP8_E4M3FN_ROW_BF16, 46U, {1, 2, 4, 5, 6, 33, 34, 64, 65, 129, 145, 1024},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
+        // T reaches the A16 decode (1) and SIMT chunks (2..33), the W4A4 crossover (3/4), each
+        // W4A4 MMA tile band and the TMA route (1024).
+        failures += run_case(ec, QType::NVFP4, 47U,
+                             {1, 2, 3, 4, 5, 32, 33, 64, 65, 97, 129, 193, 385, 513, 1024},
+                             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4});
     } catch (const std::exception& error) {
         std::cerr << "attn_input_proj split: " << error.what() << '\n';
         return 1;

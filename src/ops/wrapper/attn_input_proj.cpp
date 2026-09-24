@@ -162,11 +162,14 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& q, Te
     detail::q8_attn_input_dispatch(x, weight, q, gate, k, v, stream);
 }
 
-// One rank of the column-parallel form: an FP8 [7168,5120] head-local shard of the fused parent.
+// One rank of the column-parallel form: an FP8 or NVFP4 [7168,5120] head-local shard of the fused
+// parent.
 void validate_column_parallel_rank(const Tensor& x, const Weight& weight, const Tensor& q,
                                    const Tensor& gate, const Tensor& k, const Tensor& v,
                                    LinearPolicy policy) {
     validate_policy(policy);
+    static_assert(detail::Fp8N7168K5120::kOutputRows == detail::Nvfp4N7168K5120::kOutputRows &&
+                  detail::Fp8N7168K5120::kInputRows == detail::Nvfp4N7168K5120::kInputRows);
     constexpr std::int32_t kHidden = detail::Fp8N7168K5120::kInputRows;
     constexpr std::int32_t kQRows  = 3072;
     constexpr std::int32_t kKvRows = 512;
@@ -178,9 +181,17 @@ void validate_column_parallel_rank(const Tensor& x, const Weight& weight, const 
     require_matrix(gate, kQRows, cols, "gate");
     require_matrix(k, kKvRows, cols, "k");
     require_matrix(v, kKvRows, cols, "v");
+    if (weight.qtype == QType::NVFP4) {
+        detail::validate_nvfp4_weight(weight, "nvfp4 attn_input_proj column-parallel");
+        if (weight.n != kRows || weight.k != kHidden) {
+            throw std::invalid_argument(
+                "nvfp4 attn_input_proj column-parallel: unsupported shard shape");
+        }
+        return;
+    }
     if (weight.qtype != QType::FP8_E4M3FN_ROW_BF16) {
-        throw std::invalid_argument(
-            "attn_input_proj column-parallel: only FP8_E4M3FN_ROW_BF16 shards are registered");
+        throw std::invalid_argument("attn_input_proj column-parallel: only FP8_E4M3FN_ROW_BF16 and "
+                                    "NVFP4 shards are registered");
     }
     detail::validate_fp8_weight(weight, "fp8 attn_input_proj column-parallel");
     if (weight.n != kRows || weight.k != kHidden) {
@@ -293,12 +304,23 @@ std::size_t attn_input_proj_column_parallel_workspace_capacity_bytes(QType shard
                                                                      std::int32_t min_tokens,
                                                                      std::int32_t max_tokens) {
     validate_policy(policy);
-    if (shard_qtype != QType::FP8_E4M3FN_ROW_BF16) {
-        throw std::invalid_argument(
-            "attn_input_proj column-parallel workspace: unsupported shard qtype");
-    }
     // The shard keeps the parent's input rows, and the workspace depends only on T and K.
-    return detail::fp8_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
+    switch (shard_qtype) {
+    case QType::FP8_E4M3FN_ROW_BF16:
+        return detail::fp8_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
+    case QType::NVFP4:
+        return detail::nvfp4_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
+    case QType::BF16:
+    case QType::Q4_G64_FP16:
+    case QType::Q5_G64_FP16:
+    case QType::Q6_G64_FP16:
+    case QType::Q8_G32_FP16:
+    case QType::FP32:
+    case QType::INT32:
+        break;
+    }
+    throw std::invalid_argument(
+        "attn_input_proj column-parallel workspace: unsupported shard qtype");
 }
 
 void attn_input_proj_column_parallel(
@@ -329,8 +351,15 @@ void attn_input_proj_column_parallel(
     std::array<Tensor, 2> v_out{v[0], v[1]};
     detail::for_each_rank(ec, [&](int rank) {
         const auto slot = static_cast<std::size_t>(rank);
-        detail::fp8_attn_input_dispatch(x[slot], w[slot], q_out[slot], gate_out[slot], k_out[slot],
-                                        v_out[slot], policy, workspace[slot], ec.dev[slot]->stream);
+        if (w[slot].qtype == QType::NVFP4) {
+            detail::nvfp4_attn_input_dispatch(x[slot], w[slot], q_out[slot], gate_out[slot],
+                                              k_out[slot], v_out[slot], policy, workspace[slot],
+                                              ec.dev[slot]->stream);
+        } else {
+            detail::fp8_attn_input_dispatch(x[slot], w[slot], q_out[slot], gate_out[slot],
+                                            k_out[slot], v_out[slot], policy, workspace[slot],
+                                            ec.dev[slot]->stream);
+        }
     });
 }
 
