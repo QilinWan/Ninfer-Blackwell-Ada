@@ -45,8 +45,9 @@ and execution packages. Beyond the prior work above it adds: correct
 concurrent requests at tp 2 (per-lane KV binding), prefix reuse at tp 2 with
 and without MTP, --spec mtp at tp 2, Vision at tp 2 (--vision-device), the
 epoch-flagged PeerMailbox inside captured decode graphs, logits gathered on
-rank 0, a CUDA Graph allowance sized from measurement, and the tests that
-qualify them. Single-GPU (--tp 1) behaviour is intended to match upstream.
+rank 0, a CUDA Graph allowance sized from measurement, NVFP4 split projections
+(attention and GDN input projections, row-parallel outputs) for all-NVFP4
+artifacts, and the tests that qualify them. Single-GPU (--tp 1) behaviour is intended to match upstream.
 The full list of changes is the git history on top of the upstream commit.
 
 Vendored dependencies retain their own license files under third_party/.

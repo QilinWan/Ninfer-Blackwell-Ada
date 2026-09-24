@@ -17,13 +17,17 @@ An all-NVFP4 `.ninfer` v3 artifact of Qwen3.8-27B built from the
 [QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4](https://huggingface.co/QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4)
 checkpoint (quantization-aware training, every layer projection in NVFP4), for the
 [two-GPU tensor-parallel fork of NInfer](https://github.com/ValerioDolci/ninfer-tp2). Compared with the
-official `qwen3_8_27b_nvfp4.ninfer` (NVFP4 MLP, FP8 attention and GDN projections) it needs **17.0 GiB of
-weights instead of 20.9**, which on two 16 GB boards buys either ~2 GiB per board or the full 262,144-token
-context with Vision and 8 device state slots.
+official `qwen3_8_27b_nvfp4.ninfer` (NVFP4 MLP in layers 0-55, FP8 elsewhere) it needs **17.0 GiB of
+weights instead of 20.9**, which on two 16 GB boards buys either ~2 GiB per board or the full
+262,144-token context with 8 device state slots (with Vision on the donor's tree; this tree rejects
+`--vision` at `--tp 2`).
 
 - **Weights:** 512 projections NVFP4 (imported as encoded by QUASAR: codes, block scales and global scale,
-  no requantization), `lm_head` and embedding FP8 rows (the official method), GDN `a`/`b` projections and
-  norms BF16 (as stored). Components: text, vision, MTP (the DFlash2 drafter is not included).
+  no requantization), `lm_head` and embedding FP8 rows (the official method), GDN `a`/`b` projections
+  decoded from QUASAR's NVFP4 to BF16 (the runtime wants them unquantized), norms as stored. Vision tower
+  and MTP head are read from the BF16 copies inside the QUASAR checkpoint and quantized with the official
+  `_optional` choices (Q4-Q8). Components: text, vision, MTP (the DFlash2 drafter is not included).
+- **Source revision:** `QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4` at `15d2e47b`.
 - **Size:** 17.4 GB on disk. At `--tp 2` with the production flags below: 13,083 / 12,743 MiB per board
   (official NVFP4 artifact: 15,035 / 14,695).
 
@@ -31,18 +35,20 @@ context with Vision and 8 device state slots.
 
 | Source | Role | License |
 |---|---|---|
-| [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) | base model (architecture, vision, MTP head) | Apache-2.0 |
-| [QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4](https://huggingface.co/QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4) | NVFP4 weights (QAT) | Apache-2.0 |
-| [Neroued/ninfer](https://github.com/Neroued/ninfer) | converter, runtime | Apache-2.0 |
+| [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) | base model (architecture; the checkpoint below carries its vision and MTP weights) | Apache-2.0 |
+| [QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4](https://huggingface.co/QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4) | all weights: NVFP4 projections (QAT) plus BF16 vision, MTP, head | Apache-2.0 |
+| [Neroued/ninfer](https://github.com/Neroued/ninfer) | converter (unchanged in the fork), single-GPU runtime | Apache-2.0 |
+| [ValerioDolci/ninfer-tp2](https://github.com/ValerioDolci/ninfer-tp2) | two-GPU runtime this artifact was verified with | Apache-2.0 |
 
 This artifact is redistributed under Apache-2.0. All credit for the quantization goes to the QUASAR-QAT
 authors; this card only documents the conversion and the measurements below.
 
 ## Conversion
 
-Recipe [`quasar_recipe.py`](quasar_recipe.py) (in this directory), run with the converter of this fork
-(commit `d24bffd2` or later — the NVFP4 split projections are needed at `--tp 2`). The QUASAR checkpoint is
-both the `--model` and the `quantized` source; no BF16 copy of Qwen3.8-27B is required:
+Recipe [`quasar_recipe.py`](quasar_recipe.py) (next to this card; at the root of the Hub repository). The
+converter is upstream's (unchanged in the fork); running the result at `--tp 2` needs the fork at commit
+`d24bffd2` or later for the NVFP4 split projections. The QUASAR checkpoint is both the `--model` and the
+`quantized` source; no BF16 copy of Qwen3.8-27B is required. From the root of a `ninfer-tp2` checkout:
 
 ```bash
 python3 -m tools.convert \
@@ -51,21 +57,24 @@ python3 -m tools.convert \
   --source quantized=/path/to/Qwen3.8-27B-QUASAR-NVFP4 \
   --components text,vision,mtp \
   --resource chat_template.jinja=tools/chat_templates/qwen3_8.jinja \
-  --proposal \
+  --proposal --device cpu \
   --out qwen3_8_27b_quasar_nvfp4.ninfer
 ```
 
-The conversion takes about two minutes on a CPU (0.75 GB RAM).
+With `--device cpu` the conversion takes about two minutes (0.75 GB RAM); the default is `cuda`.
 
 ## Serving (production flags on 2× RTX 5070 Ti 16 GB, no P2P)
 
 ```bash
 ninfer-serve qwen3_8_27b_quasar_nvfp4.ninfer --tp 2 --devices 0,1 --kv-dtype int8 \
   --max-context 196608 --kv-capacity 196608 --device-state-slots 4 --max-concurrency 1 \
-  --spec mtp --draft-tokens 3 --vision --vision-device 0 --max-vision-tokens 4096
+  --spec mtp --draft-tokens 3
 ```
 
-262,144 tokens with `--vision` and 8 device state slots also fit. Single GPU (`--tp 1`) needs a 24 GB+ board.
+`--vision` is rejected at `--tp 2` in this tree (the tower and its encode workspace have no place in
+the split layout), so the measurements below were taken without it; on the donor's tree the same
+flags with Vision at 262,144 tokens and 8 device state slots also fit. Single GPU (`--tp 1`) should
+fit a 24 GB+ `sm_120a` board (untested).
 
 ## Measured quality (2026-09-24, this fork at `--tp 2`, flags above, one run per task, T = 0)
 
@@ -86,7 +95,13 @@ at 126k, +1 trial at 8k. Multi-hop at 126k scores 0/4 with both weight sets. Ope
 (chat, streaming, thinking off, tool calls, vision, 32k outputs): 12/12.
 
 Speed at `--tp 2` (eco clocks, 2,100 MHz): decode +9–18 % over the official NVFP4 artifact, prefill
-4,892 t/s at 8k (official 3,920) and 2,521 t/s at 126k (2,238); MTP3 acceptance 94 % over the lm-eval run.
+4,892 t/s at 8k (official 3,920) and 2,521 t/s at 126k (2,238).
+
+Method notes: lm-eval with `max_gen_toks 8192` and the answer read from `content` only; answers left
+empty by an exhausted thinking budget count as wrong (15/308 on MMLU-Pro and 10/200 on IFEval here,
+16/308 and 10/200 on vLLM). The pre-registered rule flagged a summed MMLU-Pro+IFEval shift beyond −2 pt
+against vLLM as "undetermined": the measured sum is −2.3 pt (23 vs 17 discordant items over 508,
+p ≈ 0.43), i.e. within paired noise but reported as such.
 
 ## Limits
 

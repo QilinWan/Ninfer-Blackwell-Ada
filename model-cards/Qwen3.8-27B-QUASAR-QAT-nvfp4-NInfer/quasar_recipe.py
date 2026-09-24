@@ -1,7 +1,9 @@
-"""QUASAR-QAT Qwen3.8-27B NVFP4 -> ninfer (spike 24/09).
-Every projection that QUASAR stores as NVFP4 is imported as-is (codes, block scales and global scale, no
-requantization); projections QUASAR keeps in BF16 (lm_head, and any other ignored linear) become FP8 rows,
-the official qwen3_8_27b_nvfp4 method for the embedding. Vision/MTP follow the official _optional choices."""
+"""QUASAR-QAT Qwen3.8-27B NVFP4 -> ninfer.
+Every large projection that QUASAR stores as NVFP4 is imported as-is (codes, block scales and global scale,
+no requantization). The GDN a/b projections are decoded from NVFP4 to BF16 (the runtime wants them
+unquantized). lm_head, which QUASAR keeps in BF16, and the embedding become FP8 rows (the official
+qwen3_8_27b_nvfp4 method). Vision/MTP follow the official _optional choices. Any other BF16 linear in the
+checkpoint is not handled: `import_encoded` would fail on it."""
 from tools.convert.methods import fp8_row_maxabs, import_encoded
 from tools.convert.official_recipes import FP8, _optional
 
