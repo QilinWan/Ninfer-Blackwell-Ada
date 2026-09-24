@@ -143,6 +143,36 @@ int exercise_dual_device_capture() {
     failures += expect(!capturing(origin.stream) && !capturing(peer.stream),
                        "failed dual-device capture left a stream capturing");
 
+    // A memcpy whose source moves from the origin device to the peer keeps the topology but not
+    // the node's context: the update is refused with ParametersChanged, the refusal the tp 2
+    // decode graphs meet, and update_or_reinstantiate() installs the definition afresh.
+    ninfer::DeviceArena origin_source(sizeof(std::uint32_t));
+    CUDA_CHECK(cudaMemsetAsync(origin_source.base(), 0x12, sizeof(std::uint32_t), origin.stream));
+    peer.bind_to_current_thread();
+    CUDA_CHECK(cudaMemsetAsync(peer_storage.base(), 0x34, sizeof(std::uint32_t), peer.stream));
+    peer.synchronize();
+    origin.bind_to_current_thread();
+    origin.synchronize();
+    ninfer::DecodeGraphDefinition from_origin;
+    from_origin.capture(origin.stream, [&] {
+        CUDA_CHECK(cudaMemcpyAsync(origin_storage.base(), origin_source.base(),
+                                   sizeof(std::uint32_t), cudaMemcpyDefault, origin.stream));
+    });
+    ninfer::DecodeGraphDefinition from_peer;
+    from_peer.capture(origin.stream, [&] {
+        CUDA_CHECK(cudaMemcpyAsync(origin_storage.base(), peer_storage.base(),
+                                   sizeof(std::uint32_t), cudaMemcpyDefault, origin.stream));
+    });
+    ninfer::DecodeGraphExecutable copies;
+    copies.instantiate(from_origin);
+    std::string diagnostic;
+    failures += expect(!copies.update_or_reinstantiate(from_peer, diagnostic),
+                       "a cross-device parameter change did not fall back to instantiation");
+    failures += expect(!diagnostic.empty(), "the instantiation fallback gave no diagnostic");
+    copies.launch(origin.stream);
+    origin.synchronize();
+    failures += expect_value(origin_storage.base(), 0x34343434U, "re-instantiated graph launch");
+
     bool missing_bridge = false;
     try {
         discarded.capture(origin.stream, [] {}, ninfer::DecodeGraphPeerCapture{});
@@ -199,7 +229,8 @@ int main() {
         failures += expect_value(storage.base(), 0x22222222U, "updated graph launch");
 
         // A definition the executable cannot take in place (two nodes against one): update()
-        // throws naming the result, and update_or_reinstantiate() installs it afresh.
+        // throws naming the result, and so does update_or_reinstantiate(), because a topology
+        // change is a profile classification bug, not a driver refusal to patch parameters.
         ninfer::DecodeGraphDefinition reshaped;
         reshaped.capture(device.stream, [&] {
             CUDA_CHECK(cudaMemsetAsync(storage.base(), 0x44, sizeof(std::uint32_t), device.stream));
@@ -213,13 +244,17 @@ int main() {
         }
         failures += expect(rejected, "an impossible graph update was not reported");
         std::string diagnostic;
-        failures += expect(!executable.update_or_reinstantiate(reshaped, diagnostic),
-                           "an impossible graph update did not fall back to instantiation");
-        failures += expect(!diagnostic.empty(), "the instantiation fallback gave no diagnostic");
+        bool topology_thrown = false;
+        try {
+            (void)executable.update_or_reinstantiate(reshaped, diagnostic);
+        } catch (const std::runtime_error&) { topology_thrown = true; }
+        failures += expect(topology_thrown, "a topology change fell back to instantiation");
         executable.launch(device.stream);
         device.synchronize();
-        failures += expect_value(storage.base(), 0x55555555U, "re-instantiated graph launch");
-        failures += expect(executable.update_or_reinstantiate(reshaped, diagnostic),
+        failures += expect_value(storage.base(), 0x22222222U,
+                                 "a rejected topology change replaced the executable");
+
+        failures += expect(executable.update_or_reinstantiate(second, diagnostic),
                            "a same-topology update fell back to instantiation");
 
         failures += check_external_event(device);

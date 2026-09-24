@@ -118,12 +118,15 @@ void install_graph_definition(DecodeGraphFamily& family, DecodeGraphTopology& to
                               std::size_t profile_index, const char* label) {
     if (topology.installed_profile == profile_index) { return; }
     DecodeGraphProfile& profile = family.profiles.at(profile_index);
-    // Try the in-place update first and fall back to instantiation, rather than instantiating
-    // every tp 2 swap outright. Every profile of a class is captured from one body, and at tp 1
-    // and in most tp 2 runs every swap updates in place, which costs microseconds against the
-    // milliseconds of an instantiation; a rejected attempt costs one failed update more. The
-    // rejections seen so far are tp 2 only (MTP, cudaGraphExecUpdateErrorParametersChanged on a
-    // memcpy node, only late in a full ctest run), so they are handled where they occur.
+    if (!family.reinstantiate_rejected_updates) {
+        topology.executable.update(profile.definition);
+        topology.installed_profile = profile_index;
+        return;
+    }
+    // tp 2: every profile of a class is captured from one body, and most swaps update in place in
+    // microseconds. The rejections observed are tp 2 only: ParametersChanged on a cross-device
+    // memcpy node, intermittent, late in long runs, root cause not identified. Such a swap
+    // re-instantiates the same definition instead of failing the round.
     std::string diagnostic;
     if (!topology.executable.update_or_reinstantiate(profile.definition, diagnostic) &&
         !profile.update_rejected) {
@@ -150,6 +153,12 @@ DecodeGraphExecutable& DecodeGraphFamily::install(DecodeGraphProfile& profile, c
 void ProgramImpl::prepare_graphs() {
     if (!use_cuda_graph) { return; }
     nvtx::ScopedRange prepare_range(nvtx::Name::CudaGraphPrepare, nvtx::Category::Graph);
+    // This tree has one speculative family pair (forward and finish), not one per backend, so the
+    // rule covers every family that captures.
+    for (DecodeGraphFamily* family :
+         {&ordinary_graphs, &speculative_forward_graphs, &speculative_finish_graphs}) {
+        family->reinstantiate_rejected_updates = tensor_parallel();
+    }
 
     // The planned graph allowance covers the installed executables and the driver and module
     // state the eager warmups and captures materialize, so the observation spans all of it, on

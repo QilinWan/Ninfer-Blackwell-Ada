@@ -388,14 +388,16 @@ void DecodeGraphExecutable::instantiate(const DecodeGraphDefinition& definition)
     if (!definition.ready()) {
         throw std::logic_error("cannot instantiate an empty CUDA Graph definition");
     }
-    reset();
 
+    // Instantiate before releasing the current executable, so a failed instantiation (out of
+    // memory, for one) leaves the executable this object already held usable.
     cudaGraphExec_t exec  = nullptr;
     const cudaError_t err = cudaGraphInstantiate(&exec, definition.graph_, 0);
     if (err != cudaSuccess) {
         destroy_graph_exec(exec);
         CUDA_CHECK(err);
     }
+    reset();
     exec_ = exec;
 }
 
@@ -428,7 +430,8 @@ bool DecodeGraphExecutable::update_or_reinstantiate(const DecodeGraphDefinition&
     if (err == cudaSuccess && result.result == cudaGraphExecUpdateSuccess) { return true; }
     const std::string detail = describe_update_failure(err, result);
     if (err != cudaSuccess) { (void)cudaGetLastError(); }
-    if (err != cudaErrorGraphExecUpdateFailure) {
+    if (err != cudaErrorGraphExecUpdateFailure ||
+        result.result != cudaGraphExecUpdateErrorParametersChanged) {
         throw std::runtime_error("CUDA Graph executable update failed: " + detail);
     }
     // A rejected update leaves the executable as it was; replace it with a fresh one.
