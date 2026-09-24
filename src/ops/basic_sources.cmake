@@ -5,6 +5,7 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/launcher/add_bias.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/argmax.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/cast.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/launcher/concat_rows.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/causal_conv1d.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/embed_gather.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/gdn_gating.cu"

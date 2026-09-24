@@ -1,6 +1,7 @@
 #include "models/qwen3_5/execution/tp.h"
 
 #include "models/qwen3_5/execution/linear.h"
+#include "ops/launcher/concat_rows.h"
 
 #include <cuda_runtime.h>
 
@@ -82,10 +83,7 @@ void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
     if (!events.live()) { throw std::invalid_argument("tensor-parallel logits: dead events"); }
     project_column_parallel(hidden, head, partial, workspace, execution);
 
-    const std::size_t element  = sizeof(std::uint16_t);
-    const std::size_t bytes0   = static_cast<std::size_t>(rows0) * element;
-    const std::size_t bytes1   = static_cast<std::size_t>(rows1) * element;
-    const std::size_t pitch    = bytes0 + bytes1;
+    const std::size_t bytes1   = static_cast<std::size_t>(rows1) * sizeof(std::uint16_t);
     const auto height          = static_cast<std::size_t>(columns);
     const DeviceContext& rank0 = *execution.dev[0];
     const DeviceContext& rank1 = *execution.dev[1];
@@ -100,11 +98,10 @@ void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
     CUDA_CHECK(cudaMemcpyAsync(staging.data, partial[1].data, bytes1 * height,
                                cudaMemcpyDeviceToDevice, rank0.stream));
     CUDA_CHECK(cudaEventRecord(events.pull_done(0), rank0.stream));
-    CUDA_CHECK(cudaMemcpy2DAsync(logits.data, pitch, partial[0].data, bytes0, bytes0, height,
-                                 cudaMemcpyDeviceToDevice, rank0.stream));
-    CUDA_CHECK(cudaMemcpy2DAsync(static_cast<std::uint8_t*>(logits.data) + bytes0, pitch,
-                                 staging.data, bytes1, bytes1, height, cudaMemcpyDeviceToDevice,
-                                 rank0.stream));
+    // A kernel, not two pitched copies: the column count and the buffers differ between the CUDA
+    // Graph profiles of one class, and a captured 2D memcpy node cannot take such a change in place.
+    Tensor gathered = logits;
+    ops::detail::concat_rows_bf16_launch(partial[0], staging, gathered, rank0.stream);
     // Rank 1 may overwrite partial[1] only after rank 0's pull has read it.
     CUDA_CHECK(cudaSetDevice(rank1.device));
     CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, events.pull_done(0), 0));
