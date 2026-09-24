@@ -149,6 +149,13 @@ the Blackwell build; on Ada use the `groupwise-int` artifact.
 | Qwen3.8-27B | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) |
 | Qwen3.6-35B-A3B | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) |
 
+This fork adds a sixth artifact for the two-GPU mode: an all-NVFP4 conversion of the QUASAR-QAT checkpoint
+(17.0 GiB of weights instead of 20.9), verified at `--tp 2` on two 16 GB boards.
+
+| Model | Weights | Artifact | Download and model card |
+|---|---|---|---|
+| Qwen3.8-27B QUASAR-QAT | `nvfp4` (all projections) | `qwen3_8_27b_quasar_nvfp4.ninfer` | [Qwen3.8-27B QUASAR-QAT NVFP4](https://huggingface.co/Feyd89/Qwen3.8-27B-QUASAR-QAT-nvfp4-NInfer) · [card and recipe](model-cards/Qwen3.8-27B-QUASAR-QAT-nvfp4-NInfer/README.md) |
+
 Each v3 `.ninfer` artifact carries model configuration, encoded weights, logical bindings and
 frontend resources. Runtime execution uses those facts with the implemented model and Op
 capabilities. You can also [convert your own weights](docs/weight-conversion.md), reuse an official
@@ -368,6 +375,14 @@ The Qwen3.6 rows used temperature 0.6 and presence penalty 1.0; the Qwen3.8 rows
 limit. Text evaluation used 262,144 tokens except Qwen3.8-27B NVFP4, which used 252,928 tokens to
 fit the RTX 5090 after weights. Each score is one sample per problem; model cards contain the
 correct/total counts and evaluation notes.
+
+The two-GPU mode and the QUASAR-QAT artifact were checked separately, with lm-evaluation-harness through
+the OpenAI route at `--tp 2` on two RTX 5070 Ti (thinking on, MTP3, one sample per problem) and compared
+per item against the same weights on vLLM 0.30: GSM8K 0.985 vs 0.975, MMLU-Pro (308) 0.789 vs 0.802,
+IFEval (200) 0.870 vs 0.880 — no paired difference is significant (exact McNemar p ≥ 0.48). COMET on
+FLORES-200 it↔en and a synthetic long-context suite at 8k/126k match the official NVFP4 artifact on the
+same runtime. Details, sources and limits are in the
+[QUASAR-QAT model card](model-cards/Qwen3.8-27B-QUASAR-QAT-nvfp4-NInfer/README.md).
 
 ## Startup notes
 
