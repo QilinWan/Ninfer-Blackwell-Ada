@@ -66,7 +66,7 @@ constexpr std::uint32_t kLongMaxContext    = 16384;
 constexpr std::uint32_t kMinimumLongPrompt = 4096;
 constexpr std::uint32_t kDraftTokens       = 3;
 constexpr std::size_t kMinimumCommonPrefix = 24;
-constexpr double kMinimumAcceptance        = 0.25;
+constexpr double kMinimumAcceptance        = 0.35;
 constexpr std::uint32_t kRepeatedRequests  = 14;
 
 ninfer::EngineOptions engine_options(const char* artifact, bool mtp, bool optimized) {
