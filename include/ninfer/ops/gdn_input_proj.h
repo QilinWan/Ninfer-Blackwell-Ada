@@ -242,8 +242,8 @@ void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z
 // Tensor-parallel forms over two devices.
 //
 // Rank r owns key heads [8r,8r+8) and value heads [24r,24r+24). Its weight is a standalone
-// FP8_E4M3FN_ROW_BF16 RowScale [8192,5120] parent concatenating, in the parent's Q|K|V|Z order,
-// its rows of every section:
+// FP8_E4M3FN_ROW_BF16 RowScale or NVFP4 BlockScaleK16M128x4 [8192,5120] parent concatenating, in
+// the parent's Q|K|V|Z order, its rows of every section:
 //
 //   Q rows [1024r,+1024) | K [2048+1024r,+1024) | V [4096+3072r,+3072) | Z [10240+3072r,+3072)
 //
@@ -256,9 +256,10 @@ void gdn_input_proj_conv_record(const Tensor& x, const Weight& query_key_value_z
 // before the convolution, where the single-device form may fuse the two. Other formats are not
 // registered.
 //
-// Every requirement of the single-device FP8 form applies per rank at the shard profile, and each
-// form's activation-quantization frontier is that of the same form over the [16384,5120] parent
-// (the snapshot and record forms use A8 from W=10 at B=1 and from B*W=9 when batched). Rank
+// Every requirement of the single-device form of the same format applies per rank at the shard
+// profile, and each form's activation-quantization frontier is that of the same form over the
+// [16384,5120] parent (FP8 snapshot and record forms use A8 from W=10 at B=1 and from B*W=9 when
+// batched; NVFP4 ones use A4 under AllowA4 from W=4 at B=1 and at every batched W). Rank
 // r's tensors, weight and workspace must be resident on `ec.dev[r]`, and its work is enqueued on
 // `ec.dev[r]->stream`. Inputs staged on a device's legacy default stream must be retired before
 // the call; the call does not synchronize and preserves the current device.
@@ -296,7 +297,7 @@ void gdn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
  * conv_states [5120,3,Slots], query/key [1024,W,B], value/z [3072,W,B], and the I32 selectors of
  * the single-device form. The B/W domain, state contract and non-overlap rules are those of the
  * single-parent form. Each rank projects its shard into a BF16 [5120,W*B] workspace plane and then
- * applies the convolution, so the shard does not use the fused FP8 snapshot kernels.
+ * applies the convolution, so the shard does not use the fused FP8 or NVFP4 snapshot kernels.
  */
 void gdn_input_proj_conv_snapshot_column_parallel(
     const std::array<Tensor, 2>& x, const std::array<Weight, 2>& query_key_value_z_weight,

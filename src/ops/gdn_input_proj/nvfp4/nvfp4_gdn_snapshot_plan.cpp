@@ -45,6 +45,12 @@ Nvfp4GdnConvPlan nvfp4_gdn_conv_resolve_plan(LinearPolicy policy, std::int32_t t
     return {Nvfp4GdnConvScheduleId::Materialized};
 }
 
+bool nvfp4_gdn_conv_uses_a4(LinearPolicy policy, std::int32_t width, std::int32_t batch_size) {
+    return nvfp4_gdn_conv_resolve_plan(policy, width, batch_size).schedule ==
+               Nvfp4GdnConvScheduleId::Materialized &&
+           allows_a4(policy);
+}
+
 std::size_t nvfp4_gdn_snapshot_workspace_capacity_bytes(LinearPolicy policy,
                                                         std::int32_t min_tokens,
                                                         std::int32_t max_tokens) {

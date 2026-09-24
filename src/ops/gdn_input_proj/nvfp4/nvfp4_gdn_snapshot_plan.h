@@ -25,6 +25,12 @@ struct Nvfp4GdnConvPlan {
 Nvfp4GdnConvPlan nvfp4_gdn_conv_resolve_plan(LinearPolicy policy, std::int32_t tokens,
                                              std::int32_t batch_size);
 
+// Whether the snapshot and record forms quantize the activation for this policy and B/W block:
+// both take W4A4 exactly on the materialized schedule under an A4 policy. Their frontier differs
+// from the bare projection's (every T under AllowA4); the two-device shard follows it too.
+[[nodiscard]] bool nvfp4_gdn_conv_uses_a4(LinearPolicy policy, std::int32_t width,
+                                          std::int32_t batch_size);
+
 [[nodiscard]] std::size_t nvfp4_gdn_snapshot_workspace_capacity_bytes(LinearPolicy policy,
                                                                       std::int32_t min_tokens,
                                                                       std::int32_t max_tokens);

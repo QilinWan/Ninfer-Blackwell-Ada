@@ -1,5 +1,5 @@
 // Two-device parity of the GDN projection split forms: gdn_input_proj_column_parallel and its
-// convolution snapshot/record forms (FP8), and gdn_gating_proj_column_parallel (BF16).
+// convolution snapshot/record forms (FP8 and NVFP4), and gdn_gating_proj_column_parallel (BF16).
 //
 // Each case runs the single-device Op on device 0 over the whole parent and the split form over
 // the two shards, then compares every section a rank owns with the matching rows of the
@@ -13,8 +13,10 @@
 //
 // Column-parallel ranks evaluate the dot products the whole-parent kernel evaluates for their
 // rows, so the result is expected to match to rounding: two BF16 ulp of the largest output and of
-// relative L2. The single-device FP8 snapshot and record may use fused kernels that keep the new
-// projection private, while the shard composes it through a BF16 plane, which is the same bound.
+// relative L2. The single-device FP8 and NVFP4 snapshot and record may use fused kernels that keep
+// the new projection private, while the shard composes it through a BF16 plane, which is the same
+// bound. An NVFP4 shard's A4 route quantizes the same activation with the same input divisor as
+// the parent's.
 //
 // Every device case needs two CUDA devices in one process and the suite reports 77 with fewer.
 // The registry probe is host-only and runs first.
@@ -53,7 +55,10 @@ namespace {
 
 constexpr ReductionCriterion kSplitCriterion{2.0 * kBf16UnitRoundoff, 0.0, 2.0 * kBf16UnitRoundoff};
 
-constexpr QType kFp8 = QType::FP8_E4M3FN_ROW_BF16;
+constexpr QType kFp8  = QType::FP8_E4M3FN_ROW_BF16;
+constexpr QType kNvfp4 = QType::NVFP4;
+
+const char* format_name(QType qtype) { return qtype == kNvfp4 ? "nvfp4" : "fp8"; }
 
 constexpr std::int32_t kHidden     = 5120;
 constexpr std::int32_t kKeyRows    = 2048;
@@ -113,34 +118,58 @@ int verify_section_map() {
     return 0;
 }
 
-// Rank `rank`'s standalone FP8 shard, gathered from the parent's stored code rows and row scales.
+// Rank `rank`'s standalone shard, gathered from the parent's stored code rows and their scales: one
+// BF16 multiplier per row for FP8, 128-row scale tiles for NVFP4 (every section starts on one),
+// then the NVFP4 weight divisor.
 qw::PackedWeight gather_shard(const qw::PackedWeight& parent, int rank) {
-    const auto k = static_cast<std::size_t>(parent.weight.k);
+    const bool nvfp4      = parent.weight.qtype == kNvfp4;
+    const auto code_bytes = static_cast<std::size_t>(parent.code_plane_bytes / kParentRows);
+    // Rows that share one block of the scale plane, and that block's bytes.
+    const std::int32_t scale_rows = nvfp4 ? 128 : 1;
+    const auto scale_bytes        = static_cast<std::size_t>(parent.scale_plane_bytes) /
+                             static_cast<std::size_t>(kParentRows / scale_rows);
     qw::PackedWeight shard;
-    shard.code_plane_bytes   = static_cast<std::uint64_t>(kShardRows) * k;
+    shard.code_plane_bytes   = static_cast<std::uint64_t>(kShardRows) * code_bytes;
     shard.scale_plane_offset = (shard.code_plane_bytes + 255U) & ~std::uint64_t{255};
-    shard.scale_plane_bytes  = static_cast<std::uint64_t>(kShardRows) * 2;
-    shard.payload.assign(
-        static_cast<std::size_t>(shard.scale_plane_offset + shard.scale_plane_bytes), 0);
+    shard.scale_plane_bytes  = static_cast<std::uint64_t>(kShardRows / scale_rows) * scale_bytes;
+    std::size_t total =
+        static_cast<std::size_t>(shard.scale_plane_offset + shard.scale_plane_bytes);
+    if (nvfp4) {
+        shard.weight_divisor_offset = total;
+        total += sizeof(float);
+    }
+    shard.payload.assign(total, 0);
     for (std::int32_t local = 0; local < kShardRows; ++local) {
         const auto source = static_cast<std::size_t>(parent_row(local, rank));
         const auto target = static_cast<std::size_t>(local);
-        std::memcpy(shard.payload.data() + target * k, parent.payload.data() + source * k, k);
-        std::memcpy(shard.payload.data() + shard.scale_plane_offset + target * 2,
-                    parent.payload.data() + parent.scale_plane_offset + source * 2, 2);
+        std::memcpy(shard.payload.data() + target * code_bytes,
+                    parent.payload.data() + source * code_bytes, code_bytes);
+        if ((local % scale_rows) == 0) {
+            std::memcpy(shard.payload.data() + shard.scale_plane_offset +
+                            target / scale_rows * scale_bytes,
+                        parent.payload.data() + parent.scale_plane_offset +
+                            source / scale_rows * scale_bytes,
+                        scale_bytes);
+        }
+    }
+    if (nvfp4) {
+        std::memcpy(shard.payload.data() + shard.weight_divisor_offset,
+                    parent.payload.data() + parent.weight_divisor_offset, sizeof(float));
     }
     shard.weight                 = parent.weight;
     shard.weight.n               = kShardRows;
     shard.weight.shape[0]        = kShardRows;
     shard.weight.padded_shape[0] = kShardRows;
-    shard.weight.scale_ne[0]     = kShardRows;
-    shard.weight.scale_nb[1]     = static_cast<std::int64_t>(kShardRows) * 2;
-    shard.weight.scale_nb[2]     = shard.weight.scale_nb[1];
-    shard.weight.scale_nb[3]     = shard.weight.scale_nb[1];
-    shard.weight.payload         = shard.payload.data();
-    shard.weight.payload_bytes   = shard.payload.size();
-    shard.weight.qdata           = shard.payload.data();
-    shard.weight.scales          = shard.payload.data() + shard.scale_plane_offset;
+    if (!nvfp4) {
+        shard.weight.scale_ne[0] = kShardRows;
+        shard.weight.scale_nb[1] = static_cast<std::int64_t>(kShardRows) * 2;
+        shard.weight.scale_nb[2] = shard.weight.scale_nb[1];
+        shard.weight.scale_nb[3] = shard.weight.scale_nb[1];
+    }
+    shard.weight.payload       = shard.payload.data();
+    shard.weight.payload_bytes = shard.payload.size();
+    shard.weight.qdata         = shard.payload.data();
+    shard.weight.scales        = shard.payload.data() + shard.scale_plane_offset;
     return shard;
 }
 
@@ -195,11 +224,13 @@ bool same_native_weight(const Weight& lhs, const Weight& rhs) {
 }
 
 // The shard as native preparation binds it: one contiguous per-rank parent whose four logical
-// sections are Q, K, V and Z.
+// sections are Q, K, V and Z. An NVFP4 shard carries the parent's weight divisor and, for its A4
+// route, the parent's activation divisor.
 Weight prepare_input_shard(const Weight& stored) {
     const std::array<std::uint64_t, 2> shape{kShardRows, kHidden};
-    const WeightParent parent{weight_geometry(kFp8, QuantLayout::RowScale, shape),
-                              static_cast<const std::byte*>(stored.payload)};
+    const WeightParent parent{weight_geometry(stored.qtype, stored.layout, shape),
+                              static_cast<const std::byte*>(stored.payload),
+                              stored.qtype == kNvfp4 ? stored.weight_scale_divisor : 0.0F};
     const auto rows = [&](std::uint64_t begin, std::uint64_t count) {
         return WeightView{{count, kHidden},
                           {{&parent, begin * kHidden, (begin + count) * kHidden}}};
@@ -208,29 +239,35 @@ Weight prepare_input_shard(const Weight& stored) {
     const WeightView k  = rows(kShardKeyRows, kShardKeyRows);
     const WeightView v  = rows(2 * kShardKeyRows, kShardValueRows);
     const WeightView z  = rows(kShardChannels, kShardValueRows);
-    const auto prepared = ops::prepare_gdn_input_proj_weights({q}, {k}, {v}, {z});
+    const auto policy =
+        stored.qtype == kNvfp4 ? ops::LinearPolicy::AllowA4 : ops::LinearPolicy::A16Only;
+    std::optional<float> divisor;
+    if (stored.qtype == kNvfp4) { divisor = stored.input_scale_divisor; }
+    const auto prepared = ops::prepare_gdn_input_proj_weights(
+        {q, policy, divisor}, {k, policy, divisor}, {v, policy, divisor}, {z, policy, divisor});
     return std::get<ops::SingleProjectionWeight>(prepared).weight;
 }
 
 // Parent, shards and their device copies of the GDN input weight.
 struct InputWeights {
+    QType qtype = kFp8;
     RankWeight parent;
     std::array<RankWeight, 2> shard;
     std::array<Weight, 2> prepared{};
 };
 
-int make_input_weights(const ExecutionContext& ec, std::uint32_t seed, InputWeights& out) {
-    qw::PatternedWeightOptions options;
-    options.decorrelate_coordinates = true;
-    const qw::PackedWeight parent =
-        qw::make_patterned_weight(kFp8, kParentRows, kHidden, seed, options);
+int make_input_weights(const ExecutionContext& ec, QType qtype, std::uint32_t seed,
+                       InputWeights& out) {
+    out.qtype                     = qtype;
+    const qw::PackedWeight parent = make_weight(qtype, kParentRows, kHidden, seed, 0, 0);
     const std::array<qw::PackedWeight, 2> shard{gather_shard(parent, 0), gather_shard(parent, 1)};
-    int failures = 0;
+    const std::string head = std::string(format_name(qtype)) + " gdn_input shard";
+    int failures           = 0;
     for (int rank = 0; rank < 2; ++rank) {
-        failures += verify_shard_rows("fp8 gdn_input shard " + std::to_string(rank), parent,
+        failures += verify_shard_rows(head + " " + std::to_string(rank), parent,
                                       shard[static_cast<std::size_t>(rank)], rank);
     }
-    failures += verify_distinct("fp8 gdn_input shards", shard[0].payload, shard[1].payload);
+    failures += verify_distinct(head + "s", shard[0].payload, shard[1].payload);
     if (failures != 0) { return failures; }
 
     set_device(ec, 0);
@@ -260,16 +297,13 @@ std::vector<float> activation(std::size_t elements, std::uint32_t seed) {
 // gdn_input_proj_column_parallel
 // ================================================================================================
 
-int run_input_case(const ExecutionContext& ec, const InputWeights& weights, std::uint32_t seed) {
-    std::cout << "fp8 gdn_input_proj [" << kParentRows << ',' << kHidden << "] -> [" << kShardRows
-              << ',' << kHidden << "]\n";
+int run_input_case(const ExecutionContext& ec, const InputWeights& weights, std::uint32_t seed,
+                   const std::vector<std::int32_t>& tokens_sweep,
+                   const std::vector<ops::LinearPolicy>& policies) {
+    const QType qtype = weights.qtype;
+    std::cout << format_name(qtype) << " gdn_input_proj [" << kParentRows << ',' << kHidden
+              << "] -> [" << kShardRows << ',' << kHidden << "]\n";
     int failures = 0;
-    // Decode, the SIMT and bounded-MMA frontiers, the A8 threshold and the GEMM schedules.
-    const std::vector<std::int32_t> tokens_sweep{1,  2,  3,  4,  5,  7,  8,   9,
-                                                 16, 17, 33, 64, 65, 97, 128, 300};
-    const std::vector<ops::LinearPolicy> policies{
-        ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4};
-
     for (const std::int32_t tokens : tokens_sweep) {
         const std::vector<float> x_host =
             activation(static_cast<std::size_t>(kHidden) * tokens,
@@ -284,7 +318,8 @@ int run_input_case(const ExecutionContext& ec, const InputWeights& weights, std:
 
         for (const ops::LinearPolicy policy : policies) {
             const std::string label =
-                "fp8 gdn_input T=" + std::to_string(tokens) + " " + policy_name(policy);
+                std::string(format_name(qtype)) + " gdn_input T=" + std::to_string(tokens) + " " +
+                policy_name(policy);
 
             set_device(ec, 0);
             GuardedDeviceBuffer ref_qkv(static_cast<std::size_t>(kChannels) * tokens * 2);
@@ -293,7 +328,7 @@ int run_input_case(const ExecutionContext& ec, const InputWeights& weights, std:
             ref_z.fill(0xff);
             DeviceArena reference_arena(
                 std::max<std::size_t>(ops::gdn_input_proj_workspace_capacity_bytes(
-                                          kFp8, kParentRows, kHidden, policy, tokens, tokens),
+                                          qtype, kParentRows, kHidden, policy, tokens, tokens),
                                       1));
             Tensor reference_qkv(ref_qkv.data(), DType::BF16, {kChannels, tokens});
             Tensor reference_z(ref_z.data(), DType::BF16, {kValueRows, tokens});
@@ -311,7 +346,7 @@ int run_input_case(const ExecutionContext& ec, const InputWeights& weights, std:
 
             const std::size_t capacity =
                 ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(
-                    kFp8, kShardRows, kHidden, policy, tokens, tokens);
+                    qtype, kShardRows, kHidden, policy, tokens, tokens);
             std::array<std::optional<GuardedDeviceBuffer>, 2> qkv_buffer;
             std::array<std::optional<GuardedDeviceBuffer>, 2> z_buffer;
             std::array<std::optional<DeviceArena>, 2> arena;
@@ -580,8 +615,10 @@ int compare_conv_rank(const std::string& label, const ConvResult& shard, const C
 int run_conv_case(const ExecutionContext& ec, const InputWeights& weights,
                   const ConvCase& test_case, ops::LinearPolicy policy, bool record,
                   std::uint32_t seed) {
+    const QType qtype = weights.qtype;
     const std::string label =
-        std::string("fp8 gdn_input_proj_conv_") + (record ? "record" : "snapshot") +
+        std::string(format_name(qtype)) + " gdn_input_proj_conv_" +
+        (record ? "record" : "snapshot") +
         " B=" + std::to_string(test_case.batch) + " W=" + std::to_string(test_case.width) +
         (test_case.mixed ? " mixed " : " ") + policy_name(policy);
     const ConvData data = make_conv_data(test_case, seed);
@@ -596,9 +633,9 @@ int run_conv_case(const ExecutionContext& ec, const InputWeights& weights,
     {
         const std::size_t capacity =
             record ? ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
-                         kFp8, kParentRows, kHidden, policy, data.batch, data.width, data.width)
+                         qtype, kParentRows, kHidden, policy, data.batch, data.width, data.width)
                    : ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
-                         kFp8, kParentRows, kHidden, policy, data.batch, data.width, data.width);
+                         qtype, kParentRows, kHidden, policy, data.batch, data.width, data.width);
         DeviceArena arena(std::max<std::size_t>(capacity, 1));
         cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
         if (record) {
@@ -621,9 +658,9 @@ int run_conv_case(const ExecutionContext& ec, const InputWeights& weights,
     // Split form over the two shards.
     const std::size_t capacity =
         record ? ops::gdn_input_proj_conv_record_column_parallel_workspace_capacity_bytes(
-                     kFp8, kShardRows, kHidden, policy, data.batch, data.width, data.width)
+                     qtype, kShardRows, kHidden, policy, data.batch, data.width, data.width)
                : ops::gdn_input_proj_conv_snapshot_column_parallel_workspace_capacity_bytes(
-                     kFp8, kShardRows, kHidden, policy, data.batch, data.width, data.width);
+                     qtype, kShardRows, kHidden, policy, data.batch, data.width, data.width);
     std::array<std::optional<ConvOperands>, 2> operands;
     std::array<std::optional<DeviceArena>, 2> arena;
     std::array<ConvTensors, 2> t;
@@ -686,7 +723,7 @@ int run_conv_case(const ExecutionContext& ec, const InputWeights& weights,
         }
         const std::size_t snapshot_capacity =
             ops::gdn_input_proj_conv_snapshot_column_parallel_workspace_capacity_bytes(
-                kFp8, kShardRows, kHidden, policy, data.batch, data.width, data.width);
+                qtype, kShardRows, kHidden, policy, data.batch, data.width, data.width);
         std::array<std::optional<DeviceArena>, 2> snapshot_arena;
         for (int rank = 0; rank < 2; ++rank) {
             set_device(ec, rank);
@@ -953,13 +990,40 @@ int verify_registry() {
                 kFp8, kShardRows, kHidden, policy, 8, 2, 16);
         });
     }
+    for (const ops::LinearPolicy policy :
+         {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4}) {
+        for (const std::int32_t tokens : {1, 3, 4, 1024}) {
+            failures += expect_accepted("nvfp4 gdn_input workspace", [&] {
+                const std::size_t bytes =
+                    ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(
+                        kNvfp4, kShardRows, kHidden, policy, tokens, tokens);
+                // The route frontier is the parent's: A4 at every T when the policy permits it.
+                if ((bytes != 0) != ops::allows_a4(policy)) {
+                    throw std::runtime_error("unexpected A4 workspace");
+                }
+            });
+        }
+        // The NVFP4 conv forms register A16 through W=16 at B=1.
+        failures += expect_accepted("nvfp4 gdn snapshot workspace", [&] {
+            (void)ops::gdn_input_proj_conv_snapshot_column_parallel_workspace_capacity_bytes(
+                kNvfp4, kShardRows, kHidden, policy, 1, 1, 16);
+            (void)ops::gdn_input_proj_conv_snapshot_column_parallel_workspace_capacity_bytes(
+                kNvfp4, kShardRows, kHidden, policy, 8, 1, 16);
+        });
+        failures += expect_accepted("nvfp4 gdn record workspace", [&] {
+            (void)ops::gdn_input_proj_conv_record_column_parallel_workspace_capacity_bytes(
+                kNvfp4, kShardRows, kHidden, policy, 1, 2, 16);
+            (void)ops::gdn_input_proj_conv_record_column_parallel_workspace_capacity_bytes(
+                kNvfp4, kShardRows, kHidden, policy, 8, 2, 16);
+        });
+    }
     const auto a16 = ops::LinearPolicy::A16Only;
     failures += expect_invalid("gdn_input parent profile", [&] {
         (void)ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(kFp8, kParentRows,
                                                                            kHidden, a16, 1, 1);
     });
-    failures += expect_invalid("gdn_input NVFP4 shard", [&] {
-        (void)ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(QType::NVFP4, kShardRows,
+    failures += expect_invalid("gdn_input BF16 shard", [&] {
+        (void)ops::gdn_input_proj_column_parallel_workspace_capacity_bytes(QType::BF16, kShardRows,
                                                                            kHidden, a16, 1, 1);
     });
     failures += expect_invalid("gdn_input inverted interval", [&] {
@@ -1031,7 +1095,7 @@ int verify_split_rejections(const ExecutionContext& ec, const InputWeights& weig
         ops::gdn_input_proj_column_parallel(x8, weights.prepared, qkv8, z8,
                                             ops::LinearPolicy::AllowA8, {nullptr, nullptr}, ec);
     });
-    failures += expect_invalid("NVFP4 weight", [&] {
+    failures += expect_invalid("FP8 payload labelled NVFP4", [&] {
         Weight nvfp4 = weights.prepared[0];
         nvfp4.qtype  = QType::NVFP4;
         ops::gdn_input_proj_column_parallel(x, {nvfp4, nvfp4}, qkv, z, ec);
@@ -1062,10 +1126,13 @@ int main() {
 
     const ExecutionContext ec({0, 1});
     InputWeights weights;
-    failures += make_input_weights(ec, 45U, weights);
+    failures += make_input_weights(ec, kFp8, 45U, weights);
     if (failures == 0) {
         failures += verify_split_rejections(ec, weights);
-        failures += run_input_case(ec, weights, 45U);
+        // Decode, the SIMT and bounded-MMA frontiers, the A8 threshold and the GEMM schedules.
+        failures += run_input_case(
+            ec, weights, 45U, {1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 33, 64, 65, 97, 128, 300},
+            {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
         // The conv forms take A8 from W=10 at B=1 and from B*W=9 when batched, not from T=8 as the
         // bare projection does; W=8..10 and B*W=8..9 straddle both frontiers.
         const std::vector<ConvCase> snapshot_cases{{1, 1, false},  {1, 3, false}, {1, 4, false},
@@ -1082,6 +1149,33 @@ int main() {
             }
             for (const ConvCase& test_case : record_cases) {
                 failures += run_conv_case(ec, weights, test_case, policy, true, seed++);
+            }
+        }
+    }
+
+    InputWeights nvfp4_weights;
+    failures += make_input_weights(ec, kNvfp4, 47U, nvfp4_weights);
+    if (failures == 0) {
+        // Decode, the SIMT chunks, each W4A4 MMA tile band and the TMA route (1024).
+        failures += run_input_case(
+            ec, nvfp4_weights, 47U, {1, 2, 3, 4, 5, 17, 32, 33, 64, 65, 97, 129, 193, 300, 1024},
+            {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4});
+        // The NVFP4 conv forms fuse A16 at B=1 through W=3 under AllowA4 (through W=16 under
+        // A16Only) and take A4 from W=4, and when batched at every W; W=3..4 straddle it.
+        const std::vector<ConvCase> snapshot_cases{{1, 1, false}, {1, 3, false}, {1, 4, false},
+                                                   {1, 5, false}, {1, 16, false}, {2, 4, true},
+                                                   {3, 3, false}, {3, 4, true},  {8, 2, false},
+                                                   {2, 16, true}};
+        const std::vector<ConvCase> record_cases{{1, 3, false}, {1, 4, false}, {1, 9, false},
+                                                 {2, 4, false}, {3, 5, true},  {2, 16, false}};
+        std::uint32_t seed = 81U;
+        for (const ops::LinearPolicy policy :
+             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4}) {
+            for (const ConvCase& test_case : snapshot_cases) {
+                failures += run_conv_case(ec, nvfp4_weights, test_case, policy, false, seed++);
+            }
+            for (const ConvCase& test_case : record_cases) {
+                failures += run_conv_case(ec, nvfp4_weights, test_case, policy, true, seed++);
             }
         }
     }
