@@ -60,8 +60,16 @@ plus one of:
 
 | Target | GPU | CUDA toolkit | Extra dependencies | Build flag |
 |---|---|---|---|---|
-| `sm_120a` (upstream) | RTX 5090 | 13.1 validated | FFmpeg dev (`libavformat`, `libavcodec`, `libavutil`, `libswscale`), `libcurl >= 7.85` | default |
+| `sm_120a` (upstream) | RTX 5090 | **>= 13.0** (13.1 built and run here; every 12.x fails) | FFmpeg dev (`libavformat`, `libavcodec`, `libavutil`, `libswscale`), `libcurl >= 7.85` | default |
 | `sm_89` (this fork) | RTX 40 series | **>= 12.8** (12.8 + 13.2 validated) | same; FFmpeg optional with `-DNINFER_ENABLE_VISION=OFF` | `-DCMAKE_CUDA_ARCHITECTURES=89` |
+
+The Blackwell floor is not cosmetic. Outside the tiled wide-column schedules the Q8 k-split and NVFP4
+routes keep their staging union in a plain `__shared__` declaration
+(`src/ops/linear/q8/q8_ksplit_mma.cuh`), and CUDA 12.x ptxas/nvlink still applies the 48 KB static
+shared-memory limit to `sm_120a`. A 12.x build therefore compiles every translation unit and then
+dies at the Ops device link with `uses too much shared data (... 0xc000 max)`; CUDA 13.0 raised that
+limit. The Ada build sidesteps the limit because `NINFER_SM89` routes every union larger than 48 KB
+through the dynamic window instead. Configure refuses a 12.x toolkit for `sm_120a` up front.
 
 CMake accepts exactly those two architectures and rejects anything else, so a mis-set target fails at
 configure time rather than producing a binary that cannot launch.

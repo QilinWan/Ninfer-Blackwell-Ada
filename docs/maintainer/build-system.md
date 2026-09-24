@@ -25,7 +25,10 @@ to model media decoding and remains required when apps are disabled. Curl and sp
 only for product support. A Python 3 interpreter is found when tests are configured. The larger Python
 pytest suites and conversion/evaluation scripts run separately from CMake and CTest.
 
-CUDA 13.1 and Python 3.11 describe the maintained environment, not configuration version gates.
+CUDA 13.1 and Python 3.11 describe the maintained environment. CMake enforces only the toolchain
+floors that have a concrete failure behind them: CUDA >= 13.0 for the `sm_120a` target (12.x caps
+static shared memory at 48 KB on Blackwell, which breaks the Ops device link) and CUDA >= 12.8 for
+the `sm_89` target (`<cuda_fp4.h>`). Python is not gated at all.
 CMake also discovers FFmpeg without imposing library version floors. Actual language/API support
 is exercised by compilation and tests. The libcurl 7.85 minimum has a concrete API basis:
 media acquisition uses `CURLOPT_PROTOCOLS_STR` and `CURLOPT_REDIR_PROTOCOLS_STR`, introduced in
