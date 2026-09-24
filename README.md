@@ -15,6 +15,39 @@
 > - `--tp 1` is meant to behave exactly as upstream. The commits on top of upstream are grouped
 >   so that they can be proposed upstream in pieces.
 >
+> **Known limitations of the two-GPU mode** (read these before trying it on other hardware):
+>
+> - **Hardware.** Verified only on two RTX 5070 Ti 16 GB (sm_120) without peer-to-peer access,
+>   on Linux with CUDA 13.1. Other Blackwell GeForce pairs should work but are untested. A pair
+>   with peer access keeps its all-reduces on direct copies (the host mailbox is only used without
+>   P2P); that path is untested too. Exactly two GPUs: `--tp` accepts 1 or 2.
+> - **Weights.** Only the Qwen3.8-27B NVFP4 artifact (`qwen3_8_27b_nvfp4.ninfer`) is verified.
+>   The MoE model is rejected at startup; the groupwise-int artifacts are untested at `--tp 2`.
+> - **Memory per board.** Each board holds half the weights plus its half of the KV cache, so the
+>   context and the number of retained conversations trade against each other:
+>   - MTP3 runs at 262,144 tokens with 4 device state slots, or at 196,608 with `--vision` and
+>     4 slots (the default 8 slots plus Vision do not fit at 196,608);
+>   - the DFlash2 drafter lives whole on the first GPU, so DFlash2 stops at about 150,000
+>     tokens; at 131,072 it starts with 2 device state slots.
+> - **No host tier.** `--host-state-slots` and `--host-kv-mib` must be 0 at `--tp 2`: retained
+>   conversations live only in the device state slots. With many conversations in parallel the
+>   oldest idle ones are evicted, and their next turn is prefilled again.
+> - **Speculative decoding.** DFlash2 needs `--lm-head-draft` and a drafter without
+>   full-attention layers (the published drafter has none). `--spec dflash` is not supported.
+> - **KV cache types.** `bf16` and `int8` only; `fp8`, `nvfp4` and `k8v4` are rejected.
+> - **Where it pays off.** The gain grows with context: prompt processing is 1.5-2.1x and decode
+>   1.1x at short context to 1.75x at 184K against llama.cpp on the same two boards. On short
+>   prose prompts llama.cpp with MTP was about 8% faster. Measured with one request at a time;
+>   concurrency is tested up to 4 requests.
+> - **Numerics.** The split matmuls sum their two halves in a different order than one GPU does,
+>   so long greedy generations can drift from a single-GPU run of the same weights. Measured
+>   quality matches: GSM8K 0.975-0.98 at `--tp 2`, vLLM on the same weights 0.98.
+> - **Profilers.** Inside captured decode rounds the two GPUs wait for each other for at most
+>   about 0.8 s; if one stalls longer (a profiler that serializes kernels can do that) the engine
+>   stops serving until it is restarted. Use `--no-tp-mailbox` when profiling.
+> - **Upstream.** Based on upstream `bace20dc` (24 September 2026); later upstream changes are
+>   merged by hand.
+>
 > Everything below is the upstream README: its single-RTX-5090 statements describe upstream's
 > product, not this fork's tested configuration.
 
