@@ -386,8 +386,9 @@ sizes it from the rank with less free memory. Direct peer access is used when th
 otherwise the transfers are staged through host memory, which is slower but equivalent. In CUDA
 Graph decode, a single request's all-reduces instead exchange through a small pinned host mailbox,
 one kernel per GPU, with identical results, when the GPUs have no peer access; `--no-tp-mailbox`
-keeps them on the staged copies. Both ranks carry the same immutable YaRN coefficients, because a tensor-parallel round splits heads,
-never the rope scaling.
+keeps them on the staged copies. [`tools/tp2/mailbox_probe.cu`](../tools/README.md#standalone-tp2-mailbox-probe)
+checks the mailbox on a machine without loading a model. Both ranks carry the same immutable YaRN
+coefficients, because a tensor-parallel round splits heads, never the rope scaling.
 
 Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2` of the dense
 architecture with `bf16` or `int8` KV. The MTP head is split like a Text layer and verification

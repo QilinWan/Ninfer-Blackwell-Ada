@@ -47,6 +47,8 @@
 >   about 0.8 s, see below). The copy path works but is slower: about 50-65 tok/s reported with
 >   MTP3 against 110-120 on native Linux with the same cards. Reaching the server from Windows needs a
 >   `netsh interface portproxy` rule to the WSL2 address, which changes at every restart.
+>   [`tools/tp2/mailbox_probe.cu`](tools/README.md#standalone-tp2-mailbox-probe) tells in seconds,
+>   without a model, whether the mailbox works on a machine.
 > - **Weights.** Verified with the Qwen3.8-27B NVFP4 artifact (`qwen3_8_27b_nvfp4.ninfer`: NVFP4
 >   MLP in layers 0-55, FP8 elsewhere) and with an all-NVFP4 conversion of the QUASAR-QAT
 >   checkpoint (every large layer projection NVFP4; GDN `a`/`b` decoded to BF16, head and embedding

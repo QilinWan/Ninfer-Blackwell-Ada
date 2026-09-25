@@ -21,6 +21,7 @@ Python tools are independent of CMake; there is no `NINFER_BUILD_TOOLS` option.
 | Exercise a resident HTTP server | [`smoke/serve_contract.py`](smoke/serve_contract.py) |
 | Exercise thinking preservation through a managed server | [`smoke/serve_thinking_preservation.py`](smoke/serve_thinking_preservation.py) |
 | Measure the physical HBM read/copy ceiling | [`hbm_bandwidth_probe.cu`](hbm_bandwidth_probe.cu); [build command](#standalone-hbm-probe) |
+| Check whether the two-GPU mailbox transport works on a machine | [`tp2/mailbox_probe.cu`](tp2/mailbox_probe.cu); [build command](#standalone-tp2-mailbox-probe) |
 
 ## Standalone HBM probe
 
@@ -33,6 +34,25 @@ nvcc -O3 -std=c++17 -arch=sm_120a tools/hbm_bandwidth_probe.cu \
   -o build/hbm_bandwidth_probe
 ./build/hbm_bandwidth_probe
 ```
+
+## Standalone TP2 mailbox probe
+
+`--tp 2` exchanges its all-reduce operands through a pinned-host mailbox (one kernel per GPU) when
+the GPUs have no peer access, and falls back to driver-staged copies when the startup probe finds
+the mailbox timing out or slow (WSL2 does that, [issue #1](https://github.com/ValerioDolci/ninfer-tp2/issues/1)).
+`tools/tp2/mailbox_probe.cu` runs the same check without the engine or a model — the production
+exchange kernel inline, nvcc and the CUDA runtime only — and prints driver, devices, peer access,
+the startup exchange, the per-exchange cost of both transports and a verdict:
+
+```bash
+nvcc -O2 -std=c++20 -arch=sm_120a -o build/mailbox_probe tools/tp2/mailbox_probe.cu
+./build/mailbox_probe            # devices 0 1; add `--simulate-hang` to see the timeout report
+```
+
+Exit status 0 means the mailbox is usable, 2 that the engine will run on copies (`--no-tp-mailbox`
+on builds without the startup probe), 1 a CUDA error or wrong sums. On 2× RTX 5070 Ti without
+P2P (driver 595.91, CUDA 13.1): startup exchange 0.03 ms, 8.7 µs per 10 KiB exchange in a graph
+against 17.2 µs on copies; a missing peer is reported after about 0.8 s.
 
 ## Artifact workflow
 
