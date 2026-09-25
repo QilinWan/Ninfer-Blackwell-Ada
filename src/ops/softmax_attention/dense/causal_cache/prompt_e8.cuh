@@ -63,9 +63,11 @@ __device__ __forceinline__ int4 causal_prompt_e8_dequant_f16x8(const std::uint8_
     unsigned packed[4];
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
+        // Byte i packs codes 2i (low nibble, even dim) and 2i + 1 (high nibble, odd dim);
+        // both nibbles of all four bytes are consumed, so the int2 load covers every dim.
         const __half2 code2 = __floats2half2_rn(
-            static_cast<float>(kv_cache_e8_unpack_i4(p[2 * i], 0)),
-            static_cast<float>(kv_cache_e8_unpack_i4(p[2 * i + 1], 0)));
+            static_cast<float>(kv_cache_e8_unpack_i4(p[i], 0)),
+            static_cast<float>(kv_cache_e8_unpack_i4(p[i], 1)));
         const __half2 value2 = __hmul2(code2, s2);
         packed[i]            = *reinterpret_cast<const unsigned*>(&value2);
     }
