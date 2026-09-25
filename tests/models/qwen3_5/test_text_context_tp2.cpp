@@ -142,9 +142,12 @@ public:
     }
 
     ~SyntheticArtifact() {
+        if (keep_) { return; }
         std::error_code error;
         std::filesystem::remove_all(directory_, error);
     }
+    // Leaves the written artifact on disk (the `write DIR` mode of this executable).
+    void keep() noexcept { keep_ = true; }
 
     SyntheticArtifact(const SyntheticArtifact&)            = delete;
     SyntheticArtifact& operator=(const SyntheticArtifact&) = delete;
@@ -325,13 +328,17 @@ private:
     }
 
     std::filesystem::path directory_;
+    bool keep_ = false;
     Json root_;
     std::vector<Object> objects_;
     std::uint64_t cursor_ = 0;
 };
 
+// As in the official tokenizer, <think> and </think> are added but not special: the frontend
+// requires </think> to survive a decode that skips special tokens.
 Json added_token(int id, const std::string& content) {
-    return {{"id", id},        {"content", content}, {"special", true},    {"single_word", false},
+    const bool special = content != "<think>" && content != "</think>";
+    return {{"id", id},        {"content", content}, {"special", special}, {"single_word", false},
             {"lstrip", false}, {"rstrip", false},    {"normalized", false}};
 }
 
@@ -367,7 +374,12 @@ void add_tokenizer(SyntheticArtifact& file) {
                   Json{{"model", {{"type", "BPE"}, {"vocab", vocab}, {"merges", Json::array()}}},
                        {"added_tokens", added}}
                       .dump());
-    file.resource("tokenizer_config.json", Json{{"added_tokens_decoder", decoder}}.dump());
+    // The Engine frontend (tp 1 golden gate) also validates the Qwen prefix semantics and pad token.
+    file.resource("tokenizer_config.json", Json{{"added_tokens_decoder", decoder},
+                                                {"add_bos_token", false},
+                                                {"add_prefix_space", false},
+                                                {"pad_token", "<|endoftext|>"}}
+                                               .dump());
     file.resource("generation_config.json", Json{{"eos_token_id", {256, 258}}}.dump());
     file.resource("chat_template.jinja", "synthetic");
 }
@@ -934,6 +946,20 @@ int consistency() {
 } // namespace
 
 int main(int argc, char** argv) {
+    // `write DIR` writes the synthetic artifact to DIR/model.ninfer and keeps it: the tp 1 golden
+    // gate (tools/golden) runs it through this fork and through upstream. No device is needed.
+    if (argc > 2 && std::string(argv[1]) == "write") {
+        try {
+            SyntheticArtifact file{std::filesystem::path(argv[2])};
+            const auto entry = write_synthetic_model(file);
+            file.keep();
+            std::cout << entry.string() << '\n';
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
     const bool real = argc > 1 && std::string(argv[1]) == "real";
     int devices     = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices < 2) {
