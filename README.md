@@ -17,6 +17,20 @@
 >   concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md). At clocks capped to
 >   2.1 GHz, one request, decode at 0 / 16K context: plain 58 / 57, MTP3 110 / 117, DFlash2 118 / 120.
 >   GSM8K 0.975-0.985, the same as vLLM on the same weights.
+> - **Related forks and prior art.** The two-GPU design originates in Wael Mansour's
+>   [ninfer-tp2-1m](https://github.com/wamansou/ninfer-tp2-1m) (August 2026, 2× RTX 5090, YaRN 1M),
+>   continued by giocom, ivanov84 (pinned-host mailbox) and parallelno (DFlash2 at tp 2), all
+>   credited in [NOTICE](NOTICE). A sibling continuation of the same line,
+>   [lynx-gt/ninfer-tp2-5060ti](https://github.com/lynx-gt/ninfer-tp2-5060ti) (upstream base of
+>   2026-08-20, qualified on 2× RTX 5060 Ti, KV tiers, `/health` self-heal, no Vision or DFlash2 at
+>   tp 2), decodes at the same rate as this fork on the same pair with the official artifact
+>   (server-side, MTP3, C=1: 128-144 vs 130-143 tok/s from 0 to 184K context, measured 2026-09-25).
+>   What this fork adds on top of that shared core is the upstream v3 base, Vision, DFlash2 and
+>   concurrent requests at tp 2, the NVFP4 split projections, and the benchmark suite comparison.
+>   A QUASAR-QAT NInfer artifact (with DFlash2) was published first by
+>   [MirkoCovizzi](https://huggingface.co/MirkoCovizzi/Qwen3.8-27B-QUASAR-NVFP4-NInfer) (2026-08-26);
+>   the one here differs in recipe and components, see its card. Single-GPU ports to other
+>   architectures exist too: [Don-Chad/ninfer-3090](https://github.com/Don-Chad/ninfer-3090) (sm_86).
 > - `--tp 1` is meant to behave exactly as upstream. The commits on top of upstream are grouped
 >   so that they can be proposed upstream in pieces.
 >

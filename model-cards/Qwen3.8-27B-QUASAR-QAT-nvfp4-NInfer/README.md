@@ -43,6 +43,13 @@ weights instead of 20.9**, which on two 16 GB boards buys either ~2 GiB per boar
 This artifact is redistributed under Apache-2.0. All credit for the quantization goes to the QUASAR-QAT
 authors; this card only documents the conversion and the measurements below.
 
+**Prior art.** A QUASAR-QAT NInfer artifact was published first by
+[MirkoCovizzi/Qwen3.8-27B-QUASAR-NVFP4-NInfer](https://huggingface.co/MirkoCovizzi/Qwen3.8-27B-QUASAR-NVFP4-NInfer)
+(2026-08-26, with the DFlash2 drafter, MTP and Vision, built with upstream's converter from the BF16 base
+plus the QUASAR checkpoint). This one was built independently from the QUASAR checkpoint alone
+(`import_encoded`, no BF16 copy), leaves the DFlash2 drafter out so that 196,608 tokens with Vision fit two
+16 GB boards with MTP3, and is the artifact the two-GPU measurements above were taken with.
+
 ## Conversion
 
 Recipe [`quasar_recipe.py`](quasar_recipe.py) (next to this card; at the root of the Hub repository). The
