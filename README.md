@@ -266,7 +266,9 @@ Python 3 interpreter. Both presets use `build/` and explicitly reset the build o
 Machine-specific compiler and Python paths belong in the ignored `CMakeUserPresets.json`.
 See [build organization and configuration](docs/maintainer/build-system.md) for details.
 
-There is no install target or packaged binary distribution; run NInfer from its source build tree.
+There is no install target. The [Releases](https://github.com/ValerioDolci/ninfer-tp2/releases) page
+carries prebuilt binaries for one distribution (see [Releases](#releases)); otherwise run NInfer
+from its source build tree.
 Python tools run independently of CMake; the standalone HBM probe has its own
 [build command](tools/README.md#standalone-hbm-probe).
 
@@ -433,6 +435,21 @@ sources and limits are in the
 GPU residency is fixed at process startup. `--spec` selects speculative decoding residency, and
 `--vision` independently selects Vision residency. Qwen3.6-35B-A3B DFlash can be combined with
 Vision; it accelerates generated-text decode after multimodal prefill, not Vision encode itself.
+
+## Releases
+
+Each release ships a tarball `ninfer-tp2-<version>-linux-x86_64-sm120a-<distro>.tar.gz` with the
+stripped `ninfer`, `ninfer-serve` and `ninfer-perplexity` binaries, the CUDA runtime library they
+link, `serve-tp2.sh` (the two-GPU production profile, environment overrides for host, port,
+devices and context) and `SHA256SUMS`; the tarball's own digest sits next to it. The binaries link
+the distribution's FFmpeg and libcurl, so they run on that distribution (Ubuntu 26.04 for the
+current release) with an NVIDIA driver that supports CUDA 13.1; elsewhere build from source or
+use Docker. `tools/release/package.sh` builds the tarball from a Release build tree.
+
+```bash
+tar -xzf ninfer-tp2-*.tar.gz && cd ninfer-tp2-*/ && sha256sum -c SHA256SUMS
+./serve-tp2.sh models/qwen3_8_27b_quasar_nvfp4.ninfer
+```
 
 ## Docker
 
