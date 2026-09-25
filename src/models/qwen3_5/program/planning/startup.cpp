@@ -737,8 +737,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         throw std::invalid_argument(
             "loaded components do not match the requested execution options");
     }
+    // The draft shares the YaRN-extended positional frame: it only attends a short sliding
+    // window, so the absolute position matters far less than for the target, but its declared
+    // native window would otherwise veto a context the target can already serve.  Scale it by the
+    // same factor and let the measured acceptance rate decide whether it is still useful.
+    const double draft_scale = options.yarn.factor > 1.0F
+                                   ? static_cast<double>(options.yarn.factor)
+                                   : 1.0;
     if (parameters.draft &&
-        options.max_context > parameters.model.config().draft->max_position_embeddings) {
+        static_cast<double>(options.max_context) >
+            static_cast<double>(parameters.model.config().draft->max_position_embeddings) *
+                draft_scale) {
         throw std::invalid_argument("max_context exceeds the selected draft position capacity");
     }
     // YaRN scales the positional transform, so the usable window is the artifact native window
