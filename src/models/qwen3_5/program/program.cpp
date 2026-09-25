@@ -298,6 +298,8 @@ MemorySummary Program::memory_summary() const noexcept { return impl_->memory_su
 
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 
+const TpTransportStatus& Program::tp_transport() const noexcept { return impl_->tp_transport_status; }
+
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                       DeviceContext& device, const EngineOptions& options) {
     return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));

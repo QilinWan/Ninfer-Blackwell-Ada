@@ -460,6 +460,23 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                       engine.devices.at(0), engine.devices.at(1),
                       service.load_summary().peer_access ? "on" : "off (host-staged copies)",
                       cache.enabled ? *cache.device_state_slots : 0U);
+        {
+            const LoadSummary& load = service.load_summary();
+            if (!load.tp_transport.empty()) {
+                if (load.tp_mailbox_probe_ms > 0.0) {
+                    logger_->info("tensor parallel | captured all-reduces: {} | mailbox probe {:.2f} ms",
+                                  load.tp_transport, load.tp_mailbox_probe_ms);
+                } else {
+                    logger_->info("tensor parallel | captured all-reduces: {}", load.tp_transport);
+                }
+            }
+            if (!load.tp_mailbox_fallback.empty()) {
+                logger_->warn("tensor parallel | pinned-host mailbox disabled: {}; decode uses the "
+                              "cross-device copies (slower). This is expected under WSL2; pass "
+                              "--no-tp-mailbox to skip the probe",
+                              load.tp_mailbox_fallback);
+            }
+        }
         // Measured against the planned per-device allowance, to calibrate the tp 2 constants.
         // An overrun only uses device memory the KV sizing left unreserved, so it warns instead
         // of failing startup.

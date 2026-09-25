@@ -44,7 +44,8 @@
 >   on two RTX 5070 Ti (Windows 11, WSL2 Ubuntu 24.04, CUDA 13.1 from the `wsl-ubuntu` repo): build as
 >   on Linux, keep the weights on the Linux filesystem, and start with **`--no-tp-mailbox`**, because
 >   the pinned-host mailbox exchange times out under WSL2's GPU virtualization (the spin limit is
->   about 0.8 s, see below). The copy path works but is slower: about 50-65 tok/s reported with
+>   about 0.8 s, see below; since the startup probe the engine drops the mailbox by itself in that
+>   case, so the flag only saves the ~1 s probe). The copy path works but is slower: about 50-65 tok/s reported with
 >   MTP3 against 110-120 on native Linux with the same cards. Reaching the server from Windows needs a
 >   `netsh interface portproxy` rule to the WSL2 address, which changes at every restart.
 >   [`tools/tp2/mailbox_probe.cu`](tools/README.md#standalone-tp2-mailbox-probe) tells in seconds,
@@ -78,7 +79,11 @@
 >   quality matches: GSM8K 0.975-0.98 at `--tp 2`, vLLM on the same weights 0.98.
 > - **Profilers.** Inside captured decode rounds the two GPUs wait for each other for at most
 >   about 0.8 s; if one stalls longer (a profiler that serializes kernels can do that) the engine
->   stops serving until it is restarted. Use `--no-tp-mailbox` when profiling.
+>   stops serving until it is restarted. Use `--no-tp-mailbox` when profiling. At startup the
+>   engine exchanges one probe payload through the mailbox before capturing any decode graph; if
+>   the probe times out or takes more than 50 ms (WSL2's GPU virtualization is the known case) the
+>   mailbox is dropped and the captured all-reduces use the cross-device copies, with a warning in
+>   the log. `NINFER_TP_MAILBOX_PROBE=off` skips the probe, `=fail` forces the fallback.
 > - **Upstream.** Based on upstream `bace20dc` (24 September 2026); later upstream changes are
 >   merged by hand.
 >

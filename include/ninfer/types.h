@@ -1178,6 +1178,14 @@ struct LoadSummary {
     // tp 2: the driver granted direct peer access between the two devices. When false every
     // cross-device transfer is staged through Host memory by CUDA. Always false at tp 1.
     bool peer_access = false;
+    // tp 2 with CUDA Graphs: the transport of the captured all-reduces once startup is done.
+    // "mailbox" (the pinned-host mailbox passed its startup probe), "copies" (cross-device copies:
+    // --no-tp-mailbox, direct peer access, no CUDA Graphs, or the probe failed), empty at tp 1.
+    std::string tp_transport;
+    // Round trip of the startup probe exchange in milliseconds; 0 when no probe ran.
+    double tp_mailbox_probe_ms = 0.0;
+    // Why the mailbox was dropped after its probe ("timed out", "took N ms"); empty otherwise.
+    std::string tp_mailbox_fallback;
     ContextCostSummary context_cost;
 };
 

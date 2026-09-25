@@ -7,8 +7,12 @@
 #include "ninfer/ops/target_logprobs.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <string_view>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -162,7 +166,12 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                         (static_cast<std::size_t>(draft_window) + 1U) * sizeof(std::uint16_t);
                     peer_mailbox.emplace(*execution_context, slot_bytes);
                     peer_events->attach_mailbox(&*peer_mailbox);
+                    probe_peer_mailbox();
+                } else {
+                    tp_transport_status.transport = "copies";
                 }
+            } else {
+                tp_transport_status.transport = "copies";
             }
         }
     }
@@ -408,6 +417,108 @@ ProgramImpl::prefill_tp_binding(const SequenceState& sequence) const {
         binding.mtp_kv = peer->decoder->mtp_cache()->execution_view(row);
     }
     return binding;
+}
+
+void ProgramImpl::probe_peer_mailbox() {
+    const char* setting_env = std::getenv("NINFER_TP_MAILBOX_PROBE");
+    const std::string_view setting = setting_env != nullptr ? setting_env : "";
+    if (setting == "off") {
+        tp_transport_status.transport = "mailbox";
+        return;
+    }
+    // A slow-but-alive mailbox is worse than the copies: every decode step crosses it about
+    // twice per layer, so a round trip past this bound would cost more than the staged path.
+    constexpr double kMaxRoundTripMs = 50.0;
+    constexpr std::size_t kBytes     = 4096; // whole 16-byte vectors, inside every slot
+    constexpr std::int32_t kElements = static_cast<std::int32_t>(kBytes / sizeof(std::uint16_t));
+    DeviceContext& rank0 = *execution_context->dev[0];
+    DeviceContext& rank1 = *execution_context->dev[1];
+
+    struct Scratch {
+        int device       = 0;
+        void* buffer     = nullptr;
+        void* staging    = nullptr;
+        explicit Scratch(int device_in) : device(device_in) {
+            const ScopedCurrentDevice current(device);
+            CUDA_CHECK(cudaMalloc(&buffer, kBytes));
+            CUDA_CHECK(cudaMalloc(&staging, kBytes));
+            CUDA_CHECK(cudaMemset(buffer, 0, kBytes));
+            CUDA_CHECK(cudaMemset(staging, 0, kBytes));
+        }
+        ~Scratch() {
+            const ScopedCurrentDevice current(device);
+            cudaFree(buffer);
+            cudaFree(staging);
+        }
+        Scratch(const Scratch&)            = delete;
+        Scratch& operator=(const Scratch&) = delete;
+    };
+
+    bool hang         = false;
+    bool selected     = true;
+    double elapsed_ms = 0.0;
+    {
+        const Scratch scratch0(rank0.device);
+        const Scratch scratch1(rank1.device);
+        const std::array<Tensor, 2> buffer{Tensor(scratch0.buffer, DType::BF16, {1, kElements}),
+                                           Tensor(scratch1.buffer, DType::BF16, {1, kElements})};
+        const std::array<Tensor, 2> staging{
+            Tensor(scratch0.staging, DType::BF16, {1, kElements}),
+            Tensor(scratch1.staging, DType::BF16, {1, kElements})};
+        DecodeGraphDefinition definition;
+        DecodeGraphExecutable executable;
+        {
+            const ScopedCurrentDevice current(rank0.device);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            {
+                const ScopedCurrentDevice peer_sync(rank1.device);
+                CUDA_CHECK(cudaDeviceSynchronize());
+            }
+            definition.capture(
+                rank0.stream,
+                [&] {
+                    if (setting == "fail") {
+                        // Only rank 0 enqueues its half: the poller must give up and report.
+                        peer_mailbox->enqueue_exchange_sum(0, peer_mailbox->take_capture_slot(),
+                                                           scratch0.buffer, kBytes, rank0.stream);
+                    } else {
+                        ops::allreduce_sum(buffer, staging, *execution_context, *peer_events);
+                    }
+                    CUDA_CHECK(cudaSetDevice(rank0.device));
+                },
+                DecodeGraphPeerCapture{.bridge = &*graph_bridge, .stream = rank1.stream});
+            // The mailbox exchange is one kernel node per device; the staged path is more.
+            selected = definition.node_count() == 2;
+            executable.instantiate(definition);
+            const auto start = std::chrono::steady_clock::now();
+            executable.launch(rank0.stream);
+            CUDA_CHECK(cudaStreamSynchronize(rank0.stream));
+            {
+                const ScopedCurrentDevice peer_sync(rank1.device);
+                CUDA_CHECK(cudaStreamSynchronize(rank1.stream));
+            }
+            elapsed_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
+        }
+        hang = peer_mailbox->hang_reported();
+    }
+    tp_transport_status.probe_ms = elapsed_ms;
+    if (!hang && selected && elapsed_ms <= kMaxRoundTripMs) {
+        tp_transport_status.transport = "mailbox";
+        return;
+    }
+    if (hang) {
+        tp_transport_status.fallback = "the startup probe exchange timed out";
+    } else if (!selected) {
+        tp_transport_status.fallback = "the startup probe did not capture a mailbox exchange";
+    } else {
+        tp_transport_status.fallback = "the startup probe exchange took " +
+                                       std::to_string(static_cast<long>(elapsed_ms)) + " ms";
+    }
+    tp_transport_status.transport = "copies";
+    peer_events->attach_mailbox(nullptr);
+    peer_mailbox.reset();
 }
 
 void ProgramImpl::synchronize_devices() const {

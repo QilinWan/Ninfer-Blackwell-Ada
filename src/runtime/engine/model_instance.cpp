@@ -321,6 +321,9 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
              .local_bytes          = stats.local_bytes[rank]});
     }
     summary.context_cost         = std::move(context_cost.summary);
+    summary.tp_transport         = instance->program->tp_transport().transport;
+    summary.tp_mailbox_probe_ms  = instance->program->tp_transport().probe_ms;
+    summary.tp_mailbox_fallback  = instance->program->tp_transport().fallback;
     return {std::move(instance), std::move(summary), std::move(context_cost.model)};
 }
 

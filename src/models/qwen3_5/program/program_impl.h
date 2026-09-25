@@ -404,6 +404,14 @@ public:
     std::optional<ops::PeerEvents> peer_events;
     std::optional<DecodeGraphPeerBridge> graph_bridge;
     std::optional<execution::TpExecution> tp_execution;
+    // Filled at construction: which transport the captured all-reduces ended up with.
+    TpTransportStatus tp_transport_status;
+
+    // Exchanges one probe payload through peer_mailbox inside a two-device graph before any
+    // decode graph is captured. A hang (WSL2's GPU virtualization is the known case) or a slow
+    // round trip drops the mailbox: peer_events falls back to the staged copies for good.
+    // NINFER_TP_MAILBOX_PROBE=off skips the probe, =fail runs it with a missing peer (test aid).
+    void probe_peer_mailbox();
 
     [[nodiscard]] bool tensor_parallel() const noexcept { return peer != nullptr; }
 
