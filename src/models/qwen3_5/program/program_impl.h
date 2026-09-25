@@ -413,6 +413,13 @@ public:
     // NINFER_TP_MAILBOX_PROBE=off skips the probe, =fail runs it with a missing peer (test aid).
     void probe_peer_mailbox();
 
+    // Called by prepare_graphs() after a mailbox exchange timed out in a graph's first launch,
+    // with both devices idle: discards every captured graph and steps the transport down once,
+    // from the mailbox everywhere to the mailbox with the MTP draft phase on the staged copies
+    // (MTP only), then to the staged copies everywhere. Returns false when nothing is left to
+    // step down to. The replacement mailbox is fresh: the hung one's words have diverged.
+    bool degrade_peer_mailbox();
+
     [[nodiscard]] bool tensor_parallel() const noexcept { return peer != nullptr; }
 
     [[nodiscard]] const execution::TpExecution* tp_binding() const noexcept {

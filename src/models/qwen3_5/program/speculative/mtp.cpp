@@ -372,6 +372,10 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         {
             nvtx::ScopedRange draft_range(nvtx::Name::DecodeMtpDraft, nvtx::Category::Mtp,
                                           static_cast<std::uint64_t>(k) * batch_size);
+            // From here on the round interleaves cross-device copies (acceptance to rank 1,
+            // proposal logits to rank 0) with the MTP head's all-reduces.
+            std::optional<ops::PeerEvents::StagedScope> staged_draft;
+            if (peer && tp->staged_draft_collectives) { staged_draft.emplace(*tp->events); }
             prepare_next_round(round, max_context, stream);
             if (peer) {
                 // Rank 0's acceptance updated anchors, frontiers and licensed counts in place;

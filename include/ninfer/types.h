@@ -1179,12 +1179,15 @@ struct LoadSummary {
     // cross-device transfer is staged through Host memory by CUDA. Always false at tp 1.
     bool peer_access = false;
     // tp 2 with CUDA Graphs: the transport of the captured all-reduces once startup is done.
-    // "mailbox" (the pinned-host mailbox passed its startup probe), "copies" (cross-device copies:
-    // --no-tp-mailbox, direct peer access, no CUDA Graphs, or the probe failed), empty at tp 1.
+    // "mailbox" (the pinned-host mailbox passed its startup probe), "mailbox, MTP draft on copies"
+    // (NINFER_TP_MAILBOX_DRAFT=copies, or a full MTP round hung in its first launch), "copies"
+    // (cross-device copies: --no-tp-mailbox, direct peer access, no CUDA Graphs, the probe
+    // failed, or a round hung with the draft phase on copies too), empty at tp 1.
     std::string tp_transport;
     // Round trip of the startup probe exchange in milliseconds; 0 when no probe ran.
     double tp_mailbox_probe_ms = 0.0;
-    // Why the mailbox was dropped after its probe ("timed out", "took N ms"); empty otherwise.
+    // Why the mailbox was dropped or narrowed (the probe "timed out" or "took N ms", or an exchange
+    // timed out in a graph's first launch; steps joined by "; then "); empty otherwise.
     std::string tp_mailbox_fallback;
     ContextCostSummary context_cost;
 };

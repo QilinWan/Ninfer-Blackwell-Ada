@@ -10,9 +10,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ninfer::models::qwen3_5::detail {
@@ -358,188 +360,219 @@ void ProgramImpl::prepare_graphs() {
                                         graph_peer_bridge()};
     };
 
-    if (speculative_backend == SpeculativeBackend::None) {
-        const auto ordinary_profiles = ordinary_graph_profiles(capacity);
-        validate_graph_profiles(ordinary_profiles, capacity - 1, "ordinary");
-        const std::uint32_t ordinary_batch_limit = max_concurrency;
-        execution::OrdinaryBatchContext ordinary_state{execution_core(),
-                                                       decoder->text_kv,
-                                                       *io.ordinary,
-                                                       *ordinary_host_ingress,
-                                                       *ordinary_host_egress,
-                                                       state_images->continuation_hidden_store(),
-                                                       peer ? &*peer->io.ordinary : nullptr};
-        const GraphExecutionProfile code_warm = ordinary_profiles.front();
-        // A module first touched inside a capture region cannot be loaded there, and batch shape
-        // selects kernels. One eager batch-1 round warms the single-device code; at tp 2 every
-        // batch size is warmed eagerly on both devices before any capture.
-        const std::uint32_t warm_batches = tensor_parallel() ? ordinary_batch_limit : 1U;
-        for (std::uint32_t batch_size = 1; batch_size <= warm_batches; ++batch_size) {
-            prepare_representative(code_warm.min, batch_size);
-            synchronize_all();
-            execution::ordinary_decode_batch(ordinary_state, static_cast<std::int32_t>(batch_size),
-                                             {code_warm.min + 1, code_warm.max + 1}, nullptr);
-            synchronize_all();
+    // Under WSL2 a captured exchange can hang in a graph's first launch although the startup
+    // probe passed (issue #1: every MTP round, not the ordinary ones). degrade_peer_mailbox() then
+    // steps the transport down and everything is captured again, instead of failing startup.
+    // NINFER_TP_MAILBOX_FAULT=draft reports such a hang while the MTP draft phase is on the
+    // mailbox, =any while any mailbox is attached: test aids for hardware where none happens.
+    const char* fault_env        = std::getenv("NINFER_TP_MAILBOX_FAULT");
+    const std::string_view fault = fault_env != nullptr ? fault_env : "";
+    const auto synchronize_graphs = [&] {
+        if (peer_mailbox &&
+            (fault == "any" || (fault == "draft" && speculative_backend == SpeculativeBackend::Mtp &&
+                                !tp_execution->staged_draft_collectives))) {
+            peer_mailbox->report_hang();
         }
-
-        ordinary_graphs.profiles.reserve(ordinary_profiles.size() * ordinary_batch_limit);
-        for (std::uint32_t batch_size = 1; batch_size <= ordinary_batch_limit; ++batch_size) {
-            for (const GraphExecutionProfile planned : ordinary_profiles) {
-                ordinary_graphs.profiles.emplace_back();
-                DecodeGraphProfile& profile    = ordinary_graphs.profiles.back();
-                profile.batch_size             = batch_size;
-                profile.min_execution_frontier = planned.min;
-                profile.max_execution_frontier = planned.max;
-                profile.topology_class =
-                    planned.topology_class * ordinary_batch_limit + (batch_size - 1U);
-                const ops::CausalAttentionExecutionEnvelope envelope{planned.min + 1,
-                                                                     planned.max + 1};
-                execution::capture_ordinary_decode_batch(ordinary_state,
-                                                         static_cast<std::int32_t>(batch_size),
-                                                         envelope, profile.definition);
+        synchronize_devices();
+    };
+    const auto capture_and_instantiate = [&] {
+        if (speculative_backend == SpeculativeBackend::None) {
+            const auto ordinary_profiles = ordinary_graph_profiles(capacity);
+            validate_graph_profiles(ordinary_profiles, capacity - 1, "ordinary");
+            const std::uint32_t ordinary_batch_limit = max_concurrency;
+            execution::OrdinaryBatchContext ordinary_state{execution_core(),
+                                                           decoder->text_kv,
+                                                           *io.ordinary,
+                                                           *ordinary_host_ingress,
+                                                           *ordinary_host_egress,
+                                                           state_images->continuation_hidden_store(),
+                                                           peer ? &*peer->io.ordinary : nullptr};
+            const GraphExecutionProfile code_warm = ordinary_profiles.front();
+            // A module first touched inside a capture region cannot be loaded there, and batch shape
+            // selects kernels. One eager batch-1 round warms the single-device code; at tp 2 every
+            // batch size is warmed eagerly on both devices before any capture.
+            const std::uint32_t warm_batches = tensor_parallel() ? ordinary_batch_limit : 1U;
+            for (std::uint32_t batch_size = 1; batch_size <= warm_batches; ++batch_size) {
+                prepare_representative(code_warm.min, batch_size);
+                synchronize_all();
+                execution::ordinary_decode_batch(ordinary_state, static_cast<std::int32_t>(batch_size),
+                                                 {code_warm.min + 1, code_warm.max + 1}, nullptr);
+                synchronize_all();
             }
-        }
-    }
 
-
-    if (!ordinary_graphs.profiles.empty()) {
-        instantiate_graph_family(ordinary_graphs, "ordinary", device, synchronize_all);
-        for (auto& topology : ordinary_graphs.topologies) {
-            const auto& profile = ordinary_graphs.profiles[*topology.installed_profile];
-            prepare_representative(profile.min_execution_frontier, profile.batch_size);
-            synchronize_devices();
-            topology.executable.launch(device.stream);
-            synchronize_devices();
-        }
-    }
-    if (speculative_backend != SpeculativeBackend::None) {
-        using execution::SpeculativePhase;
-        const bool mtp = speculative_backend == SpeculativeBackend::Mtp;
-        const auto forward_profiles =
-            mtp ? mtp_graph_profiles(capacity, draft_window)
-                : dflash_graph_profiles(speculative_backend, capacity, draft_window);
-        // DFlash acceptance has no context-dependent nodes or resource envelope.
-        const auto finish_profiles =
-            mtp ? forward_profiles : std::vector<GraphExecutionProfile>{{0, capacity - 1}};
-        validate_graph_profiles(forward_profiles, capacity - 1, "speculative forward");
-        validate_graph_profiles(finish_profiles, capacity - 1, "speculative finish");
-        const auto mtp_context = [&] {
-            return execution::MtpBatchContext{
-                execution_core(),
-                decoder->text_kv,
-                *decoder->mtp_cache(),
-                *io.mtp_decode,
-                *mtp_host_ingress,
-                *mtp_host_egress,
-                state_images->continuation_hidden_store(),
-                // Tensor-parallel width 2: rank 1's own MTP frame and continuation hidden store,
-                // which receive the same ingress record and publish their accepted hidden.
-                peer ? &*peer->io.mtp_decode : nullptr,
-                peer ? &peer->state_images->continuation_hidden_store() : nullptr};
-        };
-        const auto dflash_context = [&] {
-            return execution::DFlashBatchContext{execution_core(),
-                                                 decoder->text_kv,
-                                                 *dflash,
-                                                 *io.dflash_decode,
-                                                 *dflash_host_ingress,
-                                                 *dflash_host_egress,
-                                                 state_images->continuation_hidden_store(),
-                                                 dflash_draft_handoff->tokens(),
-                                                 dflash_draft_handoff->ready,
-                                                 // Tensor-parallel width 2: rank 1's own DFlash2
-                                                 // frame and continuation hidden store, which
-                                                 // receive the same ingress record and rank 0's
-                                                 // drafts, as for the MTP round above.
-                                                 peer ? &*peer->io.dflash_decode : nullptr,
-                                                 peer ? &peer->state_images->continuation_hidden_store()
-                                                      : nullptr};
-        };
-        const auto target_envelope = [&](std::uint32_t frontier) {
-            return ops::CausalAttentionExecutionEnvelope{
-                1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                       capacity, static_cast<std::uint64_t>(frontier) + draft_window + 1ULL))};
-        };
-        const auto run = [&](SpeculativePhase phase, std::int32_t batch, std::uint32_t frontier,
-                             DecodeGraphExecutable* executable) {
-            if (mtp) {
-                auto state = mtp_context();
-                execution::mtp_decode_batch(
-                    state, batch, draft_window,
-                    mtp_causal_attention_envelopes(frontier, draft_window, capacity), executable,
-                    phase);
-            } else {
-                auto state = dflash_context();
-                execution::dflash_decode_batch(state, batch, draft_window,
-                                               dflash_envelopes(frontier, draft_window),
-                                               target_envelope(frontier), executable, phase);
-            }
-        };
-        const auto capture = [&](SpeculativePhase phase, DecodeGraphProfile& profile) {
-            const auto batch    = static_cast<std::int32_t>(profile.batch_size);
-            const auto frontier = profile.max_execution_frontier;
-            if (mtp) {
-                auto state = mtp_context();
-                execution::capture_mtp_decode_batch(
-                    state, batch, draft_window,
-                    mtp_causal_attention_envelopes(frontier, draft_window, capacity),
-                    profile.definition, phase);
-            } else {
-                auto state = dflash_context();
-                execution::capture_dflash_decode_batch(
-                    state, batch, draft_window, dflash_envelopes(frontier, draft_window),
-                    target_envelope(frontier), profile.definition, phase);
-            }
-        };
-
-        const auto code_warm = forward_profiles.front();
-        // As for ordinary rounds: a module first touched inside a capture region cannot be loaded
-        // there and batch shape selects kernels, so every batch size is warmed eagerly on both
-        // devices at tp 2 before any capture. Each warm round runs both phases, as this tree's
-        // speculative entry points do.
-        const std::uint32_t warm_batches = tensor_parallel() ? max_concurrency : 1U;
-        for (std::uint32_t batch = 1; batch <= warm_batches; ++batch) {
-            prepare_representative(code_warm.min, batch);
-            synchronize_all();
-            run(SpeculativePhase::Forward, static_cast<std::int32_t>(batch), code_warm.max,
-                nullptr);
-            run(SpeculativePhase::Finish, static_cast<std::int32_t>(batch), code_warm.max, nullptr);
-            synchronize_all();
-        }
-
-        for (const auto phase : {SpeculativePhase::Forward, SpeculativePhase::Finish}) {
-            const bool forward = phase == SpeculativePhase::Forward;
-            auto& family       = forward ? speculative_forward_graphs : speculative_finish_graphs;
-            const auto& planned_profiles = forward ? forward_profiles : finish_profiles;
-            family.profiles.reserve(planned_profiles.size() * max_concurrency);
-            for (std::uint32_t batch = 1; batch <= max_concurrency; ++batch) {
-                for (const auto planned : planned_profiles) {
-                    family.profiles.emplace_back();
-                    auto& profile                  = family.profiles.back();
-                    profile.batch_size             = batch;
+            ordinary_graphs.profiles.reserve(ordinary_profiles.size() * ordinary_batch_limit);
+            for (std::uint32_t batch_size = 1; batch_size <= ordinary_batch_limit; ++batch_size) {
+                for (const GraphExecutionProfile planned : ordinary_profiles) {
+                    ordinary_graphs.profiles.emplace_back();
+                    DecodeGraphProfile& profile    = ordinary_graphs.profiles.back();
+                    profile.batch_size             = batch_size;
                     profile.min_execution_frontier = planned.min;
                     profile.max_execution_frontier = planned.max;
-                    profile.topology_class = planned.topology_class * max_concurrency + batch - 1U;
-                    capture(phase, profile);
+                    profile.topology_class =
+                        planned.topology_class * ordinary_batch_limit + (batch_size - 1U);
+                    const ops::CausalAttentionExecutionEnvelope envelope{planned.min + 1,
+                                                                         planned.max + 1};
+                    execution::capture_ordinary_decode_batch(ordinary_state,
+                                                             static_cast<std::int32_t>(batch_size),
+                                                             envelope, profile.definition);
                 }
             }
-            instantiate_graph_family(family, forward ? "speculative forward" : "speculative finish",
-                                     device, synchronize_all);
         }
 
-        // Warm complete transactions: finish consumes persistent outputs of its paired forward.
-        for (auto& topology : speculative_forward_graphs.topologies) {
-            auto& forward     = speculative_forward_graphs.profiles[*topology.installed_profile];
-            auto& finish      = speculative_finish_graphs.select(forward.batch_size,
-                                                                 forward.min_execution_frontier);
-            auto& finish_exec = speculative_finish_graphs.install(finish);
-            prepare_representative(forward.min_execution_frontier, forward.batch_size);
-            synchronize_devices();
-            topology.executable.launch(device.stream);
-            finish_exec.launch(device.stream);
-            synchronize_devices();
+
+        if (!ordinary_graphs.profiles.empty()) {
+            instantiate_graph_family(ordinary_graphs, "ordinary", device, synchronize_graphs);
+            for (auto& topology : ordinary_graphs.topologies) {
+                const auto& profile = ordinary_graphs.profiles[*topology.installed_profile];
+                prepare_representative(profile.min_execution_frontier, profile.batch_size);
+                synchronize_graphs();
+                topology.executable.launch(device.stream);
+                synchronize_graphs();
+            }
+        }
+        if (speculative_backend != SpeculativeBackend::None) {
+            using execution::SpeculativePhase;
+            const bool mtp = speculative_backend == SpeculativeBackend::Mtp;
+            const auto forward_profiles =
+                mtp ? mtp_graph_profiles(capacity, draft_window)
+                    : dflash_graph_profiles(speculative_backend, capacity, draft_window);
+            // DFlash acceptance has no context-dependent nodes or resource envelope.
+            const auto finish_profiles =
+                mtp ? forward_profiles : std::vector<GraphExecutionProfile>{{0, capacity - 1}};
+            validate_graph_profiles(forward_profiles, capacity - 1, "speculative forward");
+            validate_graph_profiles(finish_profiles, capacity - 1, "speculative finish");
+            const auto mtp_context = [&] {
+                return execution::MtpBatchContext{
+                    execution_core(),
+                    decoder->text_kv,
+                    *decoder->mtp_cache(),
+                    *io.mtp_decode,
+                    *mtp_host_ingress,
+                    *mtp_host_egress,
+                    state_images->continuation_hidden_store(),
+                    // Tensor-parallel width 2: rank 1's own MTP frame and continuation hidden store,
+                    // which receive the same ingress record and publish their accepted hidden.
+                    peer ? &*peer->io.mtp_decode : nullptr,
+                    peer ? &peer->state_images->continuation_hidden_store() : nullptr};
+            };
+            const auto dflash_context = [&] {
+                return execution::DFlashBatchContext{execution_core(),
+                                                     decoder->text_kv,
+                                                     *dflash,
+                                                     *io.dflash_decode,
+                                                     *dflash_host_ingress,
+                                                     *dflash_host_egress,
+                                                     state_images->continuation_hidden_store(),
+                                                     dflash_draft_handoff->tokens(),
+                                                     dflash_draft_handoff->ready,
+                                                     // Tensor-parallel width 2: rank 1's own DFlash2
+                                                     // frame and continuation hidden store, which
+                                                     // receive the same ingress record and rank 0's
+                                                     // drafts, as for the MTP round above.
+                                                     peer ? &*peer->io.dflash_decode : nullptr,
+                                                     peer ? &peer->state_images->continuation_hidden_store()
+                                                          : nullptr};
+            };
+            const auto target_envelope = [&](std::uint32_t frontier) {
+                return ops::CausalAttentionExecutionEnvelope{
+                    1, static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                           capacity, static_cast<std::uint64_t>(frontier) + draft_window + 1ULL))};
+            };
+            const auto run = [&](SpeculativePhase phase, std::int32_t batch, std::uint32_t frontier,
+                                 DecodeGraphExecutable* executable) {
+                if (mtp) {
+                    auto state = mtp_context();
+                    execution::mtp_decode_batch(
+                        state, batch, draft_window,
+                        mtp_causal_attention_envelopes(frontier, draft_window, capacity), executable,
+                        phase);
+                } else {
+                    auto state = dflash_context();
+                    execution::dflash_decode_batch(state, batch, draft_window,
+                                                   dflash_envelopes(frontier, draft_window),
+                                                   target_envelope(frontier), executable, phase);
+                }
+            };
+            const auto capture = [&](SpeculativePhase phase, DecodeGraphProfile& profile) {
+                const auto batch    = static_cast<std::int32_t>(profile.batch_size);
+                const auto frontier = profile.max_execution_frontier;
+                if (mtp) {
+                    auto state = mtp_context();
+                    execution::capture_mtp_decode_batch(
+                        state, batch, draft_window,
+                        mtp_causal_attention_envelopes(frontier, draft_window, capacity),
+                        profile.definition, phase);
+                } else {
+                    auto state = dflash_context();
+                    execution::capture_dflash_decode_batch(
+                        state, batch, draft_window, dflash_envelopes(frontier, draft_window),
+                        target_envelope(frontier), profile.definition, phase);
+                }
+            };
+
+            const auto code_warm = forward_profiles.front();
+            // As for ordinary rounds: a module first touched inside a capture region cannot be loaded
+            // there and batch shape selects kernels, so every batch size is warmed eagerly on both
+            // devices at tp 2 before any capture. Each warm round runs both phases, as this tree's
+            // speculative entry points do.
+            const std::uint32_t warm_batches = tensor_parallel() ? max_concurrency : 1U;
+            for (std::uint32_t batch = 1; batch <= warm_batches; ++batch) {
+                prepare_representative(code_warm.min, batch);
+                synchronize_all();
+                run(SpeculativePhase::Forward, static_cast<std::int32_t>(batch), code_warm.max,
+                    nullptr);
+                run(SpeculativePhase::Finish, static_cast<std::int32_t>(batch), code_warm.max, nullptr);
+                synchronize_all();
+            }
+
+            for (const auto phase : {SpeculativePhase::Forward, SpeculativePhase::Finish}) {
+                const bool forward = phase == SpeculativePhase::Forward;
+                auto& family       = forward ? speculative_forward_graphs : speculative_finish_graphs;
+                const auto& planned_profiles = forward ? forward_profiles : finish_profiles;
+                family.profiles.reserve(planned_profiles.size() * max_concurrency);
+                for (std::uint32_t batch = 1; batch <= max_concurrency; ++batch) {
+                    for (const auto planned : planned_profiles) {
+                        family.profiles.emplace_back();
+                        auto& profile                  = family.profiles.back();
+                        profile.batch_size             = batch;
+                        profile.min_execution_frontier = planned.min;
+                        profile.max_execution_frontier = planned.max;
+                        profile.topology_class = planned.topology_class * max_concurrency + batch - 1U;
+                        capture(phase, profile);
+                    }
+                }
+                instantiate_graph_family(family, forward ? "speculative forward" : "speculative finish",
+                                         device, synchronize_graphs);
+            }
+
+            // Warm complete transactions: finish consumes persistent outputs of its paired forward.
+            for (auto& topology : speculative_forward_graphs.topologies) {
+                auto& forward     = speculative_forward_graphs.profiles[*topology.installed_profile];
+                auto& finish      = speculative_finish_graphs.select(forward.batch_size,
+                                                                     forward.min_execution_frontier);
+                auto& finish_exec = speculative_finish_graphs.install(finish);
+                prepare_representative(forward.min_execution_frontier, forward.batch_size);
+                synchronize_graphs();
+                topology.executable.launch(device.stream);
+                finish_exec.launch(device.stream);
+                synchronize_graphs();
+            }
+        }
+    };
+    for (;;) {
+        try {
+            capture_and_instantiate();
+            break;
+        } catch (const std::runtime_error&) {
+            // synchronize_graphs() found the hang word set: both devices are idle, and
+            // degrade_peer_mailbox() discards every captured executable before the mailbox
+            // it addresses, so the graphs are recorded again on the stepped-down transport.
+            if (!peer_mailbox || !peer_mailbox->hang_reported() || !degrade_peer_mailbox()) {
+                throw;
+            }
         }
     }
+
 
     clear_stable_controls();
     state_images->zero_all(device.stream);

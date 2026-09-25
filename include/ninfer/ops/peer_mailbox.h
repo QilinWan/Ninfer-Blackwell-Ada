@@ -74,6 +74,10 @@ public:
     // diverged, so the owner must not trust any later round.
     [[nodiscard]] bool hang_reported() const noexcept;
 
+    // Test aid: sets the sticky hang word from the host, as a poller that gave up would, so the
+    // owner's recovery can be exercised on hardware where no exchange ever hangs.
+    void report_hang() noexcept;
+
 private:
     void* slab_                     = nullptr; // pinned host allocation, UVA-mapped
     std::uint8_t* payload_[2]       = {nullptr, nullptr};

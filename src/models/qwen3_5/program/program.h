@@ -404,7 +404,7 @@ struct PhysicalUsageSnapshot {
 struct TpTransportStatus {
     std::string transport; // "mailbox", "copies", or empty at tp 1
     double probe_ms = 0.0; // startup probe round trip; 0 when no probe ran
-    std::string fallback;  // why the mailbox was dropped after its probe; empty otherwise
+    std::string fallback;  // why the mailbox was dropped or narrowed; empty otherwise
 };
 
 class Program {

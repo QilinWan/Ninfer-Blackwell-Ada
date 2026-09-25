@@ -42,11 +42,13 @@
 >   P2P); that path is untested too. Exactly two GPUs: `--tp` accepts 1 or 2.
 > - **Windows via WSL2.** Reported working by [@Zeppe79](https://github.com/ValerioDolci/ninfer-tp2/issues/1)
 >   on two RTX 5070 Ti (Windows 11, WSL2 Ubuntu 24.04, CUDA 13.1 from the `wsl-ubuntu` repo): build as
->   on Linux, keep the weights on the Linux filesystem, and start with **`--no-tp-mailbox`**, because
->   the pinned-host mailbox exchange times out under WSL2's GPU virtualization (the spin limit is
->   about 0.8 s, see below; since the startup probe the engine drops the mailbox by itself in that
->   case, so the flag only saves the ~1 s probe). The copy path works but is slower: about 50-65 tok/s reported with
->   MTP3 against 110-120 on native Linux with the same cards. Reaching the server from Windows needs a
+>   on Linux and keep the weights on the Linux filesystem; no flag is needed. The pinned-host
+>   mailbox works under WSL2 without `--spec` (reported 60 tok/s, against 22.5 on the cross-device
+>   copies, whose every hop costs ~220 us there instead of ~17). A full `--spec mtp` round with the
+>   mailbox hangs in its first launch instead: the engine then recaptures with the MTP draft phase
+>   on the copies and, if that hangs too, with the copies everywhere, and says so in the log
+>   (`NINFER_TP_MAILBOX_DRAFT=copies` starts with the draft phase on the copies directly). With the
+>   copies everywhere MTP3 was reported at 49 tok/s. Reaching the server from Windows needs a
 >   `netsh interface portproxy` rule to the WSL2 address, which changes at every restart.
 >   [`tools/tp2/mailbox_probe.cu`](tools/README.md#standalone-tp2-mailbox-probe) tells in seconds,
 >   without a model, whether the mailbox works on a machine.
@@ -83,7 +85,9 @@
 >   engine exchanges one probe payload through the mailbox before capturing any decode graph; if
 >   the probe times out or takes more than 50 ms (WSL2's GPU virtualization is the known case) the
 >   mailbox is dropped and the captured all-reduces use the cross-device copies, with a warning in
->   the log. `NINFER_TP_MAILBOX_PROBE=off` skips the probe, `=fail` forces the fallback.
+>   the log. `NINFER_TP_MAILBOX_PROBE=off` skips the probe, `=fail` forces the fallback. A hang in
+>   a decode graph's first launch at startup steps the transport down the same way (above) instead
+>   of stopping; `NINFER_TP_MAILBOX_FAULT=draft|any` simulates one, for testing.
 > - **Upstream.** Based on upstream `bace20dc` (24 September 2026); later upstream changes are
 >   merged by hand.
 >

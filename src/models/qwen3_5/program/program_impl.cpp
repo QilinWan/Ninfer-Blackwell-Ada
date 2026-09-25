@@ -318,6 +318,11 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             .mtp                  = mtp ? &*peer->io.mtp : nullptr,
             .prefill_hidden       = mtp ? peer->prefill_hidden : Tensor{},
         });
+        const char* draft_env = std::getenv("NINFER_TP_MAILBOX_DRAFT");
+        if (mtp && peer_mailbox && draft_env != nullptr && std::string_view(draft_env) == "copies") {
+            tp_execution->staged_draft_collectives = true;
+            tp_transport_status.transport          = "mailbox, MTP draft on copies";
+        }
     }
     host_tokens = round_host
                       ? &static_cast<qwen3_5::PrefillRoundHost*>(round_host->data())->sampled_token
@@ -525,9 +530,45 @@ void ProgramImpl::synchronize_devices() const {
     if (peer) { peer->device.synchronize(); }
     device.synchronize();
     if (peer_mailbox && peer_mailbox->hang_reported()) {
+        std::string transport = tp_transport_status.transport;
+        if (tp_transport_status.probe_ms > 0.0) {
+            transport += ", startup probe " +
+                         std::to_string(static_cast<long>(tp_transport_status.probe_ms * 1000.0)) +
+                         " us";
+        }
         throw std::runtime_error("tensor-parallel mailbox exchange timed out waiting for the peer "
-                                 "device; the two ranks' results diverged");
+                                 "device (captured all-reduces: " +
+                                 transport + "); the two ranks' results diverged");
     }
+}
+
+bool ProgramImpl::degrade_peer_mailbox() {
+    if (!peer_mailbox || !tp_execution) { return false; }
+    // The executables bake in the hung mailbox's slab and words: they go first. This tree records
+    // the speculative round as one forward and one finish family; both are recaptured with the
+    // ordinary family on the stepped-down transport.
+    ordinary_graphs            = {};
+    speculative_forward_graphs = {};
+    speculative_finish_graphs  = {};
+    const std::size_t slot_bytes = peer_mailbox->slot_bytes();
+    peer_events->attach_mailbox(nullptr);
+    peer_mailbox.reset();
+    const std::string previous = tp_transport_status.transport;
+    const std::string reason   = "an exchange timed out in the first launch of a CUDA graph (" +
+                               previous + ")";
+    tp_transport_status.fallback +=
+        (tp_transport_status.fallback.empty() ? "" : "; then ") + reason;
+    if (speculative_backend == SpeculativeBackend::Mtp &&
+        !tp_execution->staged_draft_collectives) {
+        tp_execution->staged_draft_collectives = true;
+        peer_mailbox.emplace(*execution_context, slot_bytes);
+        peer_events->attach_mailbox(&*peer_mailbox);
+        tp_transport_status.transport = "mailbox, MTP draft on copies";
+        return true;
+    }
+    tp_execution->staged_draft_collectives = false;
+    tp_transport_status.transport          = "copies";
+    return true;
 }
 
 void ProgramImpl::set_peer_i32(Tensor& tensor, std::int32_t value) {

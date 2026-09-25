@@ -151,10 +151,32 @@ public:
     // Mutable through a const instance: a captured call claims the mailbox's next slot.
     [[nodiscard]] PeerMailbox* mailbox() const noexcept { return mailbox_; }
 
+    // While a StagedScope of this instance is open, captured calls keep the staged path even with
+    // a mailbox attached. A caller opens one around captured collectives that share a round with
+    // cross-device copies: under WSL2 such a copy can stall behind a spinning exchange kernel on
+    // its source device, and the pair then waits on each other until the spin limit (issue #1).
+    // Like mailbox(), usable through a const instance: it only selects the transport of the
+    // calls recorded inside the scope. Scopes nest.
+    class StagedScope {
+    public:
+        explicit StagedScope(const PeerEvents& events) noexcept : events_(&events) {
+            ++events_->staged_scopes_;
+        }
+        ~StagedScope() { --events_->staged_scopes_; }
+        StagedScope(const StagedScope&)            = delete;
+        StagedScope& operator=(const StagedScope&) = delete;
+
+    private:
+        const PeerEvents* events_;
+    };
+
+    [[nodiscard]] bool staged_only() const noexcept { return staged_scopes_ != 0; }
+
 private:
     std::array<cudaEvent_t, 2> inputs_ready_{nullptr, nullptr};
     std::array<cudaEvent_t, 2> pull_done_{nullptr, nullptr};
-    PeerMailbox* mailbox_ = nullptr;
+    PeerMailbox* mailbox_           = nullptr;
+    mutable int staged_scopes_      = 0;
 };
 
 /**

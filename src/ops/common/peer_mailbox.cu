@@ -184,4 +184,6 @@ bool PeerMailbox::hang_reported() const noexcept {
     return *static_cast<volatile const std::uint32_t*>(hang_) != 0;
 }
 
+void PeerMailbox::report_hang() noexcept { *static_cast<volatile std::uint32_t*>(hang_) = 1u; }
+
 } // namespace ninfer::ops

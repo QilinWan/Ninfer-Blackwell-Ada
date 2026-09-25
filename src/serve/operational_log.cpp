@@ -470,10 +470,16 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                     logger_->info("tensor parallel | captured all-reduces: {}", load.tp_transport);
                 }
             }
-            if (!load.tp_mailbox_fallback.empty()) {
+            if (!load.tp_mailbox_fallback.empty() && load.tp_transport == "copies") {
                 logger_->warn("tensor parallel | pinned-host mailbox disabled: {}; decode uses the "
                               "cross-device copies (slower). This is expected under WSL2; pass "
                               "--no-tp-mailbox to skip the probe",
+                              load.tp_mailbox_fallback);
+            } else if (!load.tp_mailbox_fallback.empty()) {
+                logger_->warn("tensor parallel | pinned-host mailbox kept for the target forward "
+                              "only: {}; the MTP draft phase uses the cross-device copies. This "
+                              "is expected under WSL2; NINFER_TP_MAILBOX_DRAFT=copies starts "
+                              "this way directly",
                               load.tp_mailbox_fallback);
             }
         }

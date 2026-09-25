@@ -106,7 +106,7 @@ private:
 PeerMailbox* captured_mailbox(const std::array<Tensor, 2>& buffer, std::size_t bytes,
                               const ExecutionContext& ec, const PeerEvents& events) {
     PeerMailbox* mailbox = events.mailbox();
-    if (mailbox == nullptr || !mailbox->serves(ec)) { return nullptr; }
+    if (mailbox == nullptr || events.staged_only() || !mailbox->serves(ec)) { return nullptr; }
     if ((bytes % 16) != 0 || bytes > mailbox->slot_bytes()) { return nullptr; }
     unsigned long long capture[2] = {0, 0};
     for (int rank = 0; rank < 2; ++rank) {
@@ -207,10 +207,12 @@ PeerEvents::~PeerEvents() {
 }
 
 PeerEvents::PeerEvents(PeerEvents&& other) noexcept
-    : inputs_ready_(other.inputs_ready_), pull_done_(other.pull_done_), mailbox_(other.mailbox_) {
-    other.inputs_ready_ = {nullptr, nullptr};
-    other.pull_done_    = {nullptr, nullptr};
-    other.mailbox_      = nullptr;
+    : inputs_ready_(other.inputs_ready_), pull_done_(other.pull_done_), mailbox_(other.mailbox_),
+      staged_scopes_(other.staged_scopes_) {
+    other.inputs_ready_  = {nullptr, nullptr};
+    other.pull_done_     = {nullptr, nullptr};
+    other.mailbox_       = nullptr;
+    other.staged_scopes_ = 0;
 }
 
 PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
@@ -219,6 +221,7 @@ PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
     inputs_ready_.swap(other.inputs_ready_);
     pull_done_.swap(other.pull_done_);
     std::swap(mailbox_, other.mailbox_);
+    std::swap(staged_scopes_, other.staged_scopes_);
     return *this;
 }
 
