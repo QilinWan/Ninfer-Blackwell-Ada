@@ -9,9 +9,16 @@ tags:
   - quantization-aware-training
   - blackwell
   - tensor-parallel
+  - multi-gpu
+  - dual-gpu
+  - rtx-5070-ti
 ---
 
-# Qwen3.8-27B QUASAR-QAT NVFP4 — NInfer artifact (`qwen3_8_27b_quasar_nvfp4.ninfer`)
+# Qwen3.8-27B QUASAR-QAT NVFP4 on two 16 GB GPUs — NInfer artifact (`qwen3_8_27b_quasar_nvfp4.ninfer`)
+
+> **Runs Qwen3.8-27B on two 16 GB GPUs.** Verified on 2× RTX 5070 Ti (PCIe, no P2P) with tensor
+> parallelism (`--tp 2`) in [ninfer-tp2](https://github.com/ValerioDolci/ninfer-tp2): 196,608-token context
+> with Vision and MTP at 13,083 / 12,743 MiB per board; 262,144 tokens also fit.
 
 An all-NVFP4 `.ninfer` v3 artifact of Qwen3.8-27B built from the
 [QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4](https://huggingface.co/QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4)
