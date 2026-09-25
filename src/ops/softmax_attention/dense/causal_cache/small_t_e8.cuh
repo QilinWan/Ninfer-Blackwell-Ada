@@ -195,6 +195,10 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         physical_pages_s[page] = block_table[first_page + page];
     }
 
+    // Every thread reads physical_pages_s below (the fused append resolves the row page from it),
+    // but the fill above is spread across the block, so the table must be published first.
+    __syncthreads();
+
     if constexpr (CacheInput::writes_cache) {
         // One warp per new row: D256 rotation, E8 lattice projection of K (4-bit codes,
         // per-token absmax/7 scale), plain 4-bit V codes. Byte-identical helper to the
