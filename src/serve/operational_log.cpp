@@ -545,4 +545,9 @@ void OperationalLog::server_failure(bool serving, std::string_view detail) const
                       product::format_pretty_text(detail));
 }
 
+void OperationalLog::engine_failure() const {
+    logger_->critical("engine unavailable after an engine-wide failure | stopping the server so a "
+                      "supervisor can reload the model (exit status 2)");
+}
+
 } // namespace ninfer::serve

@@ -93,6 +93,10 @@ int main(int argc, char** argv) {
             operational_log.listen_failure(options.host, options.port);
             return 1;
         }
+        // The Engine never recovers from an Engine-wide failure: exit non-zero (2, distinct from
+        // the startup failures above) so a supervisor reloads the model instead of keeping a dead
+        // endpoint up. The engine watch already logged the failure.
+        if (server.engine_failed()) { return 2; }
         operational_log.server_stopped();
         return 0;
     } catch (const std::exception& exception) {

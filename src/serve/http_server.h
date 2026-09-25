@@ -47,6 +47,9 @@ public:
     void stop();
 
     [[nodiscard]] const std::string& public_model_id() const noexcept { return public_model_id_; }
+    // True once the engine watch stopped listen() because the Engine reported an Engine-wide
+    // failure; the process should then exit non-zero so a supervisor reloads the model.
+    [[nodiscard]] bool engine_failed() const noexcept { return engine_failed_.load(); }
 
 private:
     class RequestLifecycle {
@@ -100,6 +103,8 @@ private:
     void record_throughput(const ThroughputReport& report);
     void run_stats_reporter();
     void stop_stats_reporter();
+    void run_engine_watch();
+    void stop_engine_watch();
 
     GenerationService* service_ = nullptr;
     ServeOptions options_;
@@ -114,6 +119,11 @@ private:
     std::condition_variable stats_cv_;
     std::thread stats_thread_;
     bool stats_stopping_ = false;
+    std::mutex watch_mutex_;
+    std::condition_variable watch_cv_;
+    std::thread watch_thread_;
+    bool watch_stopping_ = false;
+    std::atomic<bool> engine_failed_{false};
 };
 
 } // namespace ninfer::serve

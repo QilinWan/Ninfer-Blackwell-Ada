@@ -72,6 +72,13 @@ selected for this process.
 Engine-wide failure it returns HTTP 503 with `{"status":"unavailable"}`. Temporary queue
 saturation does not make the Engine unavailable. The endpoint remains unauthenticated.
 
+An Engine-wide failure (an error thrown by the Engine worker, such as a timed-out tensor-parallel
+exchange) is permanent for the process: `ninfer-serve` logs it, stops accepting connections within
+about 250 ms and **exits with status 2** (startup failures exit with 1; a failed CUDA call aborts
+the process). Run it under a supervisor that restarts on a non-zero exit — `Restart=on-failure` in
+systemd, or llama-swap, which reloads the model on the next request — instead of relying on
+`/health`, which supervisors usually probe only while the model loads.
+
 Every OpenAI-compatible response carries a unique `x-request-id` header, including streaming and
 error responses. Anthropic endpoints use their separate `request-id` contract.
 
