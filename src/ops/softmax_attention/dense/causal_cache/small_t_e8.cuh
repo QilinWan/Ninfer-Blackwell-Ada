@@ -95,7 +95,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     std::int8_t* k_i8    = r_s + 2 * Bc * CodeExtent;
     __nv_bfloat16* q_b16 = reinterpret_cast<__nv_bfloat16*>(q_i8);
     __nv_bfloat16* k_b16 = reinterpret_cast<__nv_bfloat16*>(k_i8);
-    __half* v_f16        = reinterpret_cast<__half*>(r_s + 3 * Bc * CodeExtent);
+    __half* v_f16        = reinterpret_cast<__half*>(r_s + 4 * Bc * CodeExtent);
     __shared__ __align__(16) __half p_s[Br * Bc];
     __shared__ float alpha_s[Br];
     __shared__ __align__(16) __half k_scale_s[Bc * Groups];
