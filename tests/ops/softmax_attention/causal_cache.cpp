@@ -81,6 +81,14 @@ constexpr ReductionCriterion kAttentionK8V4Criterion{
     /*gross_relative_to_max_reference*/ 1.1e-2,
 };
 
+// rk4v4-e8 stores 4-bit K/V codes like NVFP4 but with a per-token scale (finer than NVFP4's
+// per-16 group) and an E8 lattice K code, so it starts from the NVFP4 criterion.
+constexpr ReductionCriterion kAttentionE8Criterion{
+    /*relative_l2*/ 1.5e-2,
+    /*gross_absolute*/ 5.0e-3,
+    /*gross_relative_to_max_reference*/ 1.1e-2,
+};
+
 struct TestVectorLayout {
     DType code_dtype;
     std::int32_t code_extent;
@@ -109,6 +117,8 @@ TestCacheLayout test_cache_layout(KvCacheStorage storage) {
     case KvCacheStorage::Fp8KeyNvfp4Value:
         return {{DType::FP8_E4M3FN, kHeadDim, DType::FP16, kFp8QuantGroups},
                 {DType::U8, kNvfp4CodeBytes, DType::U8, kNvfp4QuantGroups}};
+    case KvCacheStorage::RK4V4E8:
+        return {{DType::U8, kHeadDim / 2, DType::FP16, 1}, {DType::U8, kHeadDim / 2, DType::FP16, 1}};
     }
     throw std::invalid_argument("unsupported test KV storage");
 }
@@ -508,6 +518,8 @@ struct HostCache {
     std::vector<std::uint8_t> v_nvfp4;
     std::vector<std::uint8_t> k_nvfp4_scale;
     std::vector<std::uint8_t> v_nvfp4_scale;
+    std::vector<std::uint8_t> k_e8;
+    std::vector<std::uint8_t> v_e8;
 };
 
 void encode_group(std::span<const float> source, std::size_t source_base,
@@ -653,6 +665,125 @@ void encode_rotated_key_row(std::span<const float> source, std::size_t source_ba
     }
 }
 
+// Host transcription of the device scalar E8 nearest-lattice-point projection
+// (ops/kv_cache/e8/e8_lattice.cuh e8_project_8d_fast): D8 and D8+0.5 coset candidates with
+// the single-coord parity correction, then the closer candidate wins.
+void e8_project_8d_host(const float x[8], float out[8]) {
+    float f_x[8];
+    int sum_f   = 0;
+    float max_err = -1.0f;
+    int worst_dim = 0;
+    for (int i = 0; i < 8; ++i) {
+        f_x[i]   = std::nearbyint(x[i]);
+        sum_f   += static_cast<int>(f_x[i]);
+        const float err = std::abs(x[i] - f_x[i]);
+        if (err > max_err) {
+            max_err   = err;
+            worst_dim = i;
+        }
+    }
+    float d8[8];
+    for (int i = 0; i < 8; ++i) {
+        d8[i] = f_x[i];
+    }
+    if ((sum_f & 1) != 0) {
+        d8[worst_dim] += (x[worst_dim] >= f_x[worst_dim]) ? 1.0f : -1.0f;
+    }
+
+    float f_shift[8];
+    int sum_shift   = 0;
+    float max_err_shift = -1.0f;
+    int worst_shift_dim = 0;
+    for (int i = 0; i < 8; ++i) {
+        const float xs     = x[i] - 0.5f;
+        f_shift[i]         = std::nearbyint(xs);
+        sum_shift         += static_cast<int>(f_shift[i]);
+        const float err = std::abs(xs - f_shift[i]);
+        if (err > max_err_shift) {
+            max_err_shift   = err;
+            worst_shift_dim = i;
+        }
+    }
+    float coset1[8];
+    for (int i = 0; i < 8; ++i) {
+        coset1[i] = f_shift[i] + 0.5f;
+    }
+    if ((sum_shift & 1) != 0) {
+        coset1[worst_shift_dim] +=
+            ((x[worst_shift_dim] - 0.5f) >= f_shift[worst_shift_dim]) ? 1.0f : -1.0f;
+    }
+
+    float dist_d8     = 0.0f;
+    float dist_coset1 = 0.0f;
+    for (int i = 0; i < 8; ++i) {
+        const float diff0 = x[i] - d8[i];
+        const float diff1 = x[i] - coset1[i];
+        dist_d8 += diff0 * diff0;
+        dist_coset1 += diff1 * diff1;
+    }
+    for (int i = 0; i < 8; ++i) {
+        out[i] = (dist_d8 <= dist_coset1) ? d8[i] : coset1[i];
+    }
+}
+
+// Host oracle for one rk4v4-e8 row. The device fill D256-rotates the row, takes one per-token
+// FP16 scale (absmax/7, clamped to the FP16 code range), then either projects K onto the E8
+// lattice per 8-dim subspace and applies the documented half-coset rint into [-8, 7], or
+// rounds V straight to 4-bit codes in [-7, 7]. Two codes pack into one byte, low nibble first.
+template <typename Source>
+void encode_e8_rotated_row(const Source& source, std::size_t source_base,
+                           std::vector<std::uint8_t>& codes, std::size_t code_base,
+                           std::vector<std::uint16_t>& scales, std::size_t scale_base,
+                           bool lattice) {
+    std::array<float, kHeadDim> rotated{};
+    float absmax = 0.0f;
+    for (std::int32_t d = 0; d < kHeadDim; ++d) {
+        rotated[static_cast<std::size_t>(d)] =
+            source[source_base + static_cast<std::size_t>(d)];
+        absmax = std::max(absmax, std::abs(rotated[static_cast<std::size_t>(d)]));
+    }
+    normalized_hadamard_d256(rotated);
+    if (absmax > 0.0f) {
+        absmax = 0.0f;
+        for (std::int32_t d = 0; d < kHeadDim; ++d) {
+            absmax = std::max(absmax, std::abs(rotated[static_cast<std::size_t>(d)]));
+        }
+    }
+    const float bounded =
+        (absmax <= 0.0f) ? 0.0f : std::min(65504.0f, std::max(0x1p-24f, absmax / 7.0f));
+    const std::uint16_t scale_bits = f32_to_f16_bits(bounded);
+    const float represented        = f16_bits_to_f32(scale_bits);
+    const float inverse            = represented > 0.0f ? 1.0f / represented : 0.0f;
+    scales[scale_base] = scale_bits;
+    for (std::int32_t c = 0; c < kHeadDim / 8; ++c) {
+        float scaled[8];
+        float projected[8];
+        for (int i = 0; i < 8; ++i) {
+            scaled[i] = rotated[static_cast<std::size_t>(c * 8 + i)] * inverse;
+        }
+        if (lattice) {
+            e8_project_8d_host(scaled, projected);
+        } else {
+            for (int i = 0; i < 8; ++i) {
+                projected[i] = scaled[i];
+            }
+        }
+        for (int i = 0; i < 8; ++i) {
+            const int limit = lattice ? 7 : 7;
+            const int lower = lattice ? -8 : -7;
+            int code        = static_cast<int>(std::nearbyint(projected[i]));
+            code            = std::max(lower, std::min(limit, code));
+            std::uint8_t& byte =
+                codes[code_base + static_cast<std::size_t>(c * 8 + i) / 2];
+            if (i & 1) {
+                byte = static_cast<std::uint8_t>(byte | (static_cast<std::uint8_t>(code) << 4));
+            } else {
+                byte = static_cast<std::uint8_t>(byte & 0xF0u | (static_cast<std::uint8_t>(code) & 0xFu));
+            }
+        }
+    }
+}
+
 HostCache make_cache(const Geometry& geometry, KvCacheStorage storage, std::int32_t max_context,
                      std::uint32_t seed) {
     const std::int32_t logical_capacity = align_up_page(max_context);
@@ -717,6 +848,32 @@ HostCache make_cache(const Geometry& geometry, KvCacheStorage storage, std::int3
                                        k_scale);
                 encode_nvfp4_rotated_row(logical_v, source, cache.v_nvfp4, v_code,
                                          cache.v_nvfp4_scale, v_scale);
+            }
+        }
+        return cache;
+    }
+
+    if (storage == KvCacheStorage::RK4V4E8) {
+        const std::size_t code_elements =
+            static_cast<std::size_t>(kHeadDim / 2) * logical_capacity * geometry.kv_heads;
+        const std::size_t e8_scales =
+            static_cast<std::size_t>(logical_capacity) * geometry.kv_heads;
+        cache.k_e8.assign(code_elements, 0);
+        cache.v_e8.assign(code_elements, 0);
+        cache.k_scale.assign(e8_scales, 0);
+        cache.v_scale.assign(e8_scales, 0);
+        for (std::int32_t head = 0; head < geometry.kv_heads; ++head) {
+            for (std::int32_t position = 0; position < logical_capacity; ++position) {
+                const std::size_t source =
+                    cache_index(geometry, logical_capacity, head, position, 0);
+                const std::size_t code = logical_plane_index(kHeadDim / 2, geometry,
+                                                             logical_capacity, head, position, 0);
+                const std::size_t scale = logical_plane_index(1, geometry, logical_capacity,
+                                                              head, position, 0);
+                encode_e8_rotated_row(logical_k, source, cache.k_e8, code, cache.k_scale, scale,
+                                      true);
+                encode_e8_rotated_row(logical_v, source, cache.v_e8, code, cache.v_scale, scale,
+                                      false);
             }
         }
         return cache;
@@ -823,6 +980,24 @@ void append_cache(HostCache& cache, const std::vector<float>& k, const std::vect
                 encode_fp8_row(v_row, cache.v_fp8, target, cache.v_scale, scale);
                 continue;
             }
+            if (cache.storage == KvCacheStorage::RK4V4E8) {
+                std::array<float, kHeadDim> k_row{};
+                std::array<float, kHeadDim> v_row{};
+                for (std::int32_t d = 0; d < kHeadDim; ++d) {
+                    k_row[static_cast<std::size_t>(d)] =
+                        k[kv_input_index(geometry, head, d, token)];
+                    v_row[static_cast<std::size_t>(d)] =
+                        v[kv_input_index(geometry, head, d, token)];
+                }
+                const std::size_t code = logical_plane_index(kHeadDim / 2, geometry,
+                                                             cache.logical_capacity, head, position,
+                                                             0);
+                const std::size_t scale = logical_plane_index(1, geometry, cache.logical_capacity,
+                                                              head, position, 0);
+                encode_e8_rotated_row(k_row, 0, cache.k_e8, code, cache.k_scale, scale, true);
+                encode_e8_rotated_row(v_row, 0, cache.v_e8, code, cache.v_scale, scale, false);
+                continue;
+            }
             const std::size_t scale =
                 scale_index(geometry, cache.logical_capacity, head, position, 0);
             encode_rotated_key_row(k, source, cache.k_i8, target, cache.k_scale, scale);
@@ -851,6 +1026,14 @@ double cache_value(const HostCache& cache, bool key, int head, int position, int
         return double(codes[index]) *
                double(f16_bits_to_f32(scales[row * kQuantGroups + d / kQuantGroup]));
     }
+    if (cache.storage == KvCacheStorage::RK4V4E8) {
+        const auto& codes  = key ? cache.k_e8 : cache.v_e8;
+        const auto& scales = key ? cache.k_scale : cache.v_scale;
+        const std::uint8_t byte  = codes[row * (kHeadDim / 2) + d / 2];
+        const int nibble         = (d & 1) ? byte >> 4 : byte & 15;
+        const int code           = (nibble ^ 8) - 8;
+        return double(code) * double(f16_bits_to_f32(scales[row]));
+    }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256 ||
         (key && cache.storage == KvCacheStorage::Fp8KeyNvfp4Value)) {
         const auto& codes  = key ? cache.k_fp8 : cache.v_fp8;
@@ -871,7 +1054,8 @@ std::vector<double> ideal_attention(const std::vector<float>& q, const HostCache
     const int tokens = positions.size(), visible = positions.back() + 1;
     const bool rotate_q = cache.storage != KvCacheStorage::BFloat16;
     const bool rotate_v = cache.storage == KvCacheStorage::Nvfp4Group16 ||
-                          cache.storage == KvCacheStorage::Fp8KeyNvfp4Value;
+                          cache.storage == KvCacheStorage::Fp8KeyNvfp4Value ||
+                          cache.storage == KvCacheStorage::RK4V4E8;
     std::vector<double> query(q.begin(), q.end()), output(q.size());
     if (rotate_q)
         for (int token = 0; token < tokens; ++token)
@@ -975,6 +1159,23 @@ public:
                               block_table_host_, physical_pages_);
             k_.copy_from_host(k_physical.data(), k_physical.size() * sizeof(std::int8_t));
             v_.copy_from_host(v_physical.data(), v_physical.size() * sizeof(std::int8_t));
+            k_scale_.copy_from_host(ks_physical.data(), ks_physical.size() * sizeof(std::uint16_t));
+            v_scale_.copy_from_host(vs_physical.data(), vs_physical.size() * sizeof(std::uint16_t));
+        } else if (storage_ == KvCacheStorage::RK4V4E8) {
+            const auto k_physical =
+                scatter_paged(cache.k_e8, kHeadDim / 2, geometry_, logical_capacity_,
+                              block_table_host_, physical_pages_);
+            const auto v_physical =
+                scatter_paged(cache.v_e8, kHeadDim / 2, geometry_, logical_capacity_,
+                              block_table_host_, physical_pages_);
+            const auto ks_physical =
+                scatter_paged(cache.k_scale, 1, geometry_, logical_capacity_, block_table_host_,
+                              physical_pages_);
+            const auto vs_physical =
+                scatter_paged(cache.v_scale, 1, geometry_, logical_capacity_, block_table_host_,
+                              physical_pages_);
+            k_.copy_from_host(k_physical.data(), k_physical.size());
+            v_.copy_from_host(v_physical.data(), v_physical.size());
             k_scale_.copy_from_host(ks_physical.data(), ks_physical.size() * sizeof(std::uint16_t));
             v_scale_.copy_from_host(vs_physical.data(), vs_physical.size() * sizeof(std::uint16_t));
         } else if (storage_ == KvCacheStorage::Fp8E4M3Row256) {
@@ -1092,6 +1293,19 @@ public:
                                                         logical_capacity_, block_table_host_);
             cache.v_scale = gather_paged<std::uint16_t>(vs_physical, kQuantGroups, geometry_,
                                                         logical_capacity_, block_table_host_);
+        } else if (storage_ == KvCacheStorage::RK4V4E8) {
+            const auto k_physical  = copy_from_guarded<std::uint8_t>(k_, k_code_elements_);
+            const auto v_physical  = copy_from_guarded<std::uint8_t>(v_, v_code_elements_);
+            const auto ks_physical = copy_from_guarded<std::uint16_t>(k_scale_, k_scale_elements_);
+            const auto vs_physical = copy_from_guarded<std::uint16_t>(v_scale_, v_scale_elements_);
+            cache.k_e8             = gather_paged<std::uint8_t>(k_physical, kHeadDim / 2, geometry_,
+                                                                logical_capacity_, block_table_host_);
+            cache.v_e8             = gather_paged<std::uint8_t>(v_physical, kHeadDim / 2, geometry_,
+                                                                logical_capacity_, block_table_host_);
+            cache.k_scale          = gather_paged<std::uint16_t>(ks_physical, 1, geometry_,
+                                                                logical_capacity_, block_table_host_);
+            cache.v_scale          = gather_paged<std::uint16_t>(vs_physical, 1, geometry_,
+                                                                logical_capacity_, block_table_host_);
         } else if (storage_ == KvCacheStorage::Fp8E4M3Row256) {
             const auto k_physical  = copy_from_guarded<std::uint8_t>(k_, k_code_elements_);
             const auto v_physical  = copy_from_guarded<std::uint8_t>(v_, v_code_elements_);
@@ -1352,6 +1566,22 @@ public:
             failures += verify_exact((label + " cache-v-scale").c_str(),
                                      copy_from_guarded<std::uint16_t>(v_scale_, v_scale_elements_),
                                      expected_vs);
+        } else if (storage_ == KvCacheStorage::RK4V4E8) {
+            std::vector<std::uint8_t> expected_v(v_code_elements_, 0);
+            std::vector<std::uint16_t> expected_vs(v_scale_elements_, 0);
+            for (std::size_t row = 0; row < rows_; ++row) {
+                const std::span<const std::int32_t> table = row_table(row);
+                scatter_paged_into(expected[row].v_e8, kHeadDim / 2, geometry_, logical_capacity_,
+                                   table, expected_v);
+                scatter_paged_into(expected[row].v_scale, 1, geometry_, logical_capacity_, table,
+                                   expected_vs);
+            }
+            failures +=
+                verify_exact((label + " cache-v-code").c_str(),
+                             copy_from_guarded<std::uint8_t>(v_, v_code_elements_), expected_v);
+            failures += verify_exact((label + " cache-v-scale").c_str(),
+                                     copy_from_guarded<std::uint16_t>(v_scale_, v_scale_elements_),
+                                     expected_vs);
         } else if (storage_ == KvCacheStorage::Fp8E4M3Row256) {
             std::vector<std::uint8_t> expected_k(k_code_elements_, 0);
             std::vector<std::uint8_t> expected_v(v_code_elements_, 0);
@@ -1500,6 +1730,28 @@ private:
             v_scale_.copy_from_host(physical_vs.data(), physical_vs.size() * sizeof(std::uint16_t));
             return;
         }
+        if (storage_ == KvCacheStorage::RK4V4E8) {
+            std::vector<std::uint8_t> physical_k(k_code_elements_, 0);
+            std::vector<std::uint8_t> physical_v(v_code_elements_, 0);
+            std::vector<std::uint16_t> physical_ks(k_scale_elements_, 0);
+            std::vector<std::uint16_t> physical_vs(v_scale_elements_, 0);
+            for (std::size_t row = 0; row < rows_; ++row) {
+                const std::span<const std::int32_t> table = row_table(row);
+                scatter_paged_into(rows[row].k_e8, kHeadDim / 2, geometry_, logical_capacity_,
+                                   table, physical_k);
+                scatter_paged_into(rows[row].v_e8, kHeadDim / 2, geometry_, logical_capacity_,
+                                   table, physical_v);
+                scatter_paged_into(rows[row].k_scale, 1, geometry_, logical_capacity_, table,
+                                   physical_ks);
+                scatter_paged_into(rows[row].v_scale, 1, geometry_, logical_capacity_, table,
+                                   physical_vs);
+            }
+            k_.copy_from_host(physical_k.data(), physical_k.size());
+            v_.copy_from_host(physical_v.data(), physical_v.size());
+            k_scale_.copy_from_host(physical_ks.data(), physical_ks.size() * sizeof(std::uint16_t));
+            v_scale_.copy_from_host(physical_vs.data(), physical_vs.size() * sizeof(std::uint16_t));
+            return;
+        }
         if (storage_ == KvCacheStorage::Fp8E4M3Row256) {
             std::vector<std::uint8_t> physical_k(k_code_elements_, 0);
             std::vector<std::uint8_t> physical_v(v_code_elements_, 0);
@@ -1598,6 +1850,14 @@ int verify_cache(const std::string& label, const HostCache& got, const HostCache
         }
         failures += verify_exact((label + " cache-v-code").c_str(), got.v_i8, expected.v_i8);
         failures += verify_exact((label + " cache-v-scale").c_str(), got.v_scale, expected.v_scale);
+    } else if (expected.storage == KvCacheStorage::RK4V4E8) {
+        if (verify_private_key_representation) {
+            failures += verify_exact((label + " cache-k-code").c_str(), got.k_e8, expected.k_e8);
+            failures +=
+                verify_exact((label + " cache-k-scale").c_str(), got.k_scale, expected.k_scale);
+        }
+        failures += verify_exact((label + " cache-v-code").c_str(), got.v_e8, expected.v_e8);
+        failures += verify_exact((label + " cache-v-scale").c_str(), got.v_scale, expected.v_scale);
     } else if (expected.storage == KvCacheStorage::Fp8E4M3Row256) {
         if (verify_private_key_representation) {
             failures += verify_exact((label + " cache-k-code").c_str(), got.k_fp8, expected.k_fp8);
@@ -1657,6 +1917,8 @@ const char* cache_name(KvCacheStorage storage) {
         return "nvfp4-g16";
     case KvCacheStorage::Fp8KeyNvfp4Value:
         return "k8v4";
+    case KvCacheStorage::RK4V4E8:
+        return "rk4v4-e8";
     }
     return "unknown";
 }
@@ -1667,6 +1929,7 @@ ReductionCriterion attention_criterion(KvCacheStorage storage) {
     if (storage == KvCacheStorage::Fp8E4M3Row256) return kAttentionFp8Criterion;
     if (storage == KvCacheStorage::Nvfp4Group16) return kAttentionNvfp4Criterion;
     if (storage == KvCacheStorage::Fp8KeyNvfp4Value) return kAttentionK8V4Criterion;
+    if (storage == KvCacheStorage::RK4V4E8) return kAttentionE8Criterion;
     throw std::logic_error("unregistered causal-attention test storage");
 }
 
@@ -2183,7 +2446,8 @@ int run_dflash2_cases() {
     int failures = 0;
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value,
+          KvCacheStorage::RK4V4E8}) {
         const auto run = [&](int width, int batch, int base, bool graph) {
             BatchAttentionCase c{width,
                                  {},
@@ -2227,7 +2491,8 @@ int run_batch_cases() {
     int failures = 0;
     for (auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value,
+          KvCacheStorage::RK4V4E8}) {
         failures += run_batch_case(kGeometries[0], storage,
                                    {16, {0}, {0}, {0}, MappingPattern::Fragmented, 1501u});
         failures += run_batch_case(kGeometries[0], storage,
@@ -2259,7 +2524,8 @@ int run_batch_cases() {
 
 int run_geometry(const Geometry& geometry) {
     int failures = 0;
-    for (const KvCacheStorage storage : {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64}) {
+    for (const KvCacheStorage storage :
+         {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::RK4V4E8}) {
         for (const MappingPattern mapping :
              {MappingPattern::Identity, MappingPattern::Offset, MappingPattern::Fragmented}) {
             failures += run_a1_case(geometry, storage, {6, 61, 67, 190u}, mapping);
@@ -2404,7 +2670,8 @@ int verify_workspace_capacity_contract() {
     int failures = 0;
     for (const KvCacheStorage storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
-          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+          KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value,
+          KvCacheStorage::RK4V4E8}) {
         constexpr ops::CausalAttentionExecutionEnvelope envelope{1, 1025};
         constexpr ops::AttentionHeadGeometry geometry{kHeadDim, 16, 2};
         const std::size_t interval = ops::causal_softmax_attention_workspace_capacity_bytes(

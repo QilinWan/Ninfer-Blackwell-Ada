@@ -364,6 +364,11 @@ CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::i
             case KvCacheStorage::Fp8KeyNvfp4Value:
                 prompt_limit = width <= 4 ? 0 : width <= 8 ? 128 : 320;
                 break;
+            case KvCacheStorage::RK4V4E8:
+                // The E8 route reads K as exact int8 codes through the same s8 QK machinery as
+                // the int8 route, so it inherits the int8 prompt limit.
+                prompt_limit = width <= 8 ? 0 : 256;
+                break;
             }
             if (envelope.max_visible_keys <= prompt_limit) return CausalAttentionRoute::Prompt;
         }
