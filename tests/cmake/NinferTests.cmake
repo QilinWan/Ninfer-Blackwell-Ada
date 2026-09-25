@@ -20,6 +20,12 @@ endfunction()
 
 # Apply these to the translation unit containing the oracle, including shared
 # test support libraries. Executable options do not propagate into those libraries.
+# CPU-only YaRN coefficient reference and Engine option contract (no CUDA).
+ninfer_add_test(ninfer_yarn_parameters_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_yarn_parameters.cpp"
+  NEEDS_SOURCE_DIR
+  LIBRARIES ninfer_ops)
+
 function(ninfer_op_oracle_options target)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(${target} PRIVATE

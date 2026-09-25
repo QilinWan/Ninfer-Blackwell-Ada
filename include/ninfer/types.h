@@ -84,6 +84,13 @@ struct SpeculativeOptions {
     ProposalHead proposal_head = ProposalHead::Full;
 };
 
+// Static YaRN for the registered Qwen3.8 text/MTP rotary geometry. Factor 1 preserves
+// native RoPE. The reference window is a model property, independent of KV capacity.
+struct YarnOptions {
+    float factor                   = 1.0F;
+    std::uint32_t original_context = 262144;
+};
+
 enum class StartupPhase : std::uint8_t {
     EngineStartup,
     CudaInitialize,
@@ -163,6 +170,7 @@ struct EngineOptions {
     std::uint32_t prefill_chunk        = 1024;
     KvCacheStorage kv_cache            = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
+    YarnOptions yarn;
     std::size_t media_cache_bytes = kDefaultMediaCacheBytes;
     std::size_t media_live_bytes  = kDefaultMediaLiveBytes;
     // Zero selects a bounded worker count from the detected host concurrency.

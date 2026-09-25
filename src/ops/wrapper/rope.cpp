@@ -3,6 +3,7 @@
 #include "ops/launcher/rope.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -98,8 +99,55 @@ void require_model_mode(int axes, int rotary_dim, std::int32_t head_dim) {
 
 } // namespace
 
+TextRopeScaling make_text_yarn_scaling(float factor, std::uint32_t original_context, float theta) {
+    if (!std::isfinite(factor) || factor < 1.0F || factor > 4.0F || original_context == 0 ||
+        !std::isfinite(theta) || theta <= 1.0F) {
+        throw std::invalid_argument("invalid text YaRN parameters");
+    }
+    TextRopeScaling out;
+    if (factor == 1.0F) { return out; }
+    constexpr double dim    = 64.0;
+    constexpr double two_pi = 6.28318530717958647693;
+    const auto correction   = [&](double rotations) {
+        return dim * std::log(original_context / (rotations * two_pi)) /
+               (2.0 * std::log(static_cast<double>(theta)));
+    };
+    const double low = std::max(0.0, std::floor(correction(32.0)));
+    double high      = std::min(dim - 1.0, std::ceil(correction(1.0)));
+    if (low == high) { high += 0.001; }
+    for (int pair = 0; pair < 32; ++pair) {
+        const double native = std::pow(static_cast<double>(theta), -2.0 * pair / dim);
+        const double ramp   = std::clamp((pair - low) / (high - low), 0.0, 1.0);
+        out.inverse_frequency[pair] =
+            static_cast<float>(native * (1.0 - ramp) + (native / factor) * ramp);
+    }
+    out.attention_factor = static_cast<float>(1.0 + 0.1 * std::log(factor));
+    out.enabled          = true;
+    return out;
+}
+
+namespace {
+
+void require_scaling(const TextRopeScaling* scaling, int axes, int rotary_dim,
+                     std::int32_t head_dim) {
+    if (scaling == nullptr || !scaling->enabled) { return; }
+    if (axes == 2 || head_dim != 256 || rotary_dim != 64) {
+        throw std::invalid_argument("text YaRN requires D256/R64 Text or MRoPE");
+    }
+    if (!std::isfinite(scaling->attention_factor) || scaling->attention_factor <= 0.0F) {
+        throw std::invalid_argument("text YaRN attention factor must be finite and positive");
+    }
+    for (float frequency : scaling->inverse_frequency) {
+        if (!std::isfinite(frequency) || frequency <= 0.0F) {
+            throw std::invalid_argument("text YaRN frequencies must be finite and positive");
+        }
+    }
+}
+
+} // namespace
+
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream) {
+          cudaStream_t stream, const TextRopeScaling* scaling) {
     require_common(positions, rotary_dim, theta);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
@@ -113,6 +161,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     const std::int32_t q_heads  = q.ne[1];
     const std::int32_t k_heads  = k.ne[1];
     require_model_mode(axes, rotary_dim, head_dim);
+    require_scaling(scaling, axes, rotary_dim, head_dim);
     require_tensor_layout(q, "q", head_dim, q_heads, tokens);
     require_tensor_layout(k, "k", head_dim, k_heads, tokens);
     if (q_numel == 0) { return; }
@@ -120,10 +169,11 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
     }
-    detail::rope_launch(positions, rotary_dim, theta, q, k, stream);
+    detail::rope_launch(positions, rotary_dim, theta, q, k, stream, scaling);
 }
 
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream) {
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream,
+          const TextRopeScaling* scaling) {
     require_common(positions, rotary_dim, theta);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
@@ -133,11 +183,12 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaS
     const std::int32_t head_dim = axes == 2 ? kVisionDim : x.ne[0];
     const std::int32_t heads    = x.ne[1];
     require_model_mode(axes, rotary_dim, head_dim);
+    require_scaling(scaling, axes, rotary_dim, head_dim);
     require_tensor_layout(x, "tensor", head_dim, heads, tokens);
     if (x_numel == 0) { return; }
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
-    detail::rope_single_launch(positions, rotary_dim, theta, x, stream);
+    detail::rope_single_launch(positions, rotary_dim, theta, x, stream, scaling);
 }
 
 } // namespace ninfer::ops

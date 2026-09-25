@@ -5,6 +5,7 @@
 #include "ops/kernel/rope.cuh"
 
 #include <cstdint>
+#include <algorithm>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -167,22 +168,31 @@ bool launch_fixed_single_dispatch(const Tensor& positions, int rotary_dim, float
 }
 
 void launch_generic(const Tensor& positions, int rotary_dim, float theta, Tensor* q, Tensor* k,
-                    cudaStream_t stream) {
-    constexpr int block = 128;
-    Tensor& sample      = q != nullptr ? *q : *k;
-    const int tokens    = sample.ne[2];
+                    cudaStream_t stream, const TextRopeScaling* scaling = nullptr) {
+    int block = 128;
+    if (scaling != nullptr && positions.ne[0] <= 6) {
+        const int heads = (q ? q->ne[1] : 0) + (k ? k->ne[1] : 0);
+        block           = std::min(heads * 32, 1024);
+    }
+    Tensor& sample   = q != nullptr ? *q : *k;
+    const int tokens = sample.ne[2];
     rope_generic_kernel<<<tokens, block, 0, stream>>>(
         static_cast<const std::int32_t*>(positions.data), positions.ne[1],
         q == nullptr ? nullptr : static_cast<__nv_bfloat16*>(q->data),
         k == nullptr ? nullptr : static_cast<__nv_bfloat16*>(k->data), sample.ne[0], rotary_dim,
         theta, q == nullptr ? 0 : q->ne[1], k == nullptr ? 0 : k->ne[1], tokens, token_stride(q),
-        token_stride(k));
+        token_stride(k), scaling ? *scaling : TextRopeScaling{});
 }
 
 } // namespace
 
 void rope_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-                 cudaStream_t stream) {
+                 cudaStream_t stream, const TextRopeScaling* scaling) {
+    if (scaling != nullptr && scaling->enabled) {
+        launch_generic(positions, rotary_dim, theta, &q, &k, stream, scaling);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     if (!launch_fixed_pair(positions, rotary_dim, theta, q, k, stream)) {
         launch_generic(positions, rotary_dim, theta, &q, &k, stream);
     }
@@ -190,7 +200,12 @@ void rope_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& q
 }
 
 void rope_single_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
-                        cudaStream_t stream) {
+                        cudaStream_t stream, const TextRopeScaling* scaling) {
+    if (scaling != nullptr && scaling->enabled) {
+        launch_generic(positions, rotary_dim, theta, &x, nullptr, stream, scaling);
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     if (!launch_fixed_single_dispatch(positions, rotary_dim, theta, x, stream)) {
         launch_generic(positions, rotary_dim, theta, &x, nullptr, stream);
     }

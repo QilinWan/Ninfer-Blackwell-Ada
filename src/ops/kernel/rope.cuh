@@ -5,6 +5,7 @@
 // D/R=128/128, plus packed Vision 16Q/16K at D/R=72/72. One CTA owns one token and shares its
 // rotary coefficients across heads.
 
+#include "ninfer/ops/rope.h"
 #include "ops/common/dflash_rope.cuh"
 
 #include <cuda_bf16.h>
@@ -182,7 +183,7 @@ static __global__ void rope_generic_kernel(const std::int32_t* positions, std::i
                                            std::int32_t head_dim, std::int32_t rotary_dim,
                                            float theta, std::int32_t q_heads, std::int32_t k_heads,
                                            std::int32_t tokens, std::int64_t q_token_stride,
-                                           std::int64_t k_token_stride) {
+                                           std::int64_t k_token_stride, TextRopeScaling scaling) {
     const int token = static_cast<int>(blockIdx.x);
     if (token >= tokens) { return; }
     const int half = rotary_dim / 2;
@@ -197,11 +198,24 @@ static __global__ void rope_generic_kernel(const std::int32_t* positions, std::i
             int axis       = 0;
             float exponent = 0.0F;
             generic_axis_frequency(axes, head_dim, rotary_dim, pair, &axis, &exponent);
-            const float frequency = powf(theta, exponent);
-            const float angle =
-                static_cast<float>(positions[static_cast<std::int64_t>(axis) * tokens + token]) *
-                frequency;
-            sincosf(angle, &sin_cache[pair], &cos_cache[pair]);
+            const float frequency =
+                scaling.enabled ? scaling.inverse_frequency[pair] : powf(theta, exponent);
+            const std::int32_t position =
+                positions[static_cast<std::int64_t>(axis) * tokens + token];
+            if (scaling.enabled) {
+                constexpr double two_pi = 6.28318530717958647693;
+                const double angle      = static_cast<double>(position) * frequency;
+                const float reduced =
+                    static_cast<float>(angle - nearbyint(angle / two_pi) * two_pi);
+                sincosf(reduced, &sin_cache[pair], &cos_cache[pair]);
+            } else {
+                sincosf(static_cast<float>(position) * frequency, &sin_cache[pair],
+                        &cos_cache[pair]);
+            }
+            if (scaling.enabled) {
+                sin_cache[pair] *= scaling.attention_factor;
+                cos_cache[pair] *= scaling.attention_factor;
+            }
         }
     }
     __syncthreads();

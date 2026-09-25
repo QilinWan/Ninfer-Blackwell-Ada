@@ -78,7 +78,8 @@ std::vector<int> make_positions(int axes, int tokens, int first_position) {
 // reproduce output storage rounding, production staging, coefficient tables, range reduction,
 // kernel split, or reduction order.
 std::vector<double> rope_oracle(const std::vector<float>& input, const std::vector<int>& positions,
-                                const Geometry& geometry, int heads) {
+                                const Geometry& geometry, int heads,
+                                const ops::TextRopeScaling* scaling = nullptr) {
     std::vector<double> output(input.begin(), input.end());
     const int half = geometry.rotary_dim / 2;
     for (int token = 0; token < geometry.tokens; ++token) {
@@ -93,13 +94,18 @@ std::vector<double> rope_oracle(const std::vector<float>& input, const std::vect
                     axis     = geometry.axes == 3 ? pair % 3 : 0;
                     exponent = -2.0 * static_cast<double>(pair) / geometry.rotary_dim;
                 }
-                const double frequency = std::pow(static_cast<double>(geometry.theta), exponent);
+                const double frequency =
+                    scaling && scaling->enabled
+                        ? scaling->inverse_frequency[pair]
+                        : std::pow(static_cast<double>(geometry.theta), exponent);
                 const double phase =
                     static_cast<double>(
                         positions[static_cast<std::size_t>(axis) * geometry.tokens + token]) *
                     frequency;
-                const double cosine  = std::cos(phase);
-                const double sine    = std::sin(phase);
+                const double amplitude =
+                    scaling && scaling->enabled ? scaling->attention_factor : 1.0;
+                const double cosine  = std::cos(phase) * amplitude;
+                const double sine    = std::sin(phase) * amplitude;
                 const std::size_t lo = dense_index(geometry.head_dim, heads, token, head, pair);
                 const std::size_t hi =
                     dense_index(geometry.head_dim, heads, token, head, pair + half);
@@ -230,7 +236,8 @@ int verify_padding(const std::string& label, const std::vector<std::uint16_t>& s
 }
 
 int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_position,
-                  int q_padding = 0, int k_padding = 0, int lane_width = 0, bool graph = false) {
+                  int q_padding = 0, int k_padding = 0, int lane_width = 0, bool graph = false,
+                  float yarn_factor = 1.0F) {
     constexpr std::uint16_t kPadding = 0x3f81U;
     const int q_dense_per_token      = geometry.head_dim * q_heads;
     const int k_dense_per_token      = geometry.head_dim * k_heads;
@@ -254,8 +261,9 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
                 positions[axis * geometry.tokens + t] = first_position +
                     1009 * (t / lane_width) + 97 * axis + (2 * axis + 1) * (t % lane_width);
     }
-    const auto q_expected = rope_oracle(q, positions, geometry, q_heads);
-    const auto k_expected = rope_oracle(k, positions, geometry, k_heads);
+    const auto scaling    = ops::make_text_yarn_scaling(yarn_factor, 262144);
+    const auto q_expected = rope_oracle(q, positions, geometry, q_heads, &scaling);
+    const auto k_expected = rope_oracle(k, positions, geometry, k_heads, &scaling);
 
     GuardedDeviceBuffer q_device(q_storage.size() * sizeof(std::uint16_t));
     GuardedDeviceBuffer k_device(k_storage.size() * sizeof(std::uint16_t));
@@ -270,7 +278,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     q_tensor.nb[2] = static_cast<std::int64_t>(q_stride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(k_stride) * sizeof(std::uint16_t);
 
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, nullptr,
+              &scaling);
     cuda_synchronize();
 
     if (graph) {
@@ -279,7 +288,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
         cudaGraphExec_t executable;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, stream);
+        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, stream,
+                  &scaling);
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         for (int replay = 0; replay < 2; ++replay) {
@@ -469,6 +479,12 @@ int main() {
     failures += run_single_case({"27b mtp k mrope", 256, 64, 3, 128, kTextTheta}, 4, 8192);
     failures += run_single_case({"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
 
+    failures +=
+        run_pair_case({"YaRN 1.5 text pair", 256, 64, 1, 3, kTextTheta}, 24, 4, 393200, 0, 0,
+                      false, 1.5F);
+    failures +=
+        run_pair_case({"YaRN 4 MRoPE pair", 256, 64, 3, 17, kTextTheta}, 24, 4, 1048000, 16, 8,
+                      false, 4.0F);
     failures += run_vision_packed_case();
 
     // DFlash proposal consumes 2..16 tokens; context append uses the single-K form.

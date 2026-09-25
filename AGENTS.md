@@ -29,7 +29,11 @@ approval requirements beyond the user's instructions and the actual execution en
 
 NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU performance. It implements
 `Qwen3_5ForCausalLM` and `Qwen3_5MoeForCausalLM`; official Qwen3.6/3.8 artifacts and user recipes
-use the same architecture, binding and execution path. The implementation targets `sm_120a` and
+use the same architecture, binding and execution path. Qwen3.8-27B additionally supports optional
+static YaRN (factor 1..4, native reference 262144) on both architecture builds: main Text and MTP
+share immutable per-Engine coefficients, the Vision tower RoPE stays native, and the default factor
+1 keeps native execution unchanged.
+ The implementation targets `sm_120a` and
 is tuned on NVIDIA GeForce RTX 5090. This repository additionally builds for Ada `sm_89`, which
 shares every route except the Blackwell-only FP4 ones; see [NInfer on Ada (sm_89)](docs/sm89.md).
 

@@ -27,6 +27,15 @@ What Ada does and does not support, why, and how each claim is checked:
 | Speculation | MTP, DFlash, DFlash2 | MTP, DFlash, DFlash2 |
 | KV cache | INT8, FP8, BF16 | plus NVFP4, K8V4 |
 | Vision, CLI, HTTP serving | yes | yes |
+| Static YaRN context extension | yes | yes |
+
+## Optional YaRN for Qwen3.8-27B (both builds)
+
+`--rope-yarn-factor 1.5 --rope-original-max-position 262144 --max-context 393216`
+extends the per-request window using Qwen's published static YaRN recipe. Native behavior is
+the default (`--rope-yarn-factor 1`). Text, MTP and multimodal MRoPE share per-Engine
+coefficients; the Vision tower stays native. See [serving](docs/serving.md#yarn-context-extension)
+for cache compatibility and validation scope.
 
 One cubin covers the whole Ada family: SM count, L2 size and residency come from the device at
 runtime, so a 4090 (128 SM), a 4090D (114 SM) and a 4080 SUPER (80 SM) share one binary.

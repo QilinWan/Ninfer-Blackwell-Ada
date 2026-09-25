@@ -34,7 +34,7 @@ int main() {
         selected.speculative   = ninfer::SpeculativeBackend::Mtp;
         selected.proposal_head = ninfer::ProposalHead::Optimized;
         auto model             = qwen::load_model(artifact, selected, device);
-        const qwen::execution::Parameters parameters(*model);
+        const qwen::execution::Parameters parameters(*model, ninfer::YarnOptions{});
         const auto capacity = [&](std::uint32_t max_context) {
             ninfer::EngineOptions options;
             options.max_context         = max_context;

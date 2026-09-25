@@ -6,6 +6,20 @@
 
 namespace ninfer::ops {
 
+// Immutable, engine-owned coefficients for D256/R64 text RoPE, including three-axis
+// MRoPE. Passed by value to CUDA launches: separate Engines/graphs never share mutable
+// device constants. Vision's D72/R72 rotary domain does not accept this table.
+struct TextRopeScaling {
+    float inverse_frequency[32]{};
+    float attention_factor = 1.0F;
+    bool enabled           = false;
+};
+
+// Qwen/Hugging Face YaRN: beta_fast=32, beta_slow=1, floor/ceil correction range,
+// rotary_dim=64; attention_factor multiplies cos/sin on the rotary dimensions only.
+[[nodiscard]] TextRopeScaling make_text_yarn_scaling(float factor, std::uint32_t original_context,
+                                                     float theta = 1.0e7F);
+
 /**
  * Applies split-half NeoX RoPE in place. For pair i in [0,rotary_dim/2), angle phi(i,t), and
  * each head:
@@ -22,6 +36,11 @@ namespace ninfer::ops {
  * - Vision 2-D: positions I32 [T,2], head_dim=rotary_dim=72; pairs 0..17 use axis 0 and pairs
  *   18..35 use axis 1, each with local frequency theta^(-2*(i%18)/36).
  *
+ * With enabled TextRopeScaling, phi=positions*inverse_frequency[pair] and both cos/sin
+ * are multiplied by attention_factor. Only Text D256/R64 accepts scaling; Vision's
+ * independent 2-D rotation remains native. Coefficients are copied into each CUDA launch
+ * and captured graph, so their host storage need only survive this call.
+ *
  * positions is contiguous and theta is positive and finite. Q/K tensors are BF16
  * [head_dim,heads,T] with positive head counts, contiguous head features and heads, and an optional
  * padded token stride. The registered optimized domains are D256/R64 Text Q/K head geometries
@@ -34,10 +53,11 @@ namespace ninfer::ops {
  * workspace or persistent state.
  */
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream);
+          cudaStream_t stream, const TextRopeScaling* scaling = nullptr);
 
 // Single-tensor form with the same formula and storage contract. The head count comes directly
 // from x; Q versus K role does not change the transformation.
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream);
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream,
+          const TextRopeScaling* scaling = nullptr);
 
 } // namespace ninfer::ops

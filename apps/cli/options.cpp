@@ -1,4 +1,5 @@
 #include "options.h"
+#include "runtime/contract/yarn.h"
 #include "product/speculative_options.h"
 
 #include <cerrno>
@@ -86,6 +87,7 @@ std::string usage_text(const char* argv0) {
            "       [--device N]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
            "N]\n"
+           "       [--rope-yarn-factor F] [--rope-original-max-position N]\n"
            "       [--lm-head-draft]\n"
            "       [--temperature F] [--top-p F] [--top-k N] [--min-p F]\n"
            "       [--presence-penalty F] [--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -145,6 +147,10 @@ Options parse_options(int argc, char** argv) {
             options.device = parse_device(value(arg));
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
+        } else if (arg == "--rope-yarn-factor") {
+            options.yarn.factor = parse_float(value(arg), "rope-yarn-factor", 1.0F, 4.0F);
+        } else if (arg == "--rope-original-max-position") {
+            options.yarn.original_context = parse_u32(value(arg), "rope-original-max-position");
         } else if (arg == "--spec") {
             options.speculative.backend = product::parse_speculative_backend(value(arg));
         } else if (arg == "--draft-tokens") {
@@ -223,6 +229,7 @@ Options parse_options(int argc, char** argv) {
         options.kv_capacity.explicit_tokens < options.max_context) {
         throw std::invalid_argument("--kv-capacity must be at least --max-context");
     }
+    runtime::validate_yarn(options.yarn, options.max_context);
     product::validate_speculative_cli_options(options.speculative);
     if (options.enable_thinking == false && options.reasoning_effort &&
         *options.reasoning_effort != ReasoningEffort::None) {

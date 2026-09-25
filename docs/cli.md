@@ -280,3 +280,30 @@ from this one-request interface; the persistent Engine and server routes own cro
 optional Host backing.
 
 All weight, sequence, workspace, and graph allocations are released when the Engine is destroyed.
+## YaRN context extension
+
+Qwen3.8-27B supports optional static YaRN through `--rope-yarn-factor F` (1 to 4, default 1) and
+`--rope-original-max-position 262144`. Factor 1 uses the unchanged native RoPE path. The reference
+window is 262,144 independent of the compiled attention-address envelope. With YaRN enabled,
+`--max-context` must not exceed `262144 * F`; a 1.5x profile uses `--max-context 393216`. Size
+`--kv-capacity` separately for all active and retained sessions.
+
+The implementation follows Qwen's published `rope_parameters` and Hugging Face Transformers YaRN:
+theta 10,000,000, rotary dimension 64 of a 256-dimensional head, beta_fast 32, beta_slow 1,
+floor/ceil frequency-ramp boundaries, and cos/sin amplitude `1 + 0.1 * ln(F)`. Main Text, MTP and
+three-axis MRoPE use the same immutable per-Engine coefficients; the Vision tower's independent 2-D
+RoPE stays native. No model conversion or weight download is needed. Both the Ada (`sm_89`) and
+Blackwell (`sm_120a`) builds carry the identical coefficient table.
+
+Coefficients are passed by value into each CUDA launch and captured graph rather than installed as
+process-global mutable device symbols. Engine-owned context and KV state never crosses Engine
+boundaries, so a scaled Engine cannot restore or reuse state created under native RoPE or another
+factor; reuse the original full conversation to rebuild its state after changing the factor.
+
+This option is currently restricted to registered Qwen3.8-27B artifacts. Static YaRN may change
+short-context output; successful memory allocation is not evidence of long-context quality. Test
+the intended retrieval, vision and generation workload before relying on the extended window.
+
+References: [Qwen3.8-27B official parameters](https://huggingface.co/Qwen/Qwen3.8-27B#best-practices)
+and the [Transformers YaRN reference](https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py).
+

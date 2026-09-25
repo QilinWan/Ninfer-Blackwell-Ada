@@ -1,5 +1,6 @@
 #include "serve/serve_options.h"
 #include "product/speculative_options.h"
+#include "runtime/contract/yarn.h"
 
 #include <cerrno>
 #include <cstdint>
@@ -82,6 +83,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
            "[--default-max-tokens N] [--default-thinking-budget N] "
+           "[--rope-yarn-factor F] [--rope-original-max-position N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
            "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
            "[--cors] "
@@ -264,6 +266,12 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
+        } else if (arg == "--rope-yarn-factor") {
+            options.yarn.factor =
+                parse_float_in(require_value(arg.c_str()), arg.c_str(), 1.0F, 4.0F);
+        } else if (arg == "--rope-original-max-position") {
+            options.yarn.original_context = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value(arg.c_str()), arg.c_str()));
         } else if (arg == "--spec") {
             options.speculative.backend =
                 product::parse_speculative_backend(require_value("--spec"));
@@ -361,6 +369,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     if (options.prefill_chunk == 0 || options.prefill_chunk % 128 != 0) {
         throw std::invalid_argument("--prefill-chunk must be a positive multiple of 128");
     }
+    runtime::validate_yarn(options.yarn, options.max_context);
     product::validate_speculative_cli_options(options.speculative);
     if (default_max_tokens_explicit) {
         if (options.default_max_tokens <= 0) {

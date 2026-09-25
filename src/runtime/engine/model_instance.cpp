@@ -1,3 +1,4 @@
+#include "runtime/contract/yarn.h"
 #include "runtime/engine/model_instance.h"
 #include "artifact/reader.h"
 #include "artifact/formats.h"
@@ -47,6 +48,7 @@ void validate_options(const EngineOptions& options) {
     if (options.max_concurrency == 0 || options.max_concurrency > kMaximumConcurrency) {
         throw std::invalid_argument("Engine max_concurrency must be in [1,8]");
     }
+    validate_yarn(options.yarn, options.max_context);
     if (options.max_pending_requests == 0 || options.pending_timeout_ms == 0) {
         throw std::invalid_argument("Engine pending request capacity and timeout must be nonzero");
     }
@@ -140,7 +142,7 @@ EngineOptions normalize_engine_options(EngineOptions options) {
 
 ModelInstance::ModelInstance(std::unique_ptr<models::qwen3_5::Model> source,
                              const EngineOptions& options)
-    : model(std::move(source)), parameters(*model),
+    : model(std::move(source)), parameters(*model, options.yarn),
       frontend(models::qwen3_5::make_frontend(
           model->resources(), {.chat_template_path       = options.chat_template_path,
                                .architecture             = model->config().text.architecture,
