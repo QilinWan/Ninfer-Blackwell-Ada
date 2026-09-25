@@ -24,7 +24,7 @@ endfunction()
 ninfer_add_test(ninfer_yarn_parameters_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_yarn_parameters.cpp"
   NEEDS_SOURCE_DIR
-  LIBRARIES ninfer_ops)
+  LIBRARIES ninfer_ops ninfer::json)
 
 function(ninfer_op_oracle_options target)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
