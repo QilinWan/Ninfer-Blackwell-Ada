@@ -84,6 +84,12 @@ set_tests_properties(
   ninfer_kv_cache_append_k8v4_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+# The E8 codec test carries its own main() and links ninfer_ops only, so it stays a valid gate in
+# text-only and Ada builds; it skips (exit 77) where no CUDA device is available.
+ninfer_add_op_test(ninfer_e8_root_codec_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_e8_root_codec.cu"
+  LIBRARIES ninfer_ops)
+
 ninfer_add_op_test(ninfer_prepare_masked_block_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_prepare_masked_block.cpp"
   LIBRARIES ninfer_ops)
