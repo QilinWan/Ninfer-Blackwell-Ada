@@ -21,6 +21,13 @@
 >   on Linux with CUDA 13.1. Other Blackwell GeForce pairs should work but are untested. A pair
 >   with peer access keeps its all-reduces on direct copies (the host mailbox is only used without
 >   P2P); that path is untested too. Exactly two GPUs: `--tp` accepts 1 or 2.
+> - **Windows via WSL2.** Reported working by [@Zeppe79](https://github.com/ValerioDolci/ninfer-tp2/issues/1)
+>   on two RTX 5070 Ti (Windows 11, WSL2 Ubuntu 24.04, CUDA 13.1 from the `wsl-ubuntu` repo): build as
+>   on Linux, keep the weights on the Linux filesystem, and start with **`--no-tp-mailbox`**, because
+>   the pinned-host mailbox exchange times out under WSL2's GPU virtualization (the spin limit is
+>   about 0.8 s, see below). The copy path works but is slower: about 50-65 tok/s reported with
+>   MTP3 against 110-120 on native Linux with the same cards. Reaching the server from Windows needs a
+>   `netsh interface portproxy` rule to the WSL2 address, which changes at every restart.
 > - **Weights.** Verified with the Qwen3.8-27B NVFP4 artifact (`qwen3_8_27b_nvfp4.ninfer`: NVFP4
 >   MLP in layers 0-55, FP8 elsewhere) and with an all-NVFP4 conversion of the QUASAR-QAT
 >   checkpoint (every large layer projection NVFP4; GDN `a`/`b` decoded to BF16, head and embedding
