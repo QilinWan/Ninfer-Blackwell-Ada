@@ -64,3 +64,5 @@ diff -r out/upstream out/fork && echo IDENTICAL
 ## Recorded runs
 
 See `recorded/`: one directory per run with both sides' `case-*.ids` and the commits compared.
+
+- `2026-09-25` — fork `2e7f7d3a` vs upstream `bace20dc`: **identical** on all three cases.
