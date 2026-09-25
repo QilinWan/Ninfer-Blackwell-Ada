@@ -33,3 +33,5 @@ include("${CMAKE_CURRENT_LIST_DIR}/sparse_moe/sources.cmake")
 
 # Ada drops the Blackwell-only kernel routes and links explicit stubs instead.
 include("${PROJECT_SOURCE_DIR}/cmake/Sm89Compat.cmake")
+# Blackwell drops the Ada-only E8 KV route the same way.
+include("${PROJECT_SOURCE_DIR}/cmake/Sm120Compat.cmake")

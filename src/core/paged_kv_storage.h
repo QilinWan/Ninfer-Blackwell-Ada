@@ -71,6 +71,11 @@ struct PagedKVStorageLayout {
     case KvCacheStorage::Int8Group64:
         if (head_dim == kD256KVCacheHeadDim) { return symmetric({DType::I8, 256, DType::FP16, 4}); }
         break;
+    case KvCacheStorage::RK4V4E8:
+        // E8 Conway-Sloane lattice keys and i4x16 values: 4-bit codes packed two per byte,
+        // one per-token FP16 scale each (ks = row absmax / 7). Ada-only device route.
+        if (head_dim == kD256KVCacheHeadDim) { return symmetric({DType::U8, 128, DType::FP16, 1}); }
+        break;
     case KvCacheStorage::Fp8E4M3Row256:
         if (head_dim == kD256KVCacheHeadDim) {
             return symmetric({DType::FP8_E4M3FN, 256, DType::FP16, 1});

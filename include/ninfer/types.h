@@ -30,6 +30,8 @@ inline constexpr std::size_t kDefaultHostKvCapacityBytes = 8ULL << 30;
 enum class KvCacheStorage : std::uint8_t {
     BFloat16,
     Int8Group64,
+    // E8 Conway-Sloane lattice key codebook (4-bit K/V); Ada-only KV route.
+    RK4V4E8,
     Fp8E4M3Row256,
     Nvfp4Group16,
     Fp8KeyNvfp4Value,
