@@ -70,6 +70,22 @@ python3 -m tools.convert \
 
 With `--device cpu` the conversion takes about two minutes (0.75 GB RAM); the default is `cuda`.
 
+## Provenance
+
+Next to the artifact on the Hub: [`SHA256SUMS`](SHA256SUMS) (the artifact's digest — check a download with
+`sha256sum -c SHA256SUMS`), [`artifact-manifest.json`](artifact-manifest.json) (digest, inventory, source
+repositories at the exact revisions the weights were read from, converter and runtime revisions,
+validation hardware) and [`qwen3_8_27b_quasar_nvfp4.ninfer.conversion.json`](qwen3_8_27b_quasar_nvfp4.ninfer.conversion.json),
+the report the converter wrote (every object's method and sources, formats, timing).
+
+- SHA-256 `808a0fa3bb5b3256aadef0d5c8264c106122d1e8483bd2cf74db4e1183cbb570`, 17,397,699,076 bytes,
+  container v3, artifact id `1a09e96c3a16496aa60ce2895402bcd7`.
+- Weights read from `QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4` at `15d2e47bffe5d8ad23928879f8f7d2f74909e259`
+  (2026-09-16), the only tensor source.
+- Converted on 2026-09-24 with upstream's `tools.convert` from this fork at `fa8c9e39` (converter unchanged
+  from upstream v3); verified at `--tp 2` with the fork at `d24bffd2` on 2× RTX 5070 Ti, CUDA 13.1.1,
+  driver 595.91.
+
 ## Serving (production flags on 2× RTX 5070 Ti 16 GB, no P2P)
 
 ```bash

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "artifact": {
+    "filename": "qwen3_8_27b_quasar_nvfp4.ninfer",
+    "bytes": 17397699076,
+    "payload_bytes": 17397260804,
+    "sha256": "808a0fa3bb5b3256aadef0d5c8264c106122d1e8483bd2cf74db4e1183cbb570",
+    "container_version": 3,
+    "artifact_id": "1a09e96c3a16496aa60ce2895402bcd7",
+    "name": "qwen3.8-27b-quasar",
+    "hub_repository": "Feyd89/Qwen3.8-27B-QUASAR-QAT-nvfp4-NInfer",
+    "license": "apache-2.0"
+  },
+  "identity": {
+    "model": "Qwen3.8-27B",
+    "weights": "QUASAR-QAT NVFP4 (quantization-aware training by QUASAR-QAT; no requantization here)",
+    "components": [
+      "text",
+      "vision",
+      "mtp"
+    ],
+    "chat_template": "tools/chat_templates/qwen3_8.jinja from the converter checkout"
+  },
+  "inventory": {
+    "objects": 1524,
+    "tensors": 1518,
+    "resources": 6,
+    "bindings": 1422,
+    "formats": {
+      "nvfp4": 256,
+      "bf16": 534,
+      "fp32": 608,
+      "fp8_e4m3fn_row_bf16": 2,
+      "int32": 1,
+      "q4_g64_fp16": 55,
+      "q5_g64_fp16": 54,
+      "q6_g64_fp16": 1,
+      "q8_g32_fp16": 7
+    },
+    "layouts": {
+      "block_scale_k16_m128x4_v1": 256,
+      "contiguous_le_v1": 1143,
+      "row_scale_v1": 2,
+      "row_split_k128_v1": 117
+    },
+    "source": "python3 -m tools.artifact.inspect qwen3_8_27b_quasar_nvfp4.ninfer --json"
+  },
+  "sources": {
+    "quantized": {
+      "repository": "QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4",
+      "revision": "15d2e47bffe5d8ad23928879f8f7d2f74909e259",
+      "revision_date": "2026-09-16",
+      "downloaded": "2026-09-24",
+      "role": "every tensor: NVFP4 projections (QAT), BF16 GDN a/b projections, norms, embeddings, lm_head, vision tower and MTP head; it is also the --model (base) source, no BF16 Qwen3.8-27B copy is read",
+      "license": "apache-2.0"
+    },
+    "official": {
+      "repository": "Qwen/Qwen3.8-27B",
+      "revision": null,
+      "role": "architecture reference only; no tensor is read from it",
+      "license": "apache-2.0"
+    }
+  },
+  "conversion": {
+    "converter": "ninfer-v3 tools.convert (upstream Neroued/ninfer, unchanged in the fork)",
+    "repository": "https://github.com/ValerioDolci/ninfer-tp2",
+    "revision": "fa8c9e39f86704163818b636f847b129134919ad",
+    "recipe": "quasar_recipe.py",
+    "recipe_summary": {
+      "nvfp4": 512,
+      "fp8_from_bf16": 1,
+      "as_is": 449
+    },
+    "components": "text,vision,mtp",
+    "device": "cpu",
+    "torch": "2.13.0+cu130",
+    "rows_per_chunk": 512,
+    "seconds": 117.2,
+    "date": "2026-09-24",
+    "report": "qwen3_8_27b_quasar_nvfp4.ninfer.conversion.json"
+  },
+  "validation": {
+    "devices": "2x NVIDIA GeForce RTX 5070 Ti 16 GB, no P2P",
+    "compute_capability": "sm_120",
+    "build_target": "120a",
+    "cuda_toolkit": "13.1.1",
+    "driver": "595.91.07",
+    "runtime_repository": "https://github.com/ValerioDolci/ninfer-tp2",
+    "runtime_revision": "d24bffd26807f2cda56b8b16e46beb8a499727c5",
+    "flags": "--tp 2 --devices 0,1 --kv-dtype int8 --max-context 196608 --spec mtp --draft-tokens 3 --vision",
+    "routes": [
+      "text, greedy, MTP3: GSM8K 0.985, MMLU-Pro 0.789, IFEval 0.870, COMET it-en 0.8850 / en-it 0.8910, synthetic long context 1.000 at 8k / 0.667 at 126k",
+      "OpenAI-compatibility probe 12/12: chat, streaming, thinking off, tool calls, vision, 32k outputs",
+      "production serving since 2026-09-24 (MTP3, 196,608-token context, vision, 4 device-state slots)"
+    ],
+    "date": "2026-09-24",
+    "details": "README.md, section 'Measured quality'"
+  }
+}
