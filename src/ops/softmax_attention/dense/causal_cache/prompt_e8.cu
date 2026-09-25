@@ -6,6 +6,7 @@
 #include "core/device.h"
 #include "ops/common/math.h"
 #include "ops/kv_cache/append/launch.h"
+#include "ops/softmax_attention/dense/causal_cache/e8_output_rotate.cuh"
 #include "ops/softmax_attention/dense/causal_cache/prompt_e8.cuh"
 
 #include <cstdint>
@@ -83,6 +84,17 @@ void causal_attention_prompt_e8_launch(const Tensor& q, const Tensor& k, const T
         launch.template operator()<false>();
     } else {
         launch.template operator()<true>();
+    }
+    // See e8_output_rotate.cuh: the E8 route stores V in the rotated domain, so the prompt
+    // attention output has to be un-rotated before the caller sees it.
+    if (q.ne[1] == 24) {
+        e8_inverse_rotate_output_launch<24, 256>(
+            out, q.ne[2], q.ne[2], 0, valid_columns.data == nullptr ? nullptr : &valid_columns,
+            q.ne[3], stream);
+    } else {
+        e8_inverse_rotate_output_launch<16, 256>(
+            out, q.ne[2], q.ne[2], 0, valid_columns.data == nullptr ? nullptr : &valid_columns,
+            q.ne[3], stream);
     }
 }
 
