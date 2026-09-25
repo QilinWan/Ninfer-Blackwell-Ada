@@ -10,8 +10,13 @@
 >   [Two GPUs](docs/cli.md#two-gpus) and [serving](docs/serving.md).
 > - **Verified on:** two RTX 5070 Ti 16 GB without peer access, Linux, CUDA 13.1, core clocks
 >   capped at about 2.1 GHz. Other GPUs and P2P-capable pairs are untested.
-> - **Measured** (decode t/s at 0 / 16K context, one request): plain 58 / 57, MTP3 110 / 117,
->   DFlash2 118 / 120; GSM8K 0.975-0.98, the same as vLLM on the same weights.
+> - **Measured** with upstream's own benchmark suite against the published RTX 5090 runs, same
+>   weights on both, uncapped clocks: plain decode 94-96% of the 5090 (68.7 vs 71.2 tok/s at 7.7k),
+>   MTP3 79-87% (corpus of 75 requests 139.7 vs 161.1), prefill 58-86%; with the QUASAR-QAT
+>   artifact 90-97% MTP3 and above the 5090 in plain decode. Full tables, per category and
+>   concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md). At clocks capped to
+>   2.1 GHz, one request, decode at 0 / 16K context: plain 58 / 57, MTP3 110 / 117, DFlash2 118 / 120.
+>   GSM8K 0.975-0.985, the same as vLLM on the same weights.
 > - `--tp 1` is meant to behave exactly as upstream. The commits on top of upstream are grouped
 >   so that they can be proposed upstream in pieces.
 >
@@ -51,7 +56,7 @@
 > - **Where it pays off.** The gain grows with context: prompt processing is 1.5-2.1x and decode
 >   1.1x at short context to 1.65x at 184K (1.75x with uncapped clocks) against llama.cpp on the same two boards. On short
 >   prose prompts llama.cpp with MTP was about 8% faster. Measured with one request at a time;
->   concurrency is tested up to 4 requests.
+>   concurrency is measured up to 8 requests (see the two-GPU performance page).
 > - **Numerics.** The split matmuls sum their two halves in a different order than one GPU does,
 >   so long greedy generations can drift from a single-GPU run of the same weights. Measured
 >   quality matches: GSM8K 0.975-0.98 at `--tp 2`, vLLM on the same weights 0.98.
