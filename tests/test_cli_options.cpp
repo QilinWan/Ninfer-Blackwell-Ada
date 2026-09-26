@@ -127,6 +127,8 @@ int main() {
                       "CLI log level was not parsed");
     failures += check(help.find("--log-level") != std::string::npos,
                       "CLI help omits the log-level control");
+    failures += check(help.find("--vram-headroom-mib") != std::string::npos,
+                      "CLI help omits the VRAM headroom control");
     failures += check(rejects([] {
                           (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
                                        "--log-level", "verbose"});

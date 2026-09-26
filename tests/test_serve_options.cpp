@@ -282,6 +282,16 @@ int main() {
                   "--no-prefix-reuse did not preserve independently configured capacities");
     }
 
+    const ServeOptions auto_headroom =
+        parse({"ninfer-serve", "model.ninfer", "--kv-capacity", "auto", "--vram-headroom-mib", "2048"});
+    failures += check(auto_headroom.kv_capacity.mode == ninfer::KvCapacityMode::Automatic &&
+                          auto_headroom.kv_capacity.automatic_headroom_bytes == (2048ULL << 20),
+                      "automatic KV capacity must accept --vram-headroom-mib");
+    bool headroom_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--vram-headroom-mib", "2048"});
+    } catch (const std::invalid_argument&) { headroom_rejected = true; }
+    failures += check(headroom_rejected, "--vram-headroom-mib without --kv-capacity auto was accepted");
     const ServeOptions response_store =
         parse({"ninfer-serve", "model.ninfer", "--response-store-max-records", "42",
                "--response-store-max-mib", "8"});
