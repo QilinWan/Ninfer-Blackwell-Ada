@@ -7,8 +7,10 @@
 #include "ops/linear/fp8/fp8_a16_mma.cuh"
 
 namespace ninfer::ops::detail {
-// Two-device output-row half of [248320,5120]. It inherits the parent's measured schedules and
-// route thresholds; they have not been re-measured at this shape.
+// Two-device output-row half of the [248320,5120] vocabulary head. It copies the parent's
+// hand-written K-split / MMA-tail dispatch and inherits its measured schedules and route
+// thresholds; they have not been re-measured at this shape. Every row tile (16/64/128) divides
+// 124160 = 128 * 970.
 namespace {
 template <int ActiveTokens>
 void launch_tile(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {

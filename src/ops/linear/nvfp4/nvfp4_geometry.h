@@ -45,9 +45,10 @@ using Nvfp4N8192K5120 = Nvfp4Geometry<8192, 5120>;
 // two-device half [5120,3072]) and over the MLP down projection ([5120,17408] and [5120,8704])
 // takes the W4A4 route. linear() over each half uses the same crossover, so rank 0's linear_add
 // and rank 1's linear() in one row-parallel pair always take the same route.
-// This tree's measured crossovers (the fork's 7 for the output family is its own 5070 Ti number,
-// recorded in the ledger at G-TP2-1 / 提示词 坑⑥): [5120,6144] and its two-device half
-// [5120,3072] take the A4 route from T=17, [5120,17408] and [5120,8704] from T=8.
+// This tree's measured crossovers on 2x RTX 5060 Ti: [5120,6144] and its two-device half
+// [5120,3072] take the A4 route from T=17, [5120,17408] and [5120,8704] from T=8. Upstream
+// fc3993d8 moved the output family to 17, which is where this tree had already measured it;
+// the fork's 7 is its own 5070 Ti number (recorded at G-TP2-1 / 提示词 坑⑥).
 inline constexpr std::int32_t kNvfp4OutputFamilyFirstA4Tokens = 17;
 inline constexpr std::int32_t kNvfp4DownFamilyFirstA4Tokens   = 8;
 

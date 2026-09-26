@@ -9,6 +9,8 @@ namespace ninfer::ops::detail {
 // re-measured at this shape. Q8 reduces K-slice partials in shared memory, so the
 // caller-side capacity quote stays 0 (linear_workspace_capacity_bytes), and both
 // row-parallel ranks take identical activation routes: this family has no A8 route.
+// The sliced-K instances' constraint `StaticK % (KWarps * 64) == 0` (KWarps 4/8 = 256/512)
+// holds at this K: 3072 = 6 * 512.
 namespace {
 using Geometry = Q8N5120K3072;
 using Access   = Q8ScaleAccess;

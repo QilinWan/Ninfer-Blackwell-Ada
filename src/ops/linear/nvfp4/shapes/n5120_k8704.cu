@@ -5,7 +5,7 @@
 namespace ninfer::ops::detail {
 // Two-device input-column half of [5120,17408]. It inherits the parent's measured schedules and
 // A16/A4 route thresholds, including the parent's TMA case; it has not been re-measured at this
-// shape.
+// shape. K=8704 keeps whole tiles for every parent instance (17 * 512 = 34 * 256 = 68 * 128).
 namespace {
 using Geometry = Nvfp4Geometry<5120, 8704>;
 using Gemv =

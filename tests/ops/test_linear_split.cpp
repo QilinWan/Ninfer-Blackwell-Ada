@@ -538,15 +538,15 @@ int main() {
              23U,
              {1, 8, 48, 128, 512, 1024},
              {kA16, kA4}},
-            // T=7 is left to the linear_add split suite: the half takes A4 from 7, as linear_add
-            // over [5120,6144] does, while linear() over the whole weight takes it from 8.
+            // The half takes A4 from linear_add's [5120,6144] crossover, which linear() over the
+            // whole weight now shares (17), so T=16 and T=17 compare one route on both sides.
             {"nvfp4 output",
              QType::NVFP4,
              SplitAxis::Row,
              5120,
              6144,
              25U,
-             {1, 8, 48, 128, 512, 1024},
+             {1, 8, 16, 17, 48, 128, 512, 1024},
              {kA16, kA4}},
             {"bf16 output", QType::BF16, SplitAxis::Row, 5120, 6144, 24U, {1, 8, 48}, {kA16}},
         };

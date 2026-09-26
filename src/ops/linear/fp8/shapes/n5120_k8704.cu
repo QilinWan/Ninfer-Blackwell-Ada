@@ -4,7 +4,9 @@
 
 namespace ninfer::ops::detail {
 // Two-device input-column half of [5120,17408]. It inherits the parent's measured schedules and
-// A16/A8 route thresholds; they have not been re-measured at this shape.
+// A16/A8 route thresholds; they have not been re-measured at this shape. Every K step the
+// parent's ladder uses (GEMV/SIMT 512, sliced-K 256/512, A16 MMA 64/128, A8 TMA 128) divides
+// K=8704 = 17 * 512.
 namespace {
 using Geometry = Fp8Geometry<5120, 8704>;
 using Gemv     = Fp8A16GemvSchedule<8, 2, 8, 4, Fp8CodeCache::Default, 2, 2>;

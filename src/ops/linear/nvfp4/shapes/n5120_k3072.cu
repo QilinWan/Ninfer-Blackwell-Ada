@@ -7,7 +7,8 @@ namespace ninfer::ops::detail {
 // inherits the parent's measured schedules and A16/A4 route thresholds, including the parent's TMA
 // case, so rank 1's linear() and rank 0's linear_add over the other half of one row-parallel
 // projection take the same activation route at every width; it has not been re-measured at this
-// shape. Registered at every positive T, as the contract in ops/linear.h states.
+// shape. Registered at every positive T, as the contract in ops/linear.h states. K=3072 keeps
+// whole tiles for every parent instance (6 * 512 = 12 * 256 = 48 * 64).
 namespace {
 using Geometry = Nvfp4Geometry<5120, 3072>;
 using Gemv =
