@@ -65,6 +65,11 @@ un-rotation) and the `nf4`/DFlash2 selector-format limitation:
 | Vision, CLI, HTTP serving | yes | yes |
 | Static YaRN context extension | yes | yes |
 
+One caveat in this build: the offline `ninfer` and `ninfer-perplexity` argument parsers accept only
+`bf16|int8|fp8|nvfp4|k8v4` for `--kv-dtype`, so `rk4v4-e8` is reachable through serving
+(`ninfer-serve --kv-dtype rk4v4-e8`) but not through those two CLIs. The released Ada archive ships
+`bin/ninfer-serve` only, as r1 did.
+
 ## Optional YaRN for Qwen3.8-27B (both builds)
 
 `--rope-yarn-factor 1.5 --rope-original-max-position 262144 --max-context 393216`
@@ -97,6 +102,22 @@ recipe or choose another supported mixture of formats.
 The current engine requires v3 artifacts. Existing official v2 downloads can be
 [upgraded locally](docs/weight-conversion.md#upgrade-an-existing-v2-artifact) without downloading
 the weights again.
+
+## Prebuilt engines
+
+Both builds ship as relocatable archives — no compiler and no CUDA Toolkit on the target host, the
+archive carries its own FFmpeg 6 and CUDA runtime libraries.
+
+* **[engine-sm120a-cu131-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm120a-cu131-r2)**
+  — RTX 50 series (`sm_120a`) / CUDA 13.1.
+* **[engine-sm89-cu128-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm89-cu128-r2)**
+  — RTX 40 series (`sm_89`) / CUDA 12.8, vision on, with `rk4v4-e8` and YaRN.
+
+The withdrawn `engine-sm89-cu128-r1` must not be used: its E8 route predates the output
+un-rotation and emits garbage. r2 replaces it.
+
+Each release carries a `.sha256` companion file; the build provenance and the measured ceilings are
+in the release notes.
 
 ## Quick start
 

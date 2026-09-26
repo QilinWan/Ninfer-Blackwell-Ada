@@ -79,6 +79,11 @@ MTP 接受率 **63.2% / 66.7%**、解码 81.8 / 83.0 tok/s。
 | 多模态、CLI、HTTP 服务 | 是 | 是 |
 | **静态 YaRN 上下文外推** | **是** | **是** |
 
+本构建有一处已知限制：离线 `ninfer` 与 `ninfer-perplexity` 的参数解析器只接受
+`bf16|int8|fp8|nvfp4|k8v4`，因此 `rk4v4-e8` 只能通过服务端使用
+（`ninfer-serve --kv-dtype rk4v4-e8`），两个 CLI 用不了。发布的 Ada 包与 r1 一致，只含
+`bin/ninfer-serve`。
+
 一个 cubin 覆盖整个 Ada 家族：SM 数量、L2 大小与驻留策略都在运行时从设备读取，
 因此 4090（128 SM）、4090D（114 SM）与 4080 SUPER（80 SM）**共用一个二进制**。
 
@@ -96,9 +101,12 @@ Ada 用户请选择 `groupwise-int` 配方，并使用本仓库的 Ada 构建。
 
 * **[engine-sm120a-cu131-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm120a-cu131-r2)**
   —— RTX 50 系（sm_120a）/ CUDA 13.1，已附带运行所需依赖，无需安装 CUDA 工具链。
-* `engine-sm89-cu128-r2`（RTX 40 系 / CUDA 12.8）**正在准备中**；
-  打包与发布步骤见 [docs/maintainer/rtx4080s-32g/PUBLISH-sm89-r2.md](docs/maintainer/rtx4080s-32g/PUBLISH-sm89-r2.md)。
-  在该版本发布前，请勿使用已下架的 r1 —— **r1 的 E8 路线会输出乱码**。
+* **[engine-sm89-cu128-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm89-cu128-r2)**
+  —— RTX 40 系（sm_89）/ CUDA 12.8，带多模态，含 `rk4v4-e8` 与 YaRN 全部修复。
+
+已下架的 `engine-sm89-cu128-r1` 请勿使用：它的 E8 路线缺少输出逆旋转，会输出乱码，由 r2 取代。
+
+两个发行版都附带 `.sha256` 校验文件；构建溯源与实测上限见各自的发行说明。
 
 ---
 
