@@ -382,6 +382,8 @@ continuation 或 checkpoint。
 
 ### 8.1 双 GPU 张量并行
 
+完整设计（权重切分、传输、双设备 CUDA Graph、镜像状态、测试与已知限制）见[双 GPU 张量并行](tensor-parallel.md)。
+
 `EngineOptions.tp = 2` 时 Engine 为 `devices` 中的每个 rank 建立一个 `DeviceContext`，组成
 `ExecutionContext`，并在驱动允许时启用 peer access（否则 collectives 经 host staging 复制）。
 加载得到一个双设备 Model；`ModelInstance` 持有 rank 0 与 rank 1 的 `execution::Parameters`，
