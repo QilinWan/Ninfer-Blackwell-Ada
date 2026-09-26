@@ -358,7 +358,34 @@ int main() {
     failures += check(explicit_effort.reasoning_effort == ninfer::ReasoningEffort::Low &&
                           explicit_effort.enable_thinking == true,
                       "explicit reasoning effort did not remain the effective effort");
+    auto resolves_to = [&](RequestedReasoningEffort requested, ninfer::ReasoningEffort resolved) {
+        request.reasoning_effort = requested;
+        const auto folded        = resolve_prompt_semantics(request, defaults);
+        return folded.reasoning_effort == resolved && folded.enable_thinking == true;
+    };
+    failures +=
+        check(resolves_to(RequestedReasoningEffort::High, ninfer::ReasoningEffort::XHigh) &&
+                  resolves_to(RequestedReasoningEffort::Max, ninfer::ReasoningEffort::XHigh) &&
+                  resolves_to(RequestedReasoningEffort::Adaptive, ninfer::ReasoningEffort::XHigh),
+              "high, max and adaptive did not fold onto the template's xhigh tier");
+    failures += check(resolves_to(RequestedReasoningEffort::Minimal, ninfer::ReasoningEffort::Low),
+                      "minimal did not fold onto the template's low tier");
+    failures +=
+        check(resolves_to(RequestedReasoningEffort::XHigh, ninfer::ReasoningEffort::XHigh) &&
+                  resolves_to(RequestedReasoningEffort::Medium, ninfer::ReasoningEffort::Medium),
+              "template-native efforts did not pass through unchanged");
     request.reasoning_effort.reset();
+    request.chat_template_kwargs_json = R"({"reasoning_effort":"high"})";
+    failures += check(resolve_prompt_semantics(request, defaults).reasoning_effort ==
+                          ninfer::ReasoningEffort::XHigh,
+                      "nested reasoning_effort alias did not fold onto the template's xhigh tier");
+    request.chat_template_kwargs_json.clear();
+    failures += check(parse_requested_reasoning_effort("adaptive") ==
+                              RequestedReasoningEffort::Adaptive &&
+                          requested_reasoning_effort_name(RequestedReasoningEffort::Adaptive) ==
+                              "adaptive" &&
+                          !parse_requested_reasoning_effort("ultra"),
+                      "adaptive is not a wire effort value, or an unknown effort was accepted");
     failures += check(resolve_prompt_semantics(request, configured).preserve_thinking == true,
                       "server preserve-thinking default was not resolved");
     request.preserve_thinking = false;

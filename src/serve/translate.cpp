@@ -154,13 +154,16 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
                                   "reasoning_effort", "conflicting_template_option");
         // A request effort overrides the server's thinking default.
         result.enable_thinking = enables;
+        // The Qwen3.8 template raises on every effort but xhigh, medium, and low,
+        // and it lives in the artifact, so the wider OpenAI and Anthropic
+        // vocabularies fold onto those tiers here rather than in the template:
+        // high, max, and adaptive render as xhigh; minimal renders as low. The
+        // Qwen3.6 template ignores the effort.
         switch (*effort) {
         case RequestedReasoningEffort::None:
             result.reasoning_effort = ninfer::ReasoningEffort::None;
             break;
         case RequestedReasoningEffort::Minimal:
-            result.reasoning_effort = ninfer::ReasoningEffort::Minimal;
-            break;
         case RequestedReasoningEffort::Low:
             result.reasoning_effort = ninfer::ReasoningEffort::Low;
             break;
@@ -168,13 +171,10 @@ ResolvedPromptSemantics resolve_prompt_semantics(const GenerationRequest& reques
             result.reasoning_effort = ninfer::ReasoningEffort::Medium;
             break;
         case RequestedReasoningEffort::High:
-            result.reasoning_effort = ninfer::ReasoningEffort::High;
-            break;
         case RequestedReasoningEffort::XHigh:
-            result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
-            break;
         case RequestedReasoningEffort::Max:
-            result.reasoning_effort = ninfer::ReasoningEffort::Max;
+        case RequestedReasoningEffort::Adaptive:
+            result.reasoning_effort = ninfer::ReasoningEffort::XHigh;
             break;
         }
     }

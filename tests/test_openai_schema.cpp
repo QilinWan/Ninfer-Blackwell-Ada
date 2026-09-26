@@ -713,6 +713,16 @@ int test_reasoning_and_extensions() {
     body["chat_template_kwargs"] = Json{{"future", nullptr}};
     failures += check(parse(body).generation.messages.size() == 1,
                       "null unknown template option is neutral");
+    body                     = base_request();
+    body["reasoning_effort"] = "adaptive";
+    failures += check(parse(body).generation.reasoning_effort == RequestedReasoningEffort::Adaptive,
+                      "adaptive reasoning_effort did not parse");
+    body["reasoning_effort"] = "high";
+    failures += check(parse(body).generation.reasoning_effort == RequestedReasoningEffort::High,
+                      "high reasoning_effort did not parse");
+    body["reasoning_effort"] = "ultra";
+    failures += check(api_error([&] { (void)parse(body); }).param == "reasoning_effort",
+                      "unknown reasoning_effort accepted");
 
     body                        = base_request();
     body["repetition_penalty"]  = 1.0;

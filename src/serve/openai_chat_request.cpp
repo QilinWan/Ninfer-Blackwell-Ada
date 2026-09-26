@@ -782,8 +782,8 @@ void parse_reasoning_effort(const Json& body, GenerationRequest& output) {
     const std::string value = body.at("reasoning_effort").get<std::string>();
     const std::optional<RequestedReasoningEffort> parsed = parse_requested_reasoning_effort(value);
     if (!parsed) {
-        bad_request("reasoning_effort must be one of none, minimal, low, medium, high, xhigh, or "
-                    "max",
+        bad_request("reasoning_effort must be one of none, minimal, low, medium, high, xhigh, "
+                    "max, or adaptive",
                     "reasoning_effort");
     }
     output.reasoning_effort = *parsed;

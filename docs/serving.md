@@ -344,8 +344,12 @@ post-close model token, preparation is rejected with HTTP 400 code
 `thinking_budget_capacity_insufficient` rather than partially inserting control. The server does
 not promise that the model will emit nonempty content or a tool call after the marker.
 
-For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The selected template
-interprets the other standard values (`minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
+For Chat Completions, `reasoning_effort: "none"` requests disabled thinking. The server folds the
+other standard values onto the tiers the Qwen3.8 template distinguishes before rendering: `high`,
+`max`, and `adaptive` render as `xhigh`; `minimal` renders as `low`; `low`, `medium`, and `xhigh`
+pass through unchanged. Any other value is rejected with HTTP 400. The same folding applies to
+`reasoning.effort` (Responses) and `output_config.effort` (Messages), and it works with published
+artifacts because the template they embed is left untouched.
 Conflicting explicit `enable_thinking` and effort values return `conflicting_template_option`.
 
 `preserve_thinking` controls reasoning retention according to the selected template. Request
@@ -544,7 +548,7 @@ wire response contains typed `output` Items.
 | `top_p` | finite number in `[0,1]` |
 | `metadata` | at most 16 string pairs; keys at most 64 characters and values at most 512 |
 | `client_metadata` | Codex client extension; an object or `null`, accepted as opaque tracing metadata with no generation effect |
-| `reasoning.effort` | `none` requests disabled thinking; other standard effort values pass to the selected template |
+| `reasoning.effort` | `none` requests disabled thinking; other standard effort values fold onto the template tiers as for Chat Completions (`high`, `max`, `adaptive` render as `xhigh`; `minimal` as `low`) |
 | `chat_template_kwargs` | template parameters as a JSON object; standard options merge with typed fields |
 | `preserve_thinking` | alias for `chat_template_kwargs.preserve_thinking`; conflicting values are rejected |
 | `text.format` | `text` (default), `json_object`, or `json_schema`; see output constraints above |
@@ -812,8 +816,9 @@ before closing the block. Request lowering reconstructs the local prompt from th
 remains usable across serve restarts.
 `display:"omitted"` is rejected because NInfer cannot provide Anthropic's
 encrypted hidden-reasoning restore semantics. `preserve_thinking` remains a NInfer extension for
-closed-turn reasoning history. `output_config.effort` passes its protocol-validated value to the
-selected template. `output_config.format` accepts JSON Schema output as described above.
+closed-turn reasoning history. `output_config.effort` folds onto the template tiers as for Chat
+Completions: `high` and `max` render as `xhigh`, `low` and `medium` pass through unchanged.
+`output_config.format` accepts JSON Schema output as described above.
 
 User-defined tools support `name`, `description`, object `input_schema`, `input_examples`, and
 `strict`. `tool_choice` accepts `auto`, `none`, `any`, or named `tool`; `disable_parallel_tool_use`
