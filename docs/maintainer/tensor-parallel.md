@@ -498,8 +498,9 @@ fits one 16 GB board, so the model is the synthetic two-layer Qwen3.5 of
 [`test_text_context_tp2.cpp`](../../tests/models/qwen3_5/test_text_context_tp2.cpp) (one GDN and one
 full-attention block, FP8 projections, BF16 norms, a byte-level tokenizer), written by the `write`
 mode of the `ninfer_qwen3_5_text_context_tp2_test` executable that
-[`tests.cmake`](../../tests/models/qwen3_5/tests.cmake) registers. The recorded run
-(`recorded/2026-09-25`) found fork `2e7f7d3a` and upstream `bace20dc` identical on all three cases.
+[`tests.cmake`](../../tests/models/qwen3_5/tests.cmake) registers. The recorded runs found fork
+`2e7f7d3a` and upstream `bace20dc` (`recorded/2026-09-25`), and fork `b3f93dd6`, the merge of
+upstream `e31bc99b`, and upstream `e31bc99b` (`recorded/2026-09-27`), identical on all three cases.
 
 The gate covers the Engine, scheduler, prefill and decode programs, attention, GDN, and the FP8 and
 BF16 Ops on one device. It does not cover the NVFP4 and INT-quantized GEMMs, MTP, DFlash/DFlash2,
@@ -612,9 +613,10 @@ run by hand, not a CTest.
    re-instantiate fallback and explicit peer-lease releases in `release_*_strict` appear in the
    development notes. The first two were removed (`4534b7bf`, `fa8c9e39`); the last describes the pre-v3
    fork, and the current lease rides inside `KVExecutionTablePool::mirror_rows_`.
-6. **Golden gate not re-recorded.** The only recorded run is at `2e7f7d3a`. `839fdea0` and
-   `a0369376` later changed `ProgramImpl` construction and turned `prepare_graphs`, which tp 1 also
-   runs, into the retry loop.
+6. **Golden gate re-recorded after the upstream merge.** `839fdea0` and `a0369376` changed
+   `ProgramImpl` construction and turned `prepare_graphs`, which tp 1 also runs, into the retry
+   loop after the first record (`2e7f7d3a`); the second record (`b3f93dd6`, after merging upstream
+   `e31bc99b`) covers them. The gate still does not cover NVFP4, the format upstream rewrote most.
 7. **One-way launch gate.** `gate_launch` orders a launch after rank 1's earlier work but nothing on
    rank 1's stream after it (left open by the development review). The per-round
    `synchronize_devices()` covers the paths I read; I did not verify every rank 1 issue between a

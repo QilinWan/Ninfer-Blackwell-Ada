@@ -88,8 +88,8 @@
 >   the log. `NINFER_TP_MAILBOX_PROBE=off` skips the probe, `=fail` forces the fallback. A hang in
 >   a decode graph's first launch at startup steps the transport down the same way (above) instead
 >   of stopping; `NINFER_TP_MAILBOX_FAULT=draft|any` simulates one, for testing.
-> - **Upstream.** Based on upstream `bace20dc` (24 September 2026); later upstream changes are
->   merged by hand.
+> - **Upstream.** Based on upstream `e31bc99b` (26 September 2026, merged into the fork base
+>   `bace20dc` of 24 September); later upstream changes are merged by hand.
 >
 > Below is the upstream README, with the fork's additions marked **Fork note**: its single-RTX-5090
 > statements describe upstream's product, not this fork's tested configuration.

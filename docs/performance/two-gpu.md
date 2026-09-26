@@ -8,7 +8,9 @@ presence 1.0, INT8 group-64 KV, 1,024-token prefill chunk, prefix reuse off, one
 point). The only change is a wrapper that adds `--tp 2 --devices 0,1` to every `ninfer-serve` command.
 The RTX 5090 column is upstream's published `nvfp4` profile ([runs N0, N3, NS, ND](qwen3.8-27b.md#scope-and-run-records),
 2026-08-17 and 2026-09-06, CUDA 13.3, official artifact); it was not re-measured here, and this fork is
-built on a later upstream commit (`bace20dc`), so a fresh 5090 run could move that column.
+built on a later upstream commit (`bace20dc`), so a fresh 5090 run could move that column. The two-GPU
+figures were measured before the fork merged upstream `e31bc99b` (unified linear templates, two-stage
+GDN) and have not been re-measured since.
 
 **Setup.** 2× RTX 5070 Ti 16 GB (PCIe 5.0 x8 + x8, no peer access: the captured all-reduces go through
 the pinned-host mailbox), Ryzen 9 9900X, Linux, CUDA 13.1, **uncapped clocks** (3.1-3.2 GHz under load;
