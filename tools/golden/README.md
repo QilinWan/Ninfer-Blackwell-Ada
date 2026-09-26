@@ -39,7 +39,8 @@ a board that holds a 27B artifact, `record.sh` takes it as-is and covers them to
 
 This fork: `ninja -C build ninfer-tp1-golden` (registered in `apps/CMakeLists.txt`).
 
-Upstream, in a detached worktree at the fork's base commit (the runner is not part of upstream):
+Upstream, in a detached worktree at the fork's base commit, or the upstream commit last merged
+into the fork (the runner is not part of upstream):
 
 ```bash
 git -C /path/to/upstream worktree add --detach /path/to/upstream-base <base-commit>
@@ -66,3 +67,5 @@ diff -r out/upstream out/fork && echo IDENTICAL
 See `recorded/`: one directory per run with both sides' `case-*.ids` and the commits compared.
 
 - `2026-09-25` — fork `2e7f7d3a` vs upstream `bace20dc`: **identical** on all three cases.
+- `2026-09-27` — fork `b3f93dd6` (merge of upstream `e31bc99b`) vs upstream `e31bc99b`: **identical**
+  on all three cases.
