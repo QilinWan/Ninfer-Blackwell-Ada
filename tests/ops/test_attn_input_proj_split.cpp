@@ -485,15 +485,15 @@ int main() {
         std::cout << "peer access: " << (ops::enable_peer_access(ec) ? "direct" : "host-staged")
                   << '\n';
         failures += verify_split_rejections(ec);
-        // T reaches the A16 decode (1), SIMT (2..5), K-split MMA (6..33) and GEMM routes, the A8
+        // T reaches the A16 decode (1), SIMT (2..5), sliced-K MMA (6..33) and MMA routes, the A8
         // crossover (5) and each A8 tile band up to the prefill tile.
         failures += run_case(
             ec, QType::FP8_E4M3FN_ROW_BF16, 46U, {1, 2, 4, 5, 6, 33, 34, 64, 65, 129, 145, 1024},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
-        // T reaches the A16 decode (1) and SIMT chunks (2..33), the W4A4 crossover (3/4), each
-        // W4A4 MMA tile band and the TMA route (1024).
+        // T reaches the A16 decode (1), SIMT (2), each sliced-K (3..24) and MMA tile band, the A4
+        // crossover (3/4), each A4 MMA tile band and both TMA tiles (513, 1024).
         failures += run_case(ec, QType::NVFP4, 47U,
-                             {1, 2, 3, 4, 5, 32, 33, 64, 65, 97, 129, 193, 385, 513, 1024},
+                             {1, 2, 3, 4, 5, 16, 24, 32, 33, 64, 65, 97, 129, 193, 385, 513, 1024},
                              {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4});
     } catch (const std::exception& error) {
         std::cerr << "attn_input_proj split: " << error.what() << '\n';

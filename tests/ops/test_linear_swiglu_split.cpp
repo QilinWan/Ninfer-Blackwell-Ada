@@ -619,11 +619,11 @@ int main() {
         constexpr auto kA16 = ops::LinearPolicy::A16Only;
         constexpr auto kA8  = ops::LinearPolicy::AllowA8;
         constexpr auto kA4  = ops::LinearPolicy::AllowA4;
-        // Token counts reach every route the half inherits: NVFP4 decode, small-T, fused W4A4
-        // (through 128), the materialized linear() + silu_mul() route, and the fused TMA route at
-        // whole 256-token tiles; FP8 decode, small-T and A8.
+        // Token counts reach every route the half inherits: NVFP4 decode, small-T (SIMT at T=2,
+        // sliced-K beyond), fused A4 MMA (5..255) and the fused A4 TMA route from 256, including a
+        // partial tile (300); FP8 decode, small-T, the A16 sliced-K and MMA matrix routes, and A8.
         const std::vector<Case> cases{
-            {"nvfp4 gate_up", QType::NVFP4, 31U, {1, 4, 5, 16}, {kA16}},
+            {"nvfp4 gate_up", QType::NVFP4, 31U, {1, 2, 4, 5, 16}, {kA16}},
             {"nvfp4 gate_up", QType::NVFP4, 32U, {1, 4, 5, 16, 128, 129, 300, 1024}, {kA4}},
             {"fp8 gate_up",
              QType::FP8_E4M3FN_ROW_BF16,

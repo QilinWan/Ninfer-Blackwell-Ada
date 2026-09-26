@@ -1156,9 +1156,11 @@ int main() {
     InputWeights nvfp4_weights;
     failures += make_input_weights(ec, kNvfp4, 47U, nvfp4_weights);
     if (failures == 0) {
-        // Decode, the SIMT chunks, each W4A4 MMA tile band and the TMA route (1024).
+        // A16: decode, the T=2 SIMT, each sliced-K band (T<=8, 16, 24, 32) and each MMA band. A4:
+        // each MMA tile band and the TMA route (from T=512).
         failures += run_input_case(
-            ec, nvfp4_weights, 47U, {1, 2, 3, 4, 5, 17, 32, 33, 64, 65, 97, 129, 193, 300, 1024},
+            ec, nvfp4_weights, 47U,
+            {1, 2, 3, 4, 5, 9, 17, 32, 33, 64, 65, 97, 129, 193, 300, 512, 1024},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4});
         // The NVFP4 conv forms fuse A16 at B=1 through W=3 under AllowA4 (through W=16 under
         // A16Only) and take A4 from W=4, and when batched at every W; W=3..4 straddle it.

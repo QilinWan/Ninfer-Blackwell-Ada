@@ -24,6 +24,7 @@
 
 #include "core/device.h"
 #include "core/weight.h"
+#include "ops/linear/nvfp4/nvfp4_geometry.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
 #include "ops/split_test_support.h"
@@ -398,22 +399,26 @@ int main() {
         constexpr auto kA16 = ops::LinearPolicy::A16Only;
         constexpr auto kA8  = ops::LinearPolicy::AllowA8;
         constexpr auto kA4  = ops::LinearPolicy::AllowA4;
-        // Token counts reach each half's decode, SIMT-chunk, A8/A4 crossover and MMA routes, the
-        // W4A4 schedule seams, and (at 1024) the whole problem's TMA route.
+        // Token counts reach each half's decode, SIMT, A8/A4 crossover and MMA routes, the A4
+        // schedule seams, and (at 1024) the whole problem's TMA route. The NVFP4 A4 floors come
+        // from the constants the linear_add plan and each half's linear() read, so the cases
+        // straddle the crossover wherever it sits.
+        constexpr std::int32_t kDownA4   = ops::detail::kNvfp4DownFamilyFirstA4Tokens;
+        constexpr std::int32_t kOutputA4 = ops::detail::kNvfp4OutputFamilyFirstA4Tokens;
         const std::vector<Case> cases{
             {"nvfp4 mlp down",
              QType::NVFP4,
              5120,
              17408,
              31U,
-             {1, 7, 8, 48, 128, 384, 512, 1024},
+             {1, 5, kDownA4 - 1, kDownA4, 48, 128, 384, 512, 1024},
              {kA16, kA4}},
             {"nvfp4 output",
              QType::NVFP4,
              5120,
              6144,
              34U,
-             {1, 6, 7, 8, 32, 48, 128, 384, 512, 1024},
+             {1, 2, 8, kOutputA4 - 1, kOutputA4, 32, 48, 128, 384, 512, 1024},
              {kA16, kA4}},
             {"fp8 output",
              QType::FP8_E4M3FN_ROW_BF16,
