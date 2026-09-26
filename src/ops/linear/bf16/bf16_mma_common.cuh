@@ -1,5 +1,6 @@
 #pragma once
 #include "core/device.h"
+#include "core/kernel_attr_once.h"
 #include "ops/common/mma.cuh"
 #include "ops/linear/bf16/bf16_schedule.cuh"
 #include "ops/linear/common/epilogue.cuh"
@@ -10,9 +11,10 @@ template <int Bytes, auto Kernel>
 int bf16_prepare_shared() {
     static_assert(Bytes <= 99 * 1024);
     if constexpr (Bytes > 48 * 1024) {
-        static const auto status =
-            cudaFuncSetAttribute(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
-        CUDA_CHECK(status);
+        // Per device: a function attribute set only on the first device leaves the other rank at
+        // the default 48 KiB (kernel_attr_once.h).
+        static core::FuncAttrPerDevice attribute;
+        attribute.ensure(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
     }
     return Bytes;
 }

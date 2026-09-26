@@ -2,6 +2,7 @@
 
 #include "ops/common/math.h"
 #include "ops/common/token_slices.h"
+#include "core/kernel_attr_once.h"
 #include "ops/linear/bf16/bf16_operands.h"
 #include "ops/linear/bf16/bf16_a16_gemv.cuh"
 #include "ops/linear/bf16/bf16_a16_simt.cuh"
@@ -32,9 +33,8 @@ void launch_bf16_a16_gemv(const Bf16A16Operands& p, Output output, Epilogue epil
             throw std::invalid_argument("BF16 GEMV activation exceeds shared memory capacity");
         bytes = p.k * 2;
         if (bytes + static_bytes > 48 * 1024) {
-            static const auto status = cudaFuncSetAttribute(
-                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, max_dynamic);
-            CUDA_CHECK(status);
+            static core::FuncAttrPerDevice attribute;
+            attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, max_dynamic);
         }
     }
     kernel<<<p.rows / Schedule::kBlockRows, Schedule::kThreads, bytes, stream>>>(
