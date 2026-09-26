@@ -12,13 +12,15 @@
 // the generated data depends on the global head index, and the reference heads are checked to be
 // pairwise distinct, so a wrong window or a permutation inside it cannot pass.
 //
-// Shard and single-device runs are expected to be bitwise equal. The chunked launchers select
-// their instantiation from H_v (prepare_wy_wu takes <64,32,8> for both 24 and 48; state_passing
-// uses NStrip 16 or 32, which only partitions the state's own d axis; output only changes the
-// CTA-to-chunk assignment), so each head is evaluated with the same arithmetic in the same order.
+// Shard and single-device runs are expected to be bitwise equal. Since upstream 0784e76f the
+// chunked route is two kernels: prepare works per key head (Q/K packets) and per value head
+// (control matrices), and recurrence picks its value tile from H_v and the SM count
+// (chunked::value_tile: on a 70-SM RTX 5070 Ti, 32 columns at 48 heads, 64 at 24). The tile only
+// partitions a head's value columns across CTAs and warps; each column's key reductions run the
+// same MMA sequence in the same order, so each head is evaluated with the same arithmetic.
 // Leg A also qualifies the shard geometry against the Op's registered FP64 criteria.
 //
-// Leg B runs a 4141-token prefill (64 full chunks and a 45-token recurrent tail) followed by five
+// Leg B runs a 4141-token prefill (259 16-token chunks, the last one padded) followed by five
 // decode steps from the published state. Legs D and E cover the depthwise conv1d, whose 10240
 // channels split into three per-rank blocks, and gated_rmsnorm, whose {128} weight is replicated.
 //
@@ -344,8 +346,8 @@ struct Runner {
         g     = DeviceBuffer(gate_elems * 4);
         beta  = DeviceBuffer(gate_elems * 4);
         state = DeviceBuffer(static_cast<std::size_t>(kStateDim) * kStateDim * value_heads * 4);
-        // The query legitimately returns 0 below one full 64-token chunk (the recurrent route
-        // needs no staging); an arena still has to own something, so floor it.
+        // The query legitimately returns 0 below 16 tokens (the recurrent route needs no
+        // staging); an arena still has to own something, so floor it.
         workspace.emplace(std::max<std::size_t>(ops::gated_delta_net_workspace_capacity_bytes(
                                                     qk_heads, value_heads, 1, max_tokens),
                                                 256));
@@ -603,7 +605,7 @@ void parity_case(int prefill_tokens, int decode_steps, std::uint64_t salt) {
         return;
     }
 
-    // --- prefill: 64 full 64-token chunks plus a recurrent tail, one call, as the runtime does.
+    // --- prefill: 16-token chunks, the last one padded, one call, as the runtime does.
     parent.run(parent_in, 0, prefill_tokens, /*normalize_qk=*/true);
     const auto parent_out   = parent.read_out(prefill_tokens);
     const auto parent_state = parent.read_state();
@@ -933,15 +935,16 @@ int main() {
     // conformance suite measured those criteria at (T <= 128; the criteria are distances to an
     // exact oracle and BF16 error accumulates with the recurrence length, so applying them at
     // T = 4141 would measure the length, not the split -- verified: the tp1 geometry misses them
-    // there too, on the same data). T = 1 is the pure recurrent route, 65 the chunk+tail
-    // boundary, 128 two full chunks. The oracle is a full O(T * H_v * 128^2) FP64 recurrence.
+    // there too, on the same data). T = 1 is the pure recurrent route; 65 (five 16-token chunks,
+    // the last padded), 128 and 64 take the chunked route since upstream 0784e76f and are judged
+    // by its profile. The oracle is a full O(T * H_v * 128^2) FP64 recurrence.
     oracle_case(1, /*normalize_qk=*/true, 31001u);
     oracle_case(65, /*normalize_qk=*/true, 31002u);
     oracle_case(128, /*normalize_qk=*/true, 31003u);
     oracle_case(64, /*normalize_qk=*/false, 31004u);
 
-    // Leg B -- the headline case: 4141 prefill tokens (64 full chunks + a 45-token recurrent
-    // tail) then five decode steps continuing from the published state.
+    // Leg B -- the headline case: 4141 prefill tokens (259 chunks of 16, the last padded) then
+    // five decode steps continuing from the published state.
     parity_case(4141, 5, 31005u);
 
     // Legs D/E -- the rest of the head/channel-sliced GDN block.
