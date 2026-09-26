@@ -589,12 +589,10 @@ run by hand, not a CTest.
 
 ## Open questions
 
-1. **Stale descriptions of changed code.** The comment on `output_logits_split_rank0` in
-   `execution/tp.h` and [Qwen3.5 model](qwen3_5-model.md#tensor-parallel-execution) still describe
-   "two local pitched copies"; the code uses `concat_rows_bf16_launch` since `07f76beb`. The
-   `TpTransportStatus` comment in `program/program.h` lists only `"mailbox"` and `"copies"`; the code
-   also produces `"mailbox, MTP draft on copies"`. The serve `tensor parallel` line says prefill
-   checkpoints "are skipped when they are full", while at tp 2 the reclaim runs first.
+1. ~~Stale descriptions of changed code.~~ Aligned on 2026-09-27: the comment on
+   `output_logits_split_rank0` in `execution/tp.h` and the [Qwen3.5 model](qwen3_5-model.md#tensor-parallel-execution)
+   note describe the `concat_rows` kernel, the `TpTransportStatus` comment in `program/program.h` lists the
+   intermediate transport, and the serve `tensor parallel` line describes the reclaim before a skip.
 2. **The WSL2 mechanism is a hypothesis.** The comments on `PeerEvents::StagedScope` and in
    `graphs.cpp` state that a staged copy stalls behind a spinning exchange kernel; the development
    notes call this a hypothesis not reproducible on native Linux. When they were written it was

@@ -59,8 +59,10 @@ struct OrdinaryPeerFrame {
                                                             std::int32_t first, std::int32_t last);
 
 // Rank 0 alone receives the complete [V,C] `logits`: it pulls rank 1's contiguous `partial[1]`
-// block into its own `staging` [V_1,C] with one cross-device copy, then two local pitched copies
-// interleave both halves column by column. Rank 1 keeps no copy of the logits. `logits` and
+// block into its own `staging` [V_1,C] with one cross-device copy, then one kernel (`concat_rows`)
+// interleaves both halves column by column; a kernel rather than two pitched copies, because a
+// captured 2D memcpy node cannot take a changed column count or buffer in place between the CUDA
+// Graph profiles of one class. Rank 1 keeps no copy of the logits. `logits` and
 // `staging` are contiguous BF16 on rank 0. On return rank 0's stream is ordered after rank 1's
 // projection and rank 1's stream after rank 0's pull, so both may reuse their operands.
 void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,

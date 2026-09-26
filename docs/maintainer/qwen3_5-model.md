@@ -281,8 +281,9 @@ Both all-reduces leave the identical BF16 sum on the two ranks, so every later p
 before the split gating projection because the fused norm-and-gating Op has no split form. The
 final norm is replicated; each rank projects its half of the vocabulary, and rank 0 alone
 assembles the complete logits, where sampling runs: one cross-device copy pulls rank 1's
-contiguous `[V/2, C]` half into rank-0 staging and two local pitched copies interleave both halves
-column by column. Rank 1 keeps no copy of the logits, in prefill, ordinary decode, verification
+contiguous `[V/2, C]` half into rank-0 staging and one kernel (`concat_rows`) interleaves both
+halves column by column (a captured 2D memcpy node could not follow the column count across graph
+profiles). Rank 1 keeps no copy of the logits, in prefill, ordinary decode, verification
 and the MTP proposals alike.
 
 Rank 1 receives its own copies of the control tensors: prefill fills its positions on device and

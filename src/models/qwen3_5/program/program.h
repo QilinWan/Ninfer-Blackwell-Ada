@@ -402,7 +402,7 @@ struct PhysicalUsageSnapshot {
 
 // The transport the captured tp 2 all-reduces use after startup; see LoadSummary::tp_transport.
 struct TpTransportStatus {
-    std::string transport; // "mailbox", "copies", or empty at tp 1
+    std::string transport; // "mailbox", "mailbox, MTP draft on copies", "copies"; empty at tp 1
     double probe_ms = 0.0; // startup probe round trip; 0 when no probe ran
     std::string fallback;  // why the mailbox was dropped or narrowed; empty otherwise
 };
