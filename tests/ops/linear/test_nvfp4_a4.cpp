@@ -50,8 +50,13 @@ int run_nvfp4_a4() {
     // allowance there depends on the seed, not on N. The gate/up half keeps its parent's seed 722,
     // whose first row block is the parent's; seed 727 gives relative L2 0.24 at any N with K=5120,
     // over the 0.16 A4 allowance, so it is not usable here.
+    // The half's TMA route starts at T=256 as its parent's does; 255/256/257 straddle that
+    // cut, 257 with a partial tile, and replay a graph there as the parent's list does.
+    auto n17408_invocations = invocations;
+    for (int t : {255, 256, 257})
+        n17408_invocations.push_back({t, CallForm::Policy, ops::LinearPolicy::AllowA4, true});
     failures += run_shape("NVFP4_A4", ActivationCompute::A4, make_nvfp4_weight,
-                          {17408, 5120, 722U, Comparison::Sampled, true, invocations});
+                          {17408, 5120, 722U, Comparison::Sampled, true, n17408_invocations});
     failures += run_shape("NVFP4_A4", ActivationCompute::A4, make_nvfp4_weight,
                           {5120, 8704, 729U, Comparison::Sampled, true, invocations});
     // Two-device half of the attention and GDN output projections, across its A16 floor (A4 from

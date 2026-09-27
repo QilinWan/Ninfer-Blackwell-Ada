@@ -472,7 +472,8 @@ int main() {
         constexpr auto kA8  = ops::LinearPolicy::AllowA8;
         constexpr auto kA4  = ops::LinearPolicy::AllowA4;
         // Token counts reach each half's decode, SIMT-chunk, A8/A4 crossover, MMA, and (at 1024)
-        // TMA routes, which the halves inherit from the problem they split.
+        // TMA routes, which the halves inherit from the problem they split. The NVFP4 gate/up
+        // half enters A4 TMA at 256, so 255/256/257 straddle that cut, 257 with a partial tile.
         const std::vector<Case> cases{
             {"fp8 attention input",
              QType::FP8_E4M3FN_ROW_BF16,
@@ -504,7 +505,7 @@ int main() {
              34816,
              5120,
              14U,
-             {1, 5, 32, 48, 128, 256, 1024},
+             {1, 5, 32, 48, 128, 255, 256, 257, 1024},
              {kA16, kA4}},
             {"bf16 attention input",
              QType::BF16,

@@ -486,14 +486,18 @@ int main() {
                   << '\n';
         failures += verify_split_rejections(ec);
         // T reaches the A16 decode (1), SIMT (2..5), sliced-K MMA (6..33) and MMA routes, the A8
-        // crossover (5) and each A8 tile band up to the prefill tile.
+        // crossover (5) and each A8 tile band up to the prefill tile, 97..128 at both ends.
         failures += run_case(
-            ec, QType::FP8_E4M3FN_ROW_BF16, 46U, {1, 2, 4, 5, 6, 33, 34, 64, 65, 129, 145, 1024},
+            ec, QType::FP8_E4M3FN_ROW_BF16, 46U,
+            {1, 2, 4, 5, 6, 33, 34, 64, 65, 97, 128, 129, 145, 1024},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
         // T reaches the A16 decode (1), SIMT (2), each sliced-K (3..24) and MMA tile band, the A4
-        // crossover (3/4), each A4 MMA tile band and both TMA tiles (513, 1024).
+        // crossover (3/4), each A4 MMA tile band and both TMA tiles. The shard keeps the 128-token
+        // tile through T=1024 (513, 1024) and the parent does not, so at 1024 the two sides differ
+        // in tile; 1025 is the shard's first 256-token tile, against the parent's same tile.
         failures += run_case(ec, QType::NVFP4, 47U,
-                             {1, 2, 3, 4, 5, 16, 24, 32, 33, 64, 65, 97, 129, 193, 385, 513, 1024},
+                             {1, 2, 3, 4, 5, 16, 24, 32, 33, 64, 65, 97, 129, 193, 385, 513, 1024,
+                              1025},
                              {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA4});
     } catch (const std::exception& error) {
         std::cerr << "attn_input_proj split: " << error.what() << '\n';

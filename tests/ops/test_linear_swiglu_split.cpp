@@ -472,7 +472,7 @@ int verify_registry() {
     };
 
     const std::vector<Entry> admitted{
-        {QType::NVFP4, ops::LinearPolicy::A16Only, {1, 2, 16}},
+        {QType::NVFP4, ops::LinearPolicy::A16Only, {1, 2, 3, 8, 9, 16}},
         {QType::NVFP4, ops::LinearPolicy::AllowA4, {1, 2, 16, 48, 129, 1024}},
         {QType::FP8_E4M3FN_ROW_BF16, ops::LinearPolicy::A16Only, {1, 2, 48, 1024}},
         {QType::FP8_E4M3FN_ROW_BF16, ops::LinearPolicy::AllowA8, {1, 2, 48, 1024}},
@@ -489,6 +489,20 @@ int verify_registry() {
                           << " rejected the half: " << error.what() << '\n';
                 ++failures;
             }
+        }
+    }
+
+    // NVFP4 A16 (and AllowA8, which runs it) is registered through T=16: beyond that the half is
+    // refused, as the parent is, rather than routed.
+    for (const auto policy : {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8}) {
+        for (const std::int32_t tokens : {17, 1024}) {
+            try {
+                (void)ops::linear_swiglu_workspace_capacity_bytes(
+                    QType::NVFP4, kShardGateUpRows, kInputRows, policy, tokens, tokens);
+                std::cerr << "registry: NVFP4 " << policy_name(policy) << " T=" << tokens
+                          << " was admitted on the half\n";
+                ++failures;
+            } catch (const std::invalid_argument&) {}
         }
     }
 
@@ -620,10 +634,11 @@ int main() {
         constexpr auto kA8  = ops::LinearPolicy::AllowA8;
         constexpr auto kA4  = ops::LinearPolicy::AllowA4;
         // Token counts reach every route the half inherits: NVFP4 decode, small-T (SIMT at T=2,
-        // sliced-K beyond), fused A4 MMA (5..255) and the fused A4 TMA route from 256, including a
+        // sliced-K M8 at 3..8 and M16 at 9..16, both ends of each; A16 ends at 16, see the
+        // registry), fused A4 MMA (5..255) and the fused A4 TMA route from 256, including a
         // partial tile (300); FP8 decode, small-T, the A16 sliced-K and MMA matrix routes, and A8.
         const std::vector<Case> cases{
-            {"nvfp4 gate_up", QType::NVFP4, 31U, {1, 2, 4, 5, 16}, {kA16}},
+            {"nvfp4 gate_up", QType::NVFP4, 31U, {1, 2, 3, 4, 5, 8, 9, 16}, {kA16}},
             {"nvfp4 gate_up", QType::NVFP4, 32U, {1, 4, 5, 16, 128, 129, 300, 1024}, {kA4}},
             {"fp8 gate_up",
              QType::FP8_E4M3FN_ROW_BF16,

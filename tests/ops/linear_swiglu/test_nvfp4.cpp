@@ -89,10 +89,13 @@ int main() {
         failures += run_profile("LinearSwiGLU NVFP4_A4",
                                 {QType::NVFP4, 34816, 5120, 17408, 1803U, ActivationCompute::A4},
                                 kA4Cases, std::array<std::int32_t, 4>{65, 97, 128, 129});
-        // The two-device output-row half runs the same routes at half the gate/up rows.
+        // The two-device output-row half runs the same routes at half the gate/up rows. A16 is
+        // registered through T=16 only; the half's list reaches every band of it: decode (1),
+        // SIMT (2), sliced-K M8 (3..8) and M16 (9..16) at both ends.
+        constexpr std::array<std::int32_t, 7> kA16HalfCases{1, 2, 3, 4, 8, 9, 16};
         failures += run_profile("LinearSwiGLU NVFP4_A16 half",
                                 {QType::NVFP4, 17408, 5120, 8704, 1805U, ActivationCompute::A16},
-                                kA16Cases);
+                                kA16HalfCases);
         failures += run_profile("LinearSwiGLU NVFP4_A4 half",
                                 {QType::NVFP4, 17408, 5120, 8704, 1807U, ActivationCompute::A4},
                                 kA4Cases, std::array<std::int32_t, 2>{128, 256});
