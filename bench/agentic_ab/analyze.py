@@ -440,6 +440,7 @@ def metrics(A, cold_seeds):
         "n_copy": len(copy),
         "completion_tokens": sum(r["completion"] for r in rows),
         "thinking_tokens": sum(r["thinking"] for r in rows),
+        "reasoning_chars": sum(r.get("reasoning_chars") or 0 for r in rows),
         "decode_seconds": sum(r["decode_s"] for r in rows),
         "spec_accept": (sum(r["spec_accepted"] for r in rows) /
                         max(1, sum(r["spec_drafted"] for r in rows))),
@@ -979,7 +980,10 @@ def main(argv):
              "and queueing; compare repeated runs before attributing a thinking-length "
              "difference to a build."
              % (per_arm(lambda m: m["completion_tokens"], ntok),
-                per_arm(lambda m: m["thinking_tokens"], ntok),
+                per_arm(lambda m: m["thinking_tokens"], ntok)
+                if any(ms[a]["thinking_tokens"] for a in arms) else
+                "not counted by these serves without a thinking budget; reasoning characters "
+                "streamed to the client: " + per_arm(lambda m: m["reasoning_chars"], ntok),
                 per_arm(lambda m: m["thinking_budget_hits"]),
                 per_arm(lambda m: "%s of %s" % (ntok(m["budget_hit_ngram"]),
                                                 ntok(m["budget_hit_tokens"])))))
