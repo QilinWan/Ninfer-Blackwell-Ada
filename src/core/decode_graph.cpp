@@ -221,10 +221,10 @@ DecodeGraphPeerBridge::DecodeGraphPeerBridge(int origin_device, int peer_device)
             "into itself");
     }
     const ScopedCurrentDevice scope;
-    cudaEvent_t created[3] = {nullptr, nullptr, nullptr};
-    // fork_ is recorded on the origin, join_ and gate_ on the peer.
-    const int device_of[3] = {origin_device, peer_device, peer_device};
-    for (int slot = 0; slot < 3; ++slot) {
+    cudaEvent_t created[4] = {nullptr, nullptr, nullptr, nullptr};
+    // fork_ and release_ are recorded on the origin, join_ and gate_ on the peer.
+    const int device_of[4] = {origin_device, peer_device, peer_device, origin_device};
+    for (int slot = 0; slot < 4; ++slot) {
         cudaError_t status = cudaSetDevice(device_of[slot]);
         if (status == cudaSuccess) {
             status = cudaEventCreateWithFlags(&created[slot], cudaEventDisableTiming);
@@ -235,23 +235,26 @@ DecodeGraphPeerBridge::DecodeGraphPeerBridge(int origin_device, int peer_device)
                                      cudaGetErrorName(status) + ": " + cudaGetErrorString(status));
         }
     }
-    fork_ = created[0];
-    join_ = created[1];
-    gate_ = created[2];
+    fork_    = created[0];
+    join_    = created[1];
+    gate_    = created[2];
+    release_ = created[3];
 }
 
 DecodeGraphPeerBridge::~DecodeGraphPeerBridge() {
     destroy_event(fork_);
     destroy_event(join_);
     destroy_event(gate_);
+    destroy_event(release_);
 }
 
 DecodeGraphPeerBridge::DecodeGraphPeerBridge(DecodeGraphPeerBridge&& other) noexcept
     : origin_device_(other.origin_device_), peer_device_(other.peer_device_), fork_(other.fork_),
-      join_(other.join_), gate_(other.gate_) {
-    other.fork_ = nullptr;
-    other.join_ = nullptr;
-    other.gate_ = nullptr;
+      join_(other.join_), gate_(other.gate_), release_(other.release_) {
+    other.fork_    = nullptr;
+    other.join_    = nullptr;
+    other.gate_    = nullptr;
+    other.release_ = nullptr;
 }
 
 DecodeGraphPeerBridge& DecodeGraphPeerBridge::operator=(DecodeGraphPeerBridge&& other) noexcept {
@@ -259,14 +262,17 @@ DecodeGraphPeerBridge& DecodeGraphPeerBridge::operator=(DecodeGraphPeerBridge&& 
     destroy_event(fork_);
     destroy_event(join_);
     destroy_event(gate_);
+    destroy_event(release_);
     origin_device_ = other.origin_device_;
     peer_device_   = other.peer_device_;
     fork_          = other.fork_;
     join_          = other.join_;
     gate_          = other.gate_;
+    release_       = other.release_;
     other.fork_    = nullptr;
     other.join_    = nullptr;
     other.gate_    = nullptr;
+    other.release_ = nullptr;
     return *this;
 }
 
@@ -280,6 +286,19 @@ void DecodeGraphPeerBridge::gate_launch(cudaStream_t peer_stream,
     CUDA_CHECK(cudaEventRecord(gate_, peer_stream));
     ScopedCurrentDevice::select(origin_device_);
     CUDA_CHECK(cudaStreamWaitEvent(origin_stream, gate_, 0));
+}
+
+void DecodeGraphPeerBridge::gate_peer_after_launch(cudaStream_t peer_stream,
+                                                   cudaStream_t origin_stream) const {
+    if (release_ == nullptr) {
+        throw std::logic_error(
+            "a moved-from DecodeGraphPeerBridge cannot order peer work after a graph launch");
+    }
+    const ScopedCurrentDevice scope;
+    ScopedCurrentDevice::select(origin_device_);
+    CUDA_CHECK(cudaEventRecord(release_, origin_stream));
+    ScopedCurrentDevice::select(peer_device_);
+    CUDA_CHECK(cudaStreamWaitEvent(peer_stream, release_, 0));
 }
 
 DecodeGraphDefinition::~DecodeGraphDefinition() { reset(); }

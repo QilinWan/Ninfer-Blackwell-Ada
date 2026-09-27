@@ -21,9 +21,10 @@ namespace ninfer {
 //   record(join) on the peer stream    ->  wait(join) on the origin stream  (peer rejoins origin)
 //
 // The join is mandatory: cudaStreamEndCapture fails with cudaErrorStreamCaptureUnjoined if a
-// forked stream is still outstanding. A third event serves gate_launch() below, which is about
-// replay rather than capture. All three are created once (cudaEventCreate is not capturable) and
-// one instance serves an unbounded number of sequential captures and launches.
+// forked stream is still outstanding. A third and a fourth event serve gate_launch() and
+// gate_peer_after_launch() below, which are about replay rather than capture. All four are created
+// once (cudaEventCreate is not capturable) and one instance serves an unbounded number of
+// sequential captures and launches.
 class DecodeGraphPeerBridge {
 public:
     DecodeGraphPeerBridge(int origin_device, int peer_device);
@@ -43,7 +44,7 @@ public:
     [[nodiscard]] cudaEvent_t join_event() const noexcept { return join_; }
 
     [[nodiscard]] bool live() const noexcept {
-        return fork_ != nullptr && join_ != nullptr && gate_ != nullptr;
+        return fork_ != nullptr && join_ != nullptr && gate_ != nullptr && release_ != nullptr;
     }
 
     // REPLAY-side ordering, not capture-side. A dual-device graph is launched on the ORIGIN
@@ -55,12 +56,21 @@ public:
     // work before every launch, which transitively orders the whole graph after it.
     void gate_launch(cudaStream_t peer_stream, cudaStream_t origin_stream) const;
 
+    // The converse, also replay-side. Work issued on the ORIGIN stream after a launch already
+    // waits for the whole graph, peer nodes included; work issued on the peer device's own stream
+    // does not, since the graph's peer nodes do not run on that stream. Called right after a
+    // launch, this orders the peer stream after the whole launched graph, so later peer work (the
+    // commit's rank 1 fold, mirrored page and slot updates) cannot overtake the graph's peer
+    // nodes even before the caller's host synchronization.
+    void gate_peer_after_launch(cudaStream_t peer_stream, cudaStream_t origin_stream) const;
+
 private:
-    int origin_device_ = 0;
-    int peer_device_   = 0;
-    cudaEvent_t fork_  = nullptr;
-    cudaEvent_t join_  = nullptr;
-    cudaEvent_t gate_  = nullptr;
+    int origin_device_   = 0;
+    int peer_device_     = 0;
+    cudaEvent_t fork_    = nullptr;
+    cudaEvent_t join_    = nullptr;
+    cudaEvent_t gate_    = nullptr;
+    cudaEvent_t release_ = nullptr;
 };
 
 // The peer half of a dual-device capture: which stream to enroll, and the bridge that enrolls it.

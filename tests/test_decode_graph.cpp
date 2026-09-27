@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <iostream>
@@ -127,6 +128,40 @@ int exercise_dual_device_capture() {
     origin.synchronize();
     failures += expect_value(origin_storage.base(), 0x22222222U, "updated dual-device launch");
     failures += expect_value(peer_storage.base(), 0x55555555U, "gated dual-device peer launch");
+
+    // The converse ordering. The graph's peer nodes do not run on the peer's own stream, so work
+    // issued there after a launch is ordered behind them only by gate_peer_after_launch(). A bulk
+    // memset ahead of the graph's peer write keeps that write late: without the converse gate the
+    // marker issued after the launch usually lands first and is overwritten with 0x55.
+    constexpr std::size_t kBulkBytes = std::size_t{256} << 20;
+    peer.bind_to_current_thread();
+    ninfer::DeviceArena peer_bulk(kBulkBytes);
+    origin.bind_to_current_thread();
+    ninfer::DecodeGraphDefinition slow_peer;
+    slow_peer.capture(
+        origin.stream,
+        [&] {
+            CUDA_CHECK(cudaMemsetAsync(origin_storage.base(), 0x22, sizeof(std::uint32_t),
+                                       origin.stream));
+            peer.bind_to_current_thread();
+            CUDA_CHECK(cudaMemsetAsync(peer_bulk.base(), 0, kBulkBytes, peer.stream));
+            CUDA_CHECK(cudaMemsetAsync(peer_storage.base(), 0x55, sizeof(std::uint32_t),
+                                       peer.stream));
+            origin.bind_to_current_thread();
+        },
+        peer_capture);
+    ninfer::DecodeGraphExecutable slow_executable;
+    slow_executable.instantiate(slow_peer);
+    bridge.gate_launch(peer.stream, origin.stream);
+    slow_executable.launch(origin.stream);
+    bridge.gate_peer_after_launch(peer.stream, origin.stream);
+    peer.bind_to_current_thread();
+    CUDA_CHECK(cudaMemsetAsync(peer_storage.base(), 0x99, sizeof(std::uint32_t), peer.stream));
+    peer.synchronize();
+    origin.bind_to_current_thread();
+    origin.synchronize();
+    failures += expect_value(peer_storage.base(), 0x99999999U,
+                             "peer work issued after a launch overtook the graph's peer nodes");
 
     bool body_error = false;
     ninfer::DecodeGraphDefinition discarded;

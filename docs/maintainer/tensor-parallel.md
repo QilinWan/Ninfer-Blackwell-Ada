@@ -300,7 +300,9 @@ touched inside a capture cannot be loaded there and batch shape selects kernels;
 only, as upstream. `run_prepared` launches on rank 0's stream after
 `DecodeGraphPeerBridge::gate_launch`, which orders the launch after work already issued on rank 1's
 own stream (the round's mirrored page and table updates); the graph's own edges order rank 1's nodes
-only after the graph root.
+only after the graph root. Right after the launch, `gate_peer_after_launch` orders rank 1's stream
+after the whole graph, so rank 1 work issued before the round's `synchronize_devices()` (none today)
+could not overtake the graph's rank 1 nodes either.
 
 **Topology classes and profile swaps.** As on one device, a graph family keeps one executable per
 topology class and installs a class's other profiles with `DecodeGraphExecutable::update`
@@ -615,10 +617,12 @@ run by hand, not a CTest.
    `ProgramImpl` construction and turned `prepare_graphs`, which tp 1 also runs, into the retry
    loop after the first record (`2e7f7d3a`); the second record (`b3f93dd6`, after merging upstream
    `e31bc99b`) covers them. The gate still does not cover NVFP4, the format upstream rewrote most.
-7. **One-way launch gate.** `gate_launch` orders a launch after rank 1's earlier work but nothing on
-   rank 1's stream after it (left open by the development review). The per-round
-   `synchronize_devices()` covers the paths I read; I did not verify every rank 1 issue between a
-   launch and that synchronization.
+7. ~~One-way launch gate.~~ Audited on 2026-09-27: at each of the three gated launch sites
+   (ordinary, MTP, DFlash2 rounds in `decode.cpp`) the host issues nothing on rank 1's stream
+   between the launch and the round's `synchronize_devices()`, on the success and the failure path;
+   the startup launches (`probe_peer_mailbox`, `instantiate_graph_family`) are bracketed by
+   synchronizations. `gate_peer_after_launch` now also orders rank 1's stream after each launch,
+   so the property no longer rests on that call-site discipline.
 8. **Unpublished figures.** The step-by-step MTP3 and plain-decode figures in §4.7 come from
    development measurements published nowhere else in the repository; they are quoted with their
    scope but cannot be re-derived from repository files.

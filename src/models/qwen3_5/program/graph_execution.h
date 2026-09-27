@@ -11,6 +11,9 @@ namespace ninfer::models::qwen3_5::execution {
 // A tensor-parallel decode graph holds both ranks' nodes and is launched once, on rank 0's stream.
 // Its edges order rank 1's nodes after the graph root, not after work already issued on rank 1's
 // own stream (the mirrored KV page and table updates of the round), so the launch is gated on it.
+// Nor is work issued on rank 1's stream after the launch ordered behind the graph's rank 1 nodes;
+// every caller synchronizes both devices right after, and rank 1's stream is gated on the launch
+// as well so that ordering does not rest on that discipline alone.
 // Captured mailbox all-reduces need no host step per launch: their epoch flags advance with every
 // launch on both ranks, and ProgramImpl::synchronize_devices() reports a timed-out exchange.
 template <class Context, class Body>
@@ -27,6 +30,10 @@ void run_prepared(Context& state, DecodeGraphExecutable* executable, Body&& body
                                                       state.execution.device.stream);
         }
         executable->launch(state.execution.device.stream);
+        if (state.execution.tp != nullptr) {
+            state.execution.graph_bridge->gate_peer_after_launch(
+                state.execution.tp->execution->dev[1]->stream, state.execution.device.stream);
+        }
     } else {
         nvtx::ScopedRange eager_range(nvtx::Name::DecodeEager, nvtx::Category::Decode);
         body();
