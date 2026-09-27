@@ -1,16 +1,30 @@
 #pragma once
 
-// ninfer::ops::detail - the kernel behind the pinned-host mailbox transport for TP2 collectives.
+// ninfer::ops::detail - the kernels behind the pinned-host mailbox transport for TP2 collectives.
 //
 // TRANSPORT CONTRACT (why this exists). Without peer access a cross-device cudaMemcpyAsync is
 // staged by the driver through host memory, and the event chain that orders the staged copy costs
-// far more than the payload. This kernel pair replaces the whole choreography: both ranks run one
-// kernel CONCURRENTLY, publish their operand into their own pinned host slot, release a flag,
-// spin on the peer's flag, then sum locally -- no events, no copy engine, no driver round trip
-// inside the exchange. Measured on 2x RTX 5060 Ti under Windows 11 WDDM: ~41 us per 10 KiB
+// far more than the payload. An exchange kernel pair replaces the whole choreography: both ranks
+// run one kernel CONCURRENTLY, publish their operand into their own pinned host slot, release a
+// flag, spin on the peer's flag, then sum locally -- no events, no copy engine, no driver round
+// trip inside the exchange. Measured on 2x RTX 5060 Ti under Windows 11 WDDM: ~41 us per 10 KiB
 // reduction (graph-replayed) against ~277 us for the staged path.
 //
-// EPOCH PROTOCOL (per slot and rank; see PeerMailbox for how slots are assigned).
+// TWO KERNELS, ONE TRANSPORT. peer_exchange_pipelined_kernel (the default) and the original
+// peer_exchange_sum_kernel (kept verbatim, selected by NINFER_TP_MAILBOX_LEGACY=1 for A/B runs on
+// one binary) move the same bytes and combine them with the same arithmetic; they differ only in
+// how the protocol is split across threads, so a mailbox runs exactly one of them for its whole
+// life (PeerMailbox::kernel()) and the two never share a slab.
+//
+// The original kernel publishes the WHOLE payload behind one flag per slot: every block fences,
+// meets the others on a device-scope arrival counter, and the last one releases; each thread then
+// moves its four 16-byte vectors one at a time (the in-place stores keep the compiler from
+// overlapping the next load with them), so a publish costs four dependent VRAM loads and a read
+// four dependent PCIe round trips. The pipelined kernel makes each WARP an independent mailbox
+// lane with its own flag and epoch, loads all its vectors before storing any, and overlaps its
+// first probe of the peer's flag with its own publish; see the second EPOCH PROTOCOL below.
+//
+// EPOCH PROTOCOL, ORIGINAL KERNEL (per slot and rank; see PeerMailbox for how slots are assigned).
 //
 //   every block, before it arrives:   target = epoch + 1     (epoch: this rank's count of
 //                                                              completed publishes of this slot,
@@ -187,6 +201,210 @@ inline int peer_exchange_blocks(std::size_t bytes) {
     const std::size_t vecs = bytes / sizeof(PeerVec);
     const std::size_t want = (vecs + kPeerGroup * 256 - 1) / (kPeerGroup * 256);
     return want < 1 ? 1 : (want > 16 ? 16 : static_cast<int>(want));
+}
+
+// ---- pipelined kernel (the default) ------------------------------------------------------------
+//
+// EPOCH PROTOCOL, PIPELINED KERNEL (per slot, per warp lane and rank). Warp w of the grid owns the
+// vectors w*32*G + j*32 + lane, j in [0, G) -- 512*G contiguous bytes, every warp access 512
+// contiguous bytes -- plus one release flag of its own in the slot (mine_flags[w *
+// kPeerFlagStride], a 64-byte host line each) and one epoch of its own (epochs[w], this device's
+// memory):
+//
+//   publish: lane 0 reads target = epochs[w] + 1; every lane loads its G partial vectors (all in
+//            flight), then stores them to the rank's host slot; __syncwarp() orders the warp's
+//            stores before lane 0's release, and lane 0 stores mine_flags[w] = target with release
+//            semantics at system scope (one fence.acq_rel.sys, cumulative over the warp barrier).
+//   consume: lane 0 polls peer_flags[w] with ACQUIRE system loads (ld.acquire.sys: no fence
+//            instruction on this path, unlike the original kernel's relaxed polls plus fence)
+//            until it reaches target, with __nanosleep between probes, and stores epochs[w] =
+//            target; __syncwarp() hands the acquire to the warp, and every lane reads its G peer
+//            vectors (ld.global.cv, all in flight) and combines them with the registers it
+//            published from.
+//
+// Lockstep holds per (slot, warp) exactly as per slot above: both ranks run the same exchanges
+// with the same geometry, so a warp lane that an exchange of a slot leaves unused is skipped by
+// both ranks and its epoch and flags stay equal on both. SLOT REUSE holds as well: a rank starts
+// exchange k + 2 only after its exchange k + 1 observed at least one of the peer's k + 1 flags,
+// which the peer releases from its k + 1 kernel, launched after its whole exchange k kernel (every
+// warp's read) finished. No warp waits on another warp or block of its own rank, so unlike the
+// original kernel the pipelined one needs no co-residency of its blocks on either device, and the
+// peer's reads of one warp's chunk start while later chunks are still being published. The HANG
+// GUARD is the original one, per warp: a warp that gives up skips its own combine.
+//
+// ARITHMETIC. Identical to the original kernel: for every element float(mine) + float(peer) in
+// FP32 and one __floats2bfloat162_rn, `mine` being exactly the value this rank published. The
+// bits of the result do not depend on which kernel moved the operands.
+
+// Words between two warps' release flags: a 64-byte host line each.
+inline constexpr int kPeerFlagStride = 16;
+
+// Sleep between two polls of the peer's flag; kPeerSpinLimit is calibrated with it.
+inline constexpr std::uint32_t kPeerPollSleepNs = 100u;
+
+// The production geometry: 16-byte vectors per lane and threads per block (see
+// tools/tp2/mailbox_probe.cu --sweep for the measurements behind them).
+inline constexpr int kPeerPipelinedVecsPerLane = 2;
+inline constexpr int kPeerPipelinedThreads     = 256;
+
+// Launch knobs of one pipelined exchange. Production passes the defaults; the standalone probe
+// varies them and, with kTimed, collects every warp's phase timestamps.
+struct PeerPipelinedTuning {
+    std::uint32_t spin_limit   = kPeerSpinLimit;
+    std::uint32_t sleep_ns     = kPeerPollSleepNs;
+    unsigned long long* stamps = nullptr; // kTimed only: kPeerStampCount words per warp
+};
+
+// kTimed stamps, per warp (lane 0): globaltimer at entry, clock64 at entry, after the publish
+// stores issued (the partial loads returned), after the release store issued (its system fence
+// completed), when the peer's flag was seen (acquired), at the end (the peer loads returned and
+// the combine stored), globaltimer at the end, and the number of polls that missed.
+inline constexpr int kPeerStampCount = 8;
+
+// Poll flavours of the pipelined kernel. Production polls with acquire loads after its release;
+// the probe also measures an early relaxed first probe (issued before the publish, so its PCIe
+// round trip overlaps it) followed by relaxed polls and one acquire fence, the original kernel's
+// consume path.
+inline constexpr int kPeerPollAcquire    = 0;
+inline constexpr int kPeerPollEarlyFence = 1;
+
+__device__ __forceinline__ unsigned long long peer_globaltimer() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+// One rank's half of the pipelined two-rank allreduce exchange; arguments as for
+// peer_exchange_sum_kernel, except that `mine_flags`/`peer_flags` are the slot's first warp flag
+// (warp w's at w * kPeerFlagStride) and `epochs` the slot's first warp epoch (warp w's at w).
+// Launch geometry: peer_pipelined_blocks(vecs, G, threads) blocks of `threads` (a multiple of 32,
+// at most 256), identical on both ranks for one slot execution.
+template <int G, int kPoll = kPeerPollAcquire, bool kTimed = false>
+__global__ __launch_bounds__(256) void peer_exchange_pipelined_kernel(
+    PeerVecBf16* partial, PeerVecBf16* mine_payload, std::uint32_t* mine_flags,
+    const PeerVecBf16* peer_payload, std::uint32_t* peer_flags, std::uint32_t* epochs,
+    std::uint32_t* hang, int vecs, PeerPipelinedTuning tuning) {
+    using SystemWord = cuda::atomic_ref<std::uint32_t, cuda::thread_scope_system>;
+
+    const int lane = static_cast<int>(threadIdx.x & 31u);
+    const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+    const int base = warp * (32 * G) + lane;
+    if (warp * (32 * G) >= vecs) { return; } // warp-uniform: the grid's last warps may be idle
+
+    unsigned long long stamp[5] = {};
+    const bool timed = kTimed && lane == 0 && tuning.stamps != nullptr;
+    if (timed) {
+        stamp[0] = peer_globaltimer();
+        stamp[1] = clock64();
+    }
+
+    std::uint32_t target = 0;
+    std::uint32_t seen   = 0;
+    if (lane == 0) {
+        target = epochs[warp] + 1u;
+        if constexpr (kPoll == kPeerPollEarlyFence) {
+            seen = SystemWord(peer_flags[warp * kPeerFlagStride]).load(cuda::memory_order_relaxed);
+        }
+    }
+
+    // Publish: every load in flight before the first store. Copies go through the trivial `raw`
+    // member (see peer_exchange_sum_kernel).
+    PeerVec mine[G] = {};
+#pragma unroll
+    for (int j = 0; j < G; ++j) {
+        const int v = base + j * 32;
+        if (v < vecs) { mine[j] = partial[v].raw; }
+    }
+#pragma unroll
+    for (int j = 0; j < G; ++j) {
+        const int v = base + j * 32;
+        if (v < vecs) { mine_payload[v].raw = mine[j]; }
+    }
+    __syncwarp();
+    if (timed) { stamp[2] = clock64(); }
+
+    int published       = 1;
+    std::uint32_t spins = 0;
+    if (lane == 0) {
+        SystemWord(mine_flags[warp * kPeerFlagStride]).store(target, cuda::memory_order_release);
+        if (timed) { stamp[3] = clock64(); }
+        const SystemWord peer(peer_flags[warp * kPeerFlagStride]);
+        const SystemWord fault(*hang);
+        if constexpr (kPoll == kPeerPollAcquire) {
+            seen = peer.load(cuda::memory_order_acquire);
+        }
+        while (static_cast<std::int32_t>(seen - target) < 0) {
+            __nanosleep(tuning.sleep_ns);
+            ++spins;
+            if (spins % kPeerHangProbe == 0u &&
+                (spins > tuning.spin_limit || fault.load(cuda::memory_order_relaxed) != 0u)) {
+                fault.store(1u, cuda::memory_order_relaxed);
+                published = 0;
+                break;
+            }
+            seen = peer.load(kPoll == kPeerPollAcquire ? cuda::memory_order_acquire
+                                                       : cuda::memory_order_relaxed);
+        }
+        if constexpr (kPoll == kPeerPollEarlyFence) {
+            // Acquire: the peer payload reads below are ordered after the observed release.
+            cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_system);
+        }
+        epochs[warp] = target;
+        if (timed) { stamp[4] = clock64(); }
+    }
+    __syncwarp();
+    if (__shfl_sync(0xffffffffu, published, 0) == 0) { return; }
+
+    // Consume: every peer load in flight, then combine in place with the published registers.
+    PeerVec peer[G] = {};
+#pragma unroll
+    for (int j = 0; j < G; ++j) {
+        const int v = base + j * 32;
+        if (v < vecs) { peer[j] = __ldcv(&peer_payload[v].raw); }
+    }
+#pragma unroll
+    for (int j = 0; j < G; ++j) {
+        const int v = base + j * 32;
+        if (v >= vecs) { continue; }
+        PeerVecBf16 sum;
+        PeerVecBf16 other;
+        sum.raw   = mine[j];
+        other.raw = peer[j];
+#pragma unroll
+        for (int pair = 0; pair < 4; ++pair) {
+            const float a0 = __low2float(sum.pair[pair]);
+            const float b0 = __high2float(sum.pair[pair]);
+            const float a1 = __low2float(other.pair[pair]);
+            const float b1 = __high2float(other.pair[pair]);
+            sum.pair[pair] = __floats2bfloat162_rn(a0 + a1, b0 + b1);
+        }
+        partial[v].raw = sum.raw;
+    }
+    if (timed) {
+        const unsigned long long end = clock64();
+        unsigned long long* out = tuning.stamps + static_cast<std::size_t>(warp) * kPeerStampCount;
+        out[0]                  = stamp[0];
+        out[1]                  = stamp[1];
+        out[2]                  = stamp[2];
+        out[3]                  = stamp[3];
+        out[4]                  = stamp[4];
+        out[5]                  = end;
+        out[6]                  = peer_globaltimer();
+        out[7]                  = spins;
+    }
+}
+
+// Warp lanes one pipelined exchange of `vecs` vectors uses, at `vecs_per_lane` vectors per lane.
+inline int peer_pipelined_warps(std::size_t vecs, int vecs_per_lane) {
+    const std::size_t per_warp = 32u * static_cast<std::size_t>(vecs_per_lane);
+    const std::size_t warps    = (vecs + per_warp - 1) / per_warp;
+    return warps < 1 ? 1 : static_cast<int>(warps);
+}
+
+// Blocks of `threads` for one pipelined exchange of `vecs` vectors.
+inline int peer_pipelined_blocks(std::size_t vecs, int vecs_per_lane, int threads) {
+    const int warps_per_block = threads / 32;
+    return (peer_pipelined_warps(vecs, vecs_per_lane) + warps_per_block - 1) / warps_per_block;
 }
 
 } // namespace ninfer::ops::detail

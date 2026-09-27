@@ -322,6 +322,7 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
     summary.tp_transport         = instance->program->tp_transport().transport;
     summary.tp_mailbox_probe_ms  = instance->program->tp_transport().probe_ms;
     summary.tp_mailbox_fallback  = instance->program->tp_transport().fallback;
+    summary.tp_mailbox_kernel    = instance->program->tp_transport().exchange_kernel;
     return {std::move(instance), std::move(summary), std::move(context_cost.model)};
 }
 

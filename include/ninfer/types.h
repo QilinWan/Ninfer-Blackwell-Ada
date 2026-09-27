@@ -1190,6 +1190,10 @@ struct LoadSummary {
     // Why the mailbox was dropped or narrowed (the probe "timed out" or "took N ms", or an exchange
     // timed out in a graph's first launch; steps joined by "; then "); empty otherwise.
     std::string tp_mailbox_fallback;
+    // The mailbox's exchange kernel while tp_transport names the mailbox: "pipelined" (default)
+    // or "legacy" (NINFER_TP_MAILBOX_LEGACY=1, the original kernel, bit-identical results);
+    // empty otherwise.
+    std::string tp_mailbox_kernel;
     ContextCostSummary context_cost;
 };
 

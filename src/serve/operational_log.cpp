@@ -463,11 +463,17 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
         {
             const LoadSummary& load = service.load_summary();
             if (!load.tp_transport.empty()) {
+                const std::string kernel =
+                    load.tp_mailbox_kernel.empty()
+                        ? std::string()
+                        : " | exchange kernel " + load.tp_mailbox_kernel;
                 if (load.tp_mailbox_probe_ms > 0.0) {
-                    logger_->info("tensor parallel | captured all-reduces: {} | mailbox probe {:.2f} ms",
-                                  load.tp_transport, load.tp_mailbox_probe_ms);
+                    logger_->info(
+                        "tensor parallel | captured all-reduces: {}{} | mailbox probe {:.2f} ms",
+                        load.tp_transport, kernel, load.tp_mailbox_probe_ms);
                 } else {
-                    logger_->info("tensor parallel | captured all-reduces: {}", load.tp_transport);
+                    logger_->info("tensor parallel | captured all-reduces: {}{}", load.tp_transport,
+                                  kernel);
                 }
             }
             if (!load.tp_mailbox_fallback.empty() && load.tp_transport == "copies") {

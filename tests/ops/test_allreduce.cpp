@@ -13,7 +13,8 @@
 //     bit-for-bit against the concatenated source halves.
 //
 // Both transports are qualified: the staged path eagerly and inside a two-device CUDA Graph, and
-// the PeerMailbox exchange inside a graph replayed several times with fresh inputs.
+// the PeerMailbox exchange (both of its kernels) inside a graph replayed several times with fresh
+// inputs; the three captured transports must also agree bit for bit.
 #include "ninfer/ops/allreduce.h"
 #include "ninfer/ops/peer_mailbox.h"
 #include "ops/op_tester.h"
@@ -545,12 +546,85 @@ void run_captured_microbenchmark(const char* label, const ExecutionContext& ec,
               << " (informative)\n";
 }
 
+// Transport identity. The same operands go through the captured staged path, the original
+// mailbox kernel and the pipelined one; every transport must leave the same BITS on both ranks
+// (the combine is one FP32 add and one round-to-nearest-even whichever kernel moved the operands).
+// Three sites per graph exercise both mailbox slots; the operands are fresh random BF16 values.
+std::vector<std::uint16_t> captured_bits(const char* label, std::int32_t ne0, std::int32_t ne1,
+                                         const std::vector<std::uint16_t>& a_bits,
+                                         const std::vector<std::uint16_t>& b_bits,
+                                         const ExecutionContext& ec,
+                                         const ops::PeerEvents& events, int& failures) {
+    constexpr int kSites    = 3;
+    const std::size_t count = static_cast<std::size_t>(ne0) * static_cast<std::size_t>(ne1);
+    const std::size_t bytes = count * sizeof(std::uint16_t);
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(bytes), staging_0(bytes);
+    staging_0.fill(0);
+    set_device(ec, 1);
+    GuardedDeviceBuffer buffer_1(bytes), staging_1(bytes);
+    staging_1.fill(0);
+    const std::array<Tensor, 2> buffer{Tensor(buffer_0.data(), DType::BF16, {ne0, ne1}),
+                                       Tensor(buffer_1.data(), DType::BF16, {ne0, ne1})};
+    const std::array<Tensor, 2> staging{Tensor(staging_0.data(), DType::BF16, {ne0, ne1}),
+                                        Tensor(staging_1.data(), DType::BF16, {ne0, ne1})};
+    retire_staging(ec);
+    const DecodeGraphPeerBridge bridge(ec.dev[0]->device, ec.dev[1]->device);
+    DecodeGraphDefinition definition;
+    capture_two_devices(ec, bridge, definition, [&] {
+        for (int site = 0; site < kSites; ++site) {
+            ops::allreduce_sum(buffer, staging, ec, events);
+        }
+    });
+    DecodeGraphExecutable executable;
+    executable.instantiate(definition);
+    set_device(ec, 0);
+    buffer_0.copy_from_host(a_bits.data(), bytes);
+    set_device(ec, 1);
+    buffer_1.copy_from_host(b_bits.data(), bytes);
+    retire_staging(ec);
+    launch_two_devices(ec, executable);
+    set_device(ec, 0);
+    auto bits_0 = from_device<std::uint16_t>(buffer_0.data(), count);
+    failures += buffer_0.verify_guards((std::string(label) + " buffer device 0").c_str());
+    set_device(ec, 1);
+    failures += verify_exact((std::string(label) + " device 1 equals device 0").c_str(),
+                             from_device<std::uint16_t>(buffer_1.data(), count), bits_0);
+    failures += buffer_1.verify_guards((std::string(label) + " buffer device 1").c_str());
+    return bits_0;
+}
+
+int run_transport_identity_case(const char* label, std::int32_t ne0, std::int32_t ne1,
+                                std::uint32_t seed, const ExecutionContext& ec,
+                                const ops::PeerEvents& staged, const ops::PeerEvents& legacy,
+                                const ops::PeerEvents& pipelined) {
+    const std::size_t count = static_cast<std::size_t>(ne0) * static_cast<std::size_t>(ne1);
+    std::vector<float> a(count), b(count);
+    fill_uniform(a, seed, -8.0f, 8.0f);
+    fill_uniform(b, seed + 1, -8.0f, 8.0f);
+    const auto a_bits = encode_bf16(a);
+    const auto b_bits = encode_bf16(b);
+    int failures      = 0;
+    const std::string base(label);
+    const auto staged_bits =
+        captured_bits((base + " staged").c_str(), ne0, ne1, a_bits, b_bits, ec, staged, failures);
+    const auto legacy_bits =
+        captured_bits((base + " legacy").c_str(), ne0, ne1, a_bits, b_bits, ec, legacy, failures);
+    const auto pipelined_bits = captured_bits((base + " pipelined").c_str(), ne0, ne1, a_bits,
+                                              b_bits, ec, pipelined, failures);
+    failures += verify_exact((base + " legacy mailbox equals staged").c_str(), legacy_bits,
+                             staged_bits);
+    failures += verify_exact((base + " pipelined mailbox equals staged").c_str(), pipelined_bits,
+                             staged_bits);
+    return failures;
+}
+
 // A peer that never arrives: only rank 0 enqueues its half. The poller must give up, report the
 // hang and return before a display watchdog (about 2 s on Windows WDDM) would reset the device.
-int run_mailbox_hang_case(const ExecutionContext& ec) {
+int run_mailbox_hang_case(const ExecutionContext& ec, ops::PeerExchangeKernel kernel) {
     constexpr std::size_t kBytes         = 256;
     constexpr double kWatchdogSeconds    = 2.0;
-    ops::PeerMailbox lonely(ec, kBytes);
+    ops::PeerMailbox lonely(ec, kBytes, 2, kernel);
     set_device(ec, 0);
     GuardedDeviceBuffer buffer_0(kBytes);
     buffer_0.fill(0);
@@ -561,7 +635,8 @@ int run_mailbox_hang_case(const ExecutionContext& ec) {
     cuda_check(cudaStreamSynchronize(ec.dev[0]->stream), "mailbox hang exchange");
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::cout << "mailbox hang reported after " << seconds << " s\n";
+    std::cout << "mailbox hang (" << ops::peer_exchange_kernel_name(kernel)
+              << " kernel) reported after " << seconds << " s\n";
     int failures = 0;
     if (!lonely.hang_reported()) {
         std::cerr << "mailbox hang: a missing peer was not reported\n";
@@ -623,6 +698,11 @@ int main() {
     ops::PeerMailbox mailbox(ec, 5120 * 4 * sizeof(std::uint16_t));
     ops::PeerEvents mailbox_events(ec);
     mailbox_events.attach_mailbox(&mailbox);
+    // The original exchange kernel (NINFER_TP_MAILBOX_LEGACY=1) on a mailbox of its own.
+    ops::PeerMailbox legacy_mailbox(ec, 5120 * 4 * sizeof(std::uint16_t), 2,
+                                    ops::PeerExchangeKernel::Legacy);
+    ops::PeerEvents legacy_events(ec);
+    legacy_events.attach_mailbox(&legacy_mailbox);
     failures += run_captured_case("captured staged [5120]", 5120, 1, 5, false, ec, events, nullptr);
     failures +=
         run_captured_case("captured staged [5120,4]", 5120, 4, 5, false, ec, events, nullptr);
@@ -638,11 +718,31 @@ int main() {
     failures += run_captured_case("captured [5121] stays staged", 5121, 1, 3, false, ec,
                                   mailbox_events, &mailbox);
 
-    failures += run_mailbox_hang_case(ec);
+    failures += run_captured_case("captured legacy mailbox [5120]", 5120, 1, 5, true, ec,
+                                  legacy_events, &legacy_mailbox);
+    failures += run_captured_case("captured legacy mailbox [5120,4]", 5120, 4, 5, true, ec,
+                                  legacy_events, &legacy_mailbox);
+    failures += run_captured_case("captured legacy mailbox [8,1] minimal", 8, 1, 3, true, ec,
+                                  legacy_events, &legacy_mailbox);
+
+    // Bit identity of the three captured transports, at the decode and MTP-3 verify shapes, a
+    // payload whose last warp lane is partial (65 vectors) and a single vector.
+    failures += run_transport_identity_case("identity [5120]", 5120, 1, 401u, ec, events,
+                                            legacy_events, mailbox_events);
+    failures += run_transport_identity_case("identity [5120,4]", 5120, 4, 403u, ec, events,
+                                            legacy_events, mailbox_events);
+    failures += run_transport_identity_case("identity [520,1]", 520, 1, 405u, ec, events,
+                                            legacy_events, mailbox_events);
+    failures += run_transport_identity_case("identity [8,1]", 8, 1, 407u, ec, events,
+                                            legacy_events, mailbox_events);
+
+    failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Pipelined);
+    failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Legacy);
 
     failures += run_microbenchmark(ec, events);
     run_captured_microbenchmark("staged", ec, events);
     run_captured_microbenchmark("mailbox", ec, mailbox_events);
+    run_captured_microbenchmark("legacy mailbox", ec, legacy_events);
 
     std::cout << (failures ? "FAIL" : "OK") << " allreduce\n";
     return failures ? 1 : 0;

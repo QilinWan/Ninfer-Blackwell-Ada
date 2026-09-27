@@ -405,6 +405,9 @@ struct TpTransportStatus {
     std::string transport; // "mailbox", "mailbox, MTP draft on copies", "copies"; empty at tp 1
     double probe_ms = 0.0; // startup probe round trip; 0 when no probe ran
     std::string fallback;  // why the mailbox was dropped or narrowed; empty otherwise
+    // The mailbox's exchange kernel, "pipelined" or "legacy" (NINFER_TP_MAILBOX_LEGACY=1); empty
+    // when the captured all-reduces run on the copies.
+    std::string exchange_kernel;
 };
 
 class Program {
