@@ -1,6 +1,8 @@
 #include "models/qwen3_5/execution/tp.h"
 
+#include "core/device_scope.h"
 #include "models/qwen3_5/execution/linear.h"
+#include "ninfer/ops/argmax.h"
 #include "ops/launcher/concat_rows.h"
 
 #include <cuda_runtime.h>
@@ -106,6 +108,41 @@ void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
     CUDA_CHECK(cudaSetDevice(rank1.device));
     CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, events.pull_done(0), 0));
     CUDA_CHECK(cudaSetDevice(previous));
+}
+
+void proposal_argmax_split(const std::array<Tensor, 2>& hidden,
+                           const std::array<const LinearParameters*, 2>& head,
+                           const std::array<Tensor, 2>& partial, const std::array<Tensor, 2>& local,
+                           const std::array<Tensor, 2>& candidates,
+                           const std::array<Tensor, 2>& staging, const Tensor& tokens,
+                           const std::array<WorkspaceArena*, 2>& workspace,
+                           const ExecutionContext& execution, const ops::PeerEvents& events) {
+    const std::int32_t rows = partial[0].ne[0];
+    if (partial[1].ne[0] != rows || head[0] == nullptr || head[1] == nullptr ||
+        head[0]->weight.n != rows || head[1]->weight.n != rows) {
+        throw std::invalid_argument("tensor-parallel proposal argmax: the ranks' head blocks differ");
+    }
+    if (!events.live()) {
+        throw std::invalid_argument("tensor-parallel proposal argmax: dead events");
+    }
+    project_column_parallel(hidden, head, partial, workspace, execution);
+    {
+        const ScopedCurrentDevice restore;
+        for (int rank = 0; rank < kTensorParallelWidth; ++rank) {
+            const auto r               = static_cast<std::size_t>(rank);
+            const DeviceContext& owner = *execution.dev[r];
+            ScopedCurrentDevice::select(owner.device);
+            Tensor argmax = local[r];
+            ops::argmax(partial[r], argmax, rows, owner.stream);
+            Tensor packed = candidates[r];
+            ops::argmax_split_pack(partial[r], argmax, rank, packed, owner.stream);
+        }
+    }
+    // The ranks' candidates occupy disjoint digits, so the summing exchange is their exact union.
+    ops::allreduce_sum(candidates, staging, execution, events);
+    const ScopedCurrentDevice rank0(execution.dev[0]->device);
+    Tensor selected = tokens;
+    ops::argmax_split_select(candidates[0], rows, selected, execution.dev[0]->stream);
 }
 
 OrdinaryPeerFrame ordinary_peer_frame(const qwen3_5::OrdinaryDecodeState& frame) {

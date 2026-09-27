@@ -6,6 +6,7 @@
 #include "models/qwen3_5/load/sharding.h"
 
 #include <array>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -122,6 +123,22 @@ void logical_policy_27b() {
          {"dflash2/layers/0/mlp/gate", "dflash2/feature_projection", "dflash/layers/1/input_norm",
           "dflash2/candidate_selector/successor_codebook", "proposal/head", "proposal/token_ids"}) {
         expect(config, name, {h}, ShardAxis::PrimaryOnly);
+    }
+    {
+        // Under MTP the indexed optimized proposal head splits by vocabulary rows; its token IDs,
+        // DFlash2's head, a head over the whole vocabulary and NINFER_TP_DRAFT_HEAD=primary stay
+        // on rank 0.
+        constexpr std::uint64_t proposal = 131072;
+        const LoadOptions mtp{.speculative = SpeculativeBackend::Mtp, .tp = 2};
+        const LoadOptions dflash2{.speculative = SpeculativeBackend::DFlash2, .tp = 2};
+        expect(config, "proposal/head", {proposal, h}, ShardAxis::Rows,
+               {halves(proposal, 0), halves(proposal, 1)}, 0, mtp);
+        expect(config, "proposal/token_ids", {proposal}, ShardAxis::PrimaryOnly, {}, 0, mtp);
+        expect(config, "proposal/head", {vocab, h}, ShardAxis::PrimaryOnly, {}, 0, mtp);
+        expect(config, "proposal/head", {proposal, h}, ShardAxis::PrimaryOnly, {}, 0, dflash2);
+        ::setenv("NINFER_TP_DRAFT_HEAD", "primary", 1);
+        expect(config, "proposal/head", {proposal, h}, ShardAxis::PrimaryOnly, {}, 0, mtp);
+        ::unsetenv("NINFER_TP_DRAFT_HEAD");
     }
     expect(config, "vision/layers/0/attention/query", {1152, 1152}, ShardAxis::SingleDevice, {}, 1,
            {.tp = 2, .vision_rank = 1});

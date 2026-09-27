@@ -2762,8 +2762,35 @@ void TextContext::proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits,
     require_tensor_shape(proposal_tokens, DType::I32, {T}, "proposal tokens");
     require_tensor_window(logits, DType::BF16, V, T, "proposal logits");
     if (proposal_head_ != nullptr) {
-        // The optimized proposal head is PrimaryOnly: rank 0 projects, picks and maps alone.
-        proposal_argmax(hidden[0], logits, proposal_tokens);
+        const std::optional<ProposalParameters>& peer = tp_->parameters->proposal;
+        if (!peer) {
+            // A PrimaryOnly optimized head: rank 0 projects, picks and maps alone.
+            proposal_argmax(hidden[0], logits, proposal_tokens);
+            return;
+        }
+        // Split by vocabulary: each rank projects and picks within its rows, rank 0 combines the
+        // two candidates and maps the selected row to its token.
+        nvtx::ScopedRange proposal_range(nvtx::Name::MtpProposal, nvtx::Category::Mtp,
+                                         static_cast<std::uint64_t>(T));
+        const std::int32_t rows = proposal_head_->weight.n;
+        if (proposal_head_ids_ == nullptr || peer->head.weight.n != rows ||
+            2 * rows != proposal_head_n_) {
+            throw std::logic_error("tensor-parallel proposal head split is inconsistent");
+        }
+        const auto ws = workspaces();
+        auto scope0   = work_.scope();
+        auto scope1   = tp_->work->scope();
+        const std::array<workspace::TensorParallelProposalRoots, 2> roots{
+            workspace::tp_proposal_argmax(*ws[0], rows, T),
+            workspace::tp_proposal_argmax(*ws[1], rows, T)};
+        proposal_argmax_split(hidden, {proposal_head_, &peer->head},
+                              {roots[0].partial, roots[1].partial},
+                              {roots[0].local, roots[1].local},
+                              {roots[0].candidates, roots[1].candidates},
+                              {roots[0].staging, roots[1].staging}, proposal_tokens, ws,
+                              *tp_->execution, *tp_->events);
+        ops::proposal_remap_token_ids(proposal_tokens, proposal_head_ids_, proposal_head_n_,
+                                      ctx_.stream);
         return;
     }
     nvtx::ScopedRange proposal_range(nvtx::Name::MtpProposal, nvtx::Category::Mtp,

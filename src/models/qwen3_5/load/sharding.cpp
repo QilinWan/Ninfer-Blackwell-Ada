@@ -1,8 +1,10 @@
 #include "models/qwen3_5/load/sharding.h"
 
 #include "artifact/reader.h"
+#include "ninfer/ops/argmax.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -189,6 +191,26 @@ void merge_axis(ParentState& state, const LogicalShard& shard, const std::string
     }
 }
 
+// NINFER_TP_DRAFT_HEAD=primary keeps the optimized MTP proposal head whole on rank 0, its
+// placement before the vocabulary split, for A/B runs on one binary.
+bool proposal_head_primary_requested() {
+    const char* value = std::getenv("NINFER_TP_DRAFT_HEAD");
+    return value != nullptr && std::string_view(value) == "primary";
+}
+
+// MTP proposes on both ranks, so its optimized head splits by vocabulary rows when it is indexed
+// (fewer rows than the vocabulary, every row a candidate) and each rank's block fits the split
+// argmax. DFlash2's rank-0 drafter ranks candidates over the whole head (linear_topk), which stays
+// PrimaryOnly, as do the proposal token IDs: rank 0 maps the selected row.
+bool split_proposal_head(const artifact::Shape& shape, const Config& config,
+                         const LoadOptions& options) {
+    if (!options.mtp() || shape.size() != 2 || proposal_head_primary_requested()) { return false; }
+    const auto rows = shape.front();
+    const auto tp   = static_cast<std::uint64_t>(options.tp);
+    return rows != config.text.vocab_size && rows % tp == 0 &&
+           rows / tp <= static_cast<std::uint64_t>(ops::kArgmaxSplitMaxRowsPerRank);
+}
+
 // logical_shard() for options that validate_tensor_parallel_ranks() accepted.
 LogicalShard shard_rule(std::string_view name, const artifact::Shape& shape, const Config& config,
                         const LoadOptions& options) {
@@ -196,6 +218,10 @@ LogicalShard shard_rule(std::string_view name, const artifact::Shape& shape, con
     if (tp == 1) { return {}; }
     if (in_component(name, "vision")) {
         return whole(ShardAxis::SingleDevice, options.vision_rank);
+    }
+    if (name == "proposal/head" && split_proposal_head(shape, config, options)) {
+        const auto rows = leading(name, shape);
+        return even(name, ShardAxis::Rows, rows, rows, tp);
     }
     if (in_component(name, "dflash") || in_component(name, "dflash2") ||
         in_component(name, "proposal")) {

@@ -72,6 +72,23 @@ void output_logits_split_rank0(const std::array<Tensor, 2>& hidden,
                                const std::array<WorkspaceArena*, 2>& workspace,
                                const ExecutionContext& execution, const ops::PeerEvents& events);
 
+// Vocabulary-split argmax of the optimized MTP proposal head (load/sharding.h). Rank r projects
+// `hidden[r]` [H,C] through its row block `head[r]` [R,H] (rank 0 rows [0,R), rank 1 [R,2R)) into
+// `partial[r]` [R,C], takes the argmax of each column into `local[r]` I32 [C] and packs it with its
+// value into `candidates[r]` [8,C] (ops::argmax_split_pack). One allreduce_sum of the candidates,
+// through `staging[r]` [8,C] and the pair's captured transport (the mailbox, or the copies under a
+// StagedScope), gives both ranks both candidates, and rank 0 writes the complete argmax row in
+// [0,2R) to `tokens` I32 [C] (ops::argmax_split_select): the row argmax() over the complete
+// [2R,C] logits selects, lower row on ties, since each half row equals the whole head's row. Rank
+// 1 keeps no result. All operands are contiguous and on their rank; `tokens` on rank 0.
+void proposal_argmax_split(const std::array<Tensor, 2>& hidden,
+                           const std::array<const LinearParameters*, 2>& head,
+                           const std::array<Tensor, 2>& partial, const std::array<Tensor, 2>& local,
+                           const std::array<Tensor, 2>& candidates,
+                           const std::array<Tensor, 2>& staging, const Tensor& tokens,
+                           const std::array<WorkspaceArena*, 2>& workspace,
+                           const ExecutionContext& execution, const ops::PeerEvents& events);
+
 // Everything a TextContext needs to drive rank 1 in lockstep with its own rank-0 operands. The
 // TextContext's DeviceContext must be `execution->dev[0]`. All members are borrowed and must
 // outlive the context; the pointers into Program storage are stable for the Program's lifetime.

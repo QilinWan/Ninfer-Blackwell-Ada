@@ -29,12 +29,16 @@ namespace ninfer::models::qwen3_5::loading {
 //   Replicated  norms, text/token_embedding.
 //   SingleDevice(vision_rank)  vision/*.
 //   PrimaryOnly  dflash/*, dflash2/* and proposal/*: the drafter and the optimized proposal head
-//            run on rank 0 only, so rank 1 holds none of them.
+//            run on rank 0 only, so rank 1 holds none of them. Under MTP, proposal/head instead
+//            splits by vocabulary Rows when indexed with at most ops::kArgmaxSplitMaxRowsPerRank
+//            rows per rank ([131072,5120] -> [65536,5120]); proposal/token_ids stays PrimaryOnly.
+//            NINFER_TP_DRAFT_HEAD=primary keeps that head PrimaryOnly too.
 //
 // MTP and a masked draft share text/token_embedding and the selected output head by WeightId,
 // so they see that parameter's per-rank view: MTP runs on both ranks and gathers the
-// vocabulary-split text/output_head; the rank-0 drafter requires the whole optimized proposal
-// head (plan_load rejects a masked draft with the full head at tp > 1).
+// vocabulary-split text/output_head or combines the argmax of the split proposal head; the
+// rank-0 drafter requires the whole optimized proposal head (plan_load rejects a masked draft
+// with the full head at tp > 1).
 struct LogicalShard {
     artifact::ShardAxis axis = artifact::ShardAxis::Replicated;
     int device               = 0; // Holder under SingleDevice.

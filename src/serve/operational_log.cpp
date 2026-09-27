@@ -488,6 +488,9 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                               "this way directly",
                               load.tp_mailbox_fallback);
             }
+            if (!load.tp_proposal_head.empty()) {
+                logger_->info("tensor parallel | MTP proposal head: {}", load.tp_proposal_head);
+            }
         }
         // Measured against the planned per-device allowance, to calibrate the tp 2 constants.
         // An overrun only uses device memory the KV sizing left unreserved, so it warns instead

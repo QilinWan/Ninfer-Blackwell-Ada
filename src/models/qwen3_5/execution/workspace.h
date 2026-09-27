@@ -5,6 +5,7 @@
 #include "core/arena.h"
 #include "core/layout.h"
 #include "models/qwen3_5/execution/parameters.h"
+#include "ninfer/ops/argmax.h"
 
 #include <cstdint>
 
@@ -169,6 +170,27 @@ TensorParallelLogitsRoots tp_logits(Allocator& allocator, std::int32_t shard_row
     TensorParallelLogitsRoots out;
     out.partial = matrix(allocator, DType::BF16, shard_rows, columns);
     if (gather_staging) { out.staging = matrix(allocator, DType::BF16, peer_rows, columns); }
+    return out;
+}
+
+// The vocabulary-split argmax of the optimized MTP proposal head over `columns` hidden columns on
+// one rank: this rank's `shard_rows` logits, their argmax, and the packed candidates with the
+// all-reduce staging they are exchanged through (ops::argmax_split_pack).
+struct TensorParallelProposalRoots {
+    Tensor partial;
+    Tensor local;
+    Tensor candidates;
+    Tensor staging;
+};
+
+template <class Allocator>
+TensorParallelProposalRoots tp_proposal_argmax(Allocator& allocator, std::int32_t shard_rows,
+                                               std::int32_t columns) {
+    TensorParallelProposalRoots out;
+    out.partial    = matrix(allocator, DType::BF16, shard_rows, columns);
+    out.local      = vector(allocator, DType::I32, columns);
+    out.candidates = matrix(allocator, DType::BF16, ops::kArgmaxSplitCandidateRows, columns);
+    out.staging    = matrix(allocator, DType::BF16, ops::kArgmaxSplitCandidateRows, columns);
     return out;
 }
 

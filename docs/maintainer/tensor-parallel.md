@@ -80,7 +80,8 @@ hidden/residual axis is never split.
 | `mtp/layers/*` | as the Text block rules | packed `[7168,5120]`, `[5120,3072]`, `[17408,5120]`, `[5120,8704]` |
 | norms, `text/token_embedding` | Replicated | whole on both ranks |
 | `vision/*` | SingleDevice(`vision_rank`) | whole on the Vision rank (§8) |
-| `dflash/*`, `dflash2/*`, `proposal/*` | PrimaryOnly | whole on rank 0 |
+| `proposal/head` under MTP | Rows, by proposal vocabulary (indexed head, at most 65536 rows per rank) | Q4 `[131072,5120]` → `[65536,5120]` |
+| `dflash/*`, `dflash2/*`, `proposal/*` otherwise | PrimaryOnly | whole on rank 0 |
 
 A shard is a standalone weight of the parent's format and layout with one axis narrowed, never a
 view into the parent's payload, so each rank runs the ordinary single-device dispatch at the shard's
@@ -96,6 +97,8 @@ own registered problem. A format has a two-device route only where its shard sha
   the official recipes store the MTP head in Q8, and it splits only there.
 - **BF16**: GDN gating (`gdn_gating_proj_column_parallel`, 24 heads per rank), plus `[7168,5120]`
   and `[5120,3072]` for `linear`.
+- **Q4**: the half `[65536,5120]` of the `[131072,5120]` optimized proposal head, with its
+  parent's selector.
 
 The groupwise-int artifacts are rejected because their attention and GDN input projections are
 paired Q4/Q5 parents, which have no split route; any unregistered shard shape is refused like any
@@ -163,7 +166,7 @@ run on rank 0's stream; rank 1's last work is its vocabulary half, and it idles 
 uploads its ingress. Verification computes the target argmax and the acceptance on rank 0; rank 1
 receives the results by copy (§7) and selects and retains its own accepted hidden. MTP proposals
 take their argmax on rank 0 over the gathered logits (`TextContext::proposal_argmax_tp2`), or, with
-`--lm-head-draft`, rank 0 alone projects through the optimized proposal head.
+`--lm-head-draft`, through the vocabulary-split optimized proposal head (§7).
 
 Rank 1 takes its control tensors from its own upload of the host ingress record rank 0 receives
 (`OrdinaryPeerFrame`; the MTP and DFlash2 frames likewise), not from copies of rank 0's device
@@ -438,9 +441,22 @@ bottleneck anyway.
 **MTP.** The MTP head is split like a Text layer. Its `fc` input projection is split by input
 columns, so rank 0 contracts the normalized token embedding, rank 1 the normalized target hidden,
 and only rank 0 embeds tokens; each MTP forward contains three all-reduces. `--draft-tokens` keeps
-its range 1..5, and K sets the mailbox slot size and the MTP graph profiles. With `--lm-head-draft`
-the optimized proposal head is PrimaryOnly and proposes on rank 0 alone; otherwise the full head is
-the vocabulary-split `text/output_head`, gathered on rank 0 before the argmax. One captured round
+its range 1..5, and K sets the mailbox slot size and the MTP graph profiles. Without
+`--lm-head-draft` the proposal head is the vocabulary-split `text/output_head`, gathered on rank 0
+before the argmax. With it the optimized head (Q4 `[131072,5120]`, indexed) is split by rows too,
+but its argmax is combined instead of its logits (`execution::proposal_argmax_split`,
+[`tp.cpp`](../../src/models/qwen3_5/execution/tp.cpp)): each rank projects its `[65536,5120]` half,
+takes the argmax of its block and packs the maximum's BF16 bits and its row as four base-256 digits
+into its own half of an 8-element column (`ops::argmax_split_pack`); one `allreduce_sum` of those
+16 bytes per column, through the same transport as the round's other all-reduces, is their exact
+union, since every digit is an integer BF16 holds exactly and x + 0 is exact; rank 0 then takes
+rank 1's candidate only when strictly larger (`ops::argmax_split_select`, the lower row on ties, as
+`argmax` over the complete logits) and maps the row to its token ID, which stays PrimaryOnly. Each
+half row equals the whole head's row bit for bit, so the proposals are the ones rank 0 alone
+proposed before the split; rank 1 needs no token, since only rank 0 embeds.
+`NINFER_TP_DRAFT_HEAD=primary` keeps the head PrimaryOnly on rank 0 (its placement before the
+split) for A/B runs on one binary; the startup log names the
+placement (`MTP proposal head: split by vocabulary | rank 0`). One captured round
 (`mtp_decode_batch_body` in [`speculative/mtp.cpp`](../../src/models/qwen3_5/program/speculative/mtp.cpp)):
 
 1. Upload the ingress record to both ranks' frames; each prepares its verify ids and positions.
@@ -454,7 +470,8 @@ the vocabulary-split `text/output_head`, gathered on rank 0 before the argmax. O
    step 2 of §4.5 opens its `StagedScope`: rank 0 prepares the next round; rank 1 waits on
    `inputs_ready(0)`, pulls anchors, frontiers and licensed counts, and prepares its copy.
 5. Both ranks run the split MTP head over the alignment columns and select the accepted hidden;
-   each proposal step then gathers logits on rank 0 (full head) or projects on rank 0 alone.
+   each proposal step then gathers logits on rank 0 (full head) or exchanges the two argmax
+   candidates (optimized head; rank 0 alone under `NINFER_TP_DRAFT_HEAD=primary`).
 
 The commit folds each rank's ReplaySSM records into its own GDN state with the same rows
 (`replay_fold` in `prefill.cpp`). Forced tokens prefill through `prefill_text_chunk` with
@@ -463,7 +480,7 @@ The prompt MTP alignment runs on both ranks, rank 1 keeping its final-normed chu
 `prefill_hidden`, and rank 1 keeps its own RoPE delta (`TpExecution::rope_delta`).
 
 **DFlash2.** Only the target is split; the drafter, its context features and the optimized proposal
-head stay whole on rank 0. The feature tap reads rank 0's residual after each captured layer, which
+head stay whole on rank 0 (the head splits only under MTP, whose proposal is a plain argmax). The feature tap reads rank 0's residual after each captured layer, which
 the all-reduce has already completed, so features need no exchange. In a round
 (`dflash_decode_batch_body` in [`draft.cpp`](../../src/models/qwen3_5/execution/draft.cpp)) rank 0
 appends the context and proposes, rank 1 pulls the draft tokens after `inputs_ready(0)`, both
@@ -546,7 +563,7 @@ in [`tests/ops/tests.cmake`](../../tests/ops/tests.cmake), `tests/artifact/tests
 
 | Test | Checks |
 |---|---|
-| `ninfer_{allreduce,linear_split,output_head_split,attention_headlocal,attn_input_proj_split,gdn_projections_split,gdn_headsplit,linear_swiglu_split,linear_add_split}_test` | each split form at its shard shapes against the single-device Op; the all-reduce and row gather against FP64 and exact oracles; the mailbox (both exchange kernels) inside a replayed graph, its selection by node count, staged, original and pipelined transports bit for bit, and the hang report within the watchdog bound |
+| `ninfer_{allreduce,linear_split,output_head_split,proposal_head_split,attention_headlocal,attn_input_proj_split,gdn_projections_split,gdn_headsplit,linear_swiglu_split,linear_add_split}_test` | each split form at its shard shapes against the single-device Op; the all-reduce and row gather against FP64 and exact oracles; the mailbox (both exchange kernels) inside a replayed graph, its selection by node count, staged, original and pipelined transports bit for bit, and the hang report within the watchdog bound |
 | `ninfer_artifact_sharded_materialization_tp2_test` (+ one-device plan tests, `ninfer_qwen3_5_shard_map_test`) | Replicated, Rows, Columns, PrimaryOnly and SingleDevice parents on both devices, byte-compared with host-applied slices |
 | `ninfer_decode_graph_test`, `ninfer_kv_cache_test` | two-device capture and the update diagnostic; mirror replay of page and row mutations (on one device) |
 | `ninfer_qwen3_5_sharded_load_real_test` (+ `_mtp_real`) | per-device placement and bytes of the loaded artifact |
@@ -624,6 +641,7 @@ run by hand, not a CTest.
 | `src/models/qwen3_5/program/program_impl.*`, `graphs.cpp`, `graph_execution.h` | `PeerRuntime`, mirrors, mailbox, probe, step-down, capture and launch; causal scoring's split head |
 | `src/models/qwen3_5/program/planning/startup.*` | per-rank layouts, tp 2 graph allowances, tp 2 rejections |
 | `src/models/qwen3_5/program/{storage/context,prefill,decode,transactions/commit}.cpp`, `speculative/*` | row publication, rank 1 retained hidden, ingress upload, forced tokens, MTP round |
+| `include/ninfer/ops/argmax.h`, `src/ops/launcher/argmax_split.cu` | split argmax of the optimized proposal head: pack, select |
 | `include/ninfer/ops/allreduce.h`, `peer_mailbox.h`, `src/ops/common/{allreduce,peer_mailbox}.cu`, `src/ops/kernel/peer_exchange.cuh` | staged collectives, `PeerEvents`, mailbox and its two exchange kernels |
 | `include/ninfer/ops/{linear,linear_add,linear_swiglu,attn_input_proj,gdn_input_proj,gdn_gating_proj}.h`, `src/ops/common/split_launch.h`, `src/ops/launcher/concat_rows.*` | split forms, registered shard shapes, pair validation, logits interleave |
 | `src/serve/operational_log.cpp` | tensor-parallel startup lines and warnings |

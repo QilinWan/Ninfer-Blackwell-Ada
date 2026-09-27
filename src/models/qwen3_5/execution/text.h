@@ -313,8 +313,9 @@ private:
                                ops::CausalAttentionExecutionEnvelope envelope, bool final_chunk,
                                const RankTensors* final_hidden, Tensor* logits,
                                Tensor* draft_token);
-    // The optimized proposal head is rank 0's alone; the full head is the vocabulary-split output
-    // head, gathered before rank 0's argmax.
+    // The optimized proposal head proposes on rank 0 alone when PrimaryOnly, or on both ranks when
+    // split by vocabulary (execution::proposal_argmax_split, rank 0 combining the two argmaxes);
+    // the full head is the vocabulary-split output head, gathered before rank 0's argmax.
     void proposal_argmax_tp2(const RankTensors& hidden, Tensor& logits, Tensor& proposal_tokens);
     void ordinary_decode_batch_tp2(const Tensor& ids, const Tensor& cache_positions,
                                    const Tensor& rope_positions, const Tensor& kv_table_rows,

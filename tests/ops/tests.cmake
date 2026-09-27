@@ -29,6 +29,7 @@ set(ninfer_op_tests
   allreduce
   linear_split
   output_head_split
+  proposal_head_split
   attention_headlocal
   attn_input_proj_split
   gdn_projections_split

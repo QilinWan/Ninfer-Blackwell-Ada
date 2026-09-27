@@ -591,11 +591,15 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         reserve_scratch(layout,
                         execution::output_head_split_workspace_bytes(head, columns, columns));
     };
-    // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, or the
-    // vocabulary-split output head.
+    // The MTP proposal over `columns` hidden columns: rank 0's optimized head alone, that head
+    // split by vocabulary with its argmax candidates, or the vocabulary-split output head.
     const auto proposal = [&](WorkspaceLayoutBuilder& layout, std::int32_t columns) {
         auto call = layout.scope();
-        if (plan.proposal_head == ProposalHead::Optimized) {
+        if (plan.proposal_head == ProposalHead::Optimized && parameters.proposal->split()) {
+            (void)workspace::tp_proposal_argmax(layout, parameters.proposal->head.weight.n,
+                                                columns);
+            reserve_linear(layout, parameters.proposal->head, columns, columns);
+        } else if (plan.proposal_head == ProposalHead::Optimized) {
             reserve_matrix(layout, DType::BF16, dimension(parameters.proposal->rows), columns);
             reserve_linear(layout, parameters.proposal->head, columns, columns);
         } else {

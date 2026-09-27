@@ -71,8 +71,9 @@ struct MtpParameters {
     Tensor query_norm, key_norm;
     LinearParameters output;
     FfnParameters ffn;
-    // Empty on a tensor-parallel rank that does not hold the selected head: the optimized
-    // proposal head is PrimaryOnly, and its proposal runs on rank 0.
+    // Empty on a tensor-parallel rank that does not hold the selected head: a PrimaryOnly
+    // optimized proposal head proposes on rank 0 alone. A vocabulary-split one is this rank's
+    // row block on both ranks.
     LinearParameters output_head;
 };
 
@@ -125,9 +126,14 @@ struct DraftParameters {
 };
 
 struct ProposalParameters {
-    LinearParameters head;
-    std::optional<Tensor> token_ids;
-    std::uint32_t rows = 0;
+    LinearParameters head; // This rank's rows: all of them, or a vocabulary block when split.
+    std::optional<Tensor> token_ids; // Row -> token ID map; rank 0 only at tp 2.
+    std::uint32_t rows = 0;          // Rows of the whole head.
+
+    // At tp 2 under MTP each rank holds half of the rows (load/sharding.h).
+    [[nodiscard]] bool split() const noexcept {
+        return static_cast<std::uint64_t>(head.weight.n) != rows;
+    }
 };
 
 // Cold native preparation for the fixed model implementation. This owner is stable before

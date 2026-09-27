@@ -90,7 +90,10 @@ enum class LinearPolicy : std::uint8_t {
  * linear_add never split routes in one row-parallel pair). Q8 and BF16 register the exact
  * physical N/K problems in their format-owned shape registries; the BF16 registry includes the
  * two-device shards `[7168,5120]` and `[5120,3072]`, and the Q8 registry includes the MTP halves
- * `[5120,5120]`, `[7168,5120]`, `[17408,5120]`, `[5120,3072]` and `[5120,8704]`. Text/MTP problems
+ * `[5120,5120]`, `[7168,5120]`, `[17408,5120]`, `[5120,3072]` and `[5120,8704]`, and the Q4 registry
+ * includes `[65536,5120]` (the two-device half of the `[131072,5120]` optimized proposal head,
+ * which `--spec mtp --lm-head-draft` at `--tp 2` projects per rank and combines by argmax).
+ * Text/MTP problems
  * accept every positive column extent T. Registered Vision problems accept raw-patch P in
  * `{4,8,...,131072}` or merged-token V in `[1,32768]`; a matrix column does not inherently
  * represent a text token. FP32 is unsupported.

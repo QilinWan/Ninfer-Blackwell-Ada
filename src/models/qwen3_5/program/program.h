@@ -408,6 +408,9 @@ struct TpTransportStatus {
     // The mailbox's exchange kernel, "pipelined" or "legacy" (NINFER_TP_MAILBOX_LEGACY=1); empty
     // when the captured all-reduces run on the copies.
     std::string exchange_kernel;
+    // Under MTP with the optimized proposal head: "split by vocabulary" or "rank 0"
+    // (NINFER_TP_DRAFT_HEAD=primary); empty otherwise.
+    std::string proposal_head;
 };
 
 class Program {

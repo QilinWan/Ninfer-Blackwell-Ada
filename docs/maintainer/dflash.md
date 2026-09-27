@@ -301,7 +301,9 @@ rank 0 alone, which also holds the drafter's context state: the pending and pref
 the DFlash rings of every StateImage. Rank 1's persistent layout omits all of them, and the
 StateImage mirror copies only rank 1's GDN and hidden components. The full-head proposal is
 rejected at load: the text output head is split by vocabulary across the ranks and `linear_topk`
-has no vocabulary-split form, so `--lm-head-draft` is required.
+has no vocabulary-split form, so `--lm-head-draft` is required. For the same reason the optimized
+head stays whole on rank 0 under DFlash2, while MTP, whose proposal is a plain argmax, splits it
+by vocabulary ([Two-GPU tensor parallelism](tensor-parallel.md#7-speculative-decoding-at-tp-2)).
 
 Target features need no exchange. Each Text layer ends in an all-reduce that leaves the complete
 residual on both ranks, so the feature tap reads rank 0's residual after each captured layer, in

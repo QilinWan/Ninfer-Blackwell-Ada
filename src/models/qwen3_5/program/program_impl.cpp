@@ -152,6 +152,11 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         }
         execution_context = execution_in;
         peer_parameters   = peer_parameters_in;
+        if (speculative_backend == SpeculativeBackend::Mtp &&
+            proposal_head == ProposalHead::Optimized) {
+            tp_transport_status.proposal_head =
+                peer_parameters->proposal ? "split by vocabulary" : "rank 0";
+        }
         {
             // cudaMalloc is neither stream-ordered nor capturable: rank 1's storage is allocated
             // once, here, with rank 1 current.
