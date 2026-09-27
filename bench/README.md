@@ -11,6 +11,11 @@ prefix reuse and preemption. Its frozen request corpus is documented under
 [`fixtures/ttft/`](fixtures/ttft/README.md). That client does not call the benchmark executables or
 Engine directly.
 
+The closed-loop agentic A/B suite in [`agentic_ab/`](agentic_ab/README.md) compares two
+`ninfer-serve` builds end to end (sessions, subagents, compaction, retries) from each serve's
+request log; it comes from Wallawalla47/ninfer-custom and runs on Linux through
+`agentic_ab/run_linux.sh`.
+
 ## Benchmark inputs
 
 Synthetic numerical inputs use reproducible pseudorandom values with distinct operand seeds,

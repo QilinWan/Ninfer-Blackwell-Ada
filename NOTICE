@@ -33,6 +33,19 @@ Neroued/ninfer, each licensed under the Apache License, Version 2.0:
     attributes, mirrored rank-1 KV tables and state slots, and the per-rank
     startup memory report.
 
+Agentic A/B benchmark: prior work
+---------------------------------
+bench/agentic_ab/ (workload.py, runner.py, analyze.py, build_control.bat and the
+original README text) comes from the following fork of Neroued/ninfer, licensed
+under the Apache License, Version 2.0:
+
+  * Wallawalla47 (Ian Ranson) -- https://github.com/Wallawalla47/ninfer-custom
+    The closed-loop agentic A/B suite (commit 535fe587): the deterministic
+    workload built from a pinned corpus commit, the lock-step client, and the
+    analysis of the serve's request log. This tree adds the Linux launcher
+    (linux.py, run_linux.sh) and, in analyze.py, named arms, the serve-log
+    cross-check and the phase table; runner.py records phase events.
+
 Modifications
 -------------
 Copyright 2026 Valerio Dolci.
