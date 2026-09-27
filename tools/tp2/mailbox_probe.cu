@@ -32,7 +32,8 @@
 //                     ~0.8 s; the original kernel's limit is the compiled kPeerSpinLimit)
 //     --legacy        the original exchange kernel instead of the pipelined one
 //     --simulate-hang rank 1 skips the startup exchange, to exercise the hang report path
-//     --sweep         maintainer: µs per exchange for every kernel variant at 4, 10 and 40 KiB
+//     --sweep         maintainer: µs per exchange for every kernel variant (1/2/4/8 vectors per lane,
+//                     64/128/256 threads, both poll flavours, sleeps) at 4, 10 and 40 KiB
 //     --timed         maintainer: per-phase anatomy of one exchange (clock64 stamps), both kernels
 //     --work US       maintainer: a US-microsecond spin kernel on both ranks before every exchange
 //                     (a stand-in for the layer between two all-reduces); reported costs exclude it
@@ -430,6 +431,7 @@ struct Probe {
             case 1: launch_pipelined_g<1>(v, blocks, rank[r].stream, partial, mine, mine_flags, peer, peer_flags, epochs, slab.hang_dev[r], vecs, tuning); break;
             case 2: launch_pipelined_g<2>(v, blocks, rank[r].stream, partial, mine, mine_flags, peer, peer_flags, epochs, slab.hang_dev[r], vecs, tuning); break;
             case 4: launch_pipelined_g<4>(v, blocks, rank[r].stream, partial, mine, mine_flags, peer, peer_flags, epochs, slab.hang_dev[r], vecs, tuning); break;
+            case 8: launch_pipelined_g<8>(v, blocks, rank[r].stream, partial, mine, mine_flags, peer, peer_flags, epochs, slab.hang_dev[r], vecs, tuning); break;
             default: std::fprintf(stderr, "unsupported vecs per lane %d\n", v.vecs_per_lane); std::exit(1);
             }
         }
@@ -645,8 +647,8 @@ int run_sweep(const Options& o) {
     if (std::find(payloads.begin(), payloads.end(), o.payload) == payloads.end()) { payloads.push_back(o.payload); }
     std::vector<Variant> variants;
     variants.push_back(Variant{Kind::Legacy});
-    for (int g : {1, 2, 4}) {
-        for (int t : {128, 256}) {
+    for (int g : {1, 2, 4, 8}) {
+        for (int t : {64, 128, 256}) {
             for (int poll : {pd::kPeerPollAcquire, pd::kPeerPollEarlyFence}) {
                 variants.push_back(Variant{Kind::Pipelined, g, t, poll, pd::kPeerPollSleepNs, false});
             }
