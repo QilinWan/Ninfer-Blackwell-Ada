@@ -40,19 +40,32 @@ nvcc -O3 -std=c++17 -arch=sm_120a tools/hbm_bandwidth_probe.cu \
 `--tp 2` exchanges its all-reduce operands through a pinned-host mailbox (one kernel per GPU) when
 the GPUs have no peer access, and falls back to driver-staged copies when the startup probe finds
 the mailbox timing out or slow (WSL2 does that, [issue #1](https://github.com/ValerioDolci/ninfer-tp2/issues/1)).
-`tools/tp2/mailbox_probe.cu` runs the same check without the engine or a model — the production
-exchange kernel inline, nvcc and the CUDA runtime only — and prints driver, devices, peer access,
-the startup exchange, the per-exchange cost of both transports and a verdict:
+`tools/tp2/mailbox_probe.cu` runs the same check without the engine or a model — nvcc and the CUDA
+runtime only; it includes the production exchange kernels from `src/ops/kernel/peer_exchange.cuh`,
+so build it from a checkout — and prints driver, devices, peer access, the startup exchange, the
+per-exchange cost of both transports (both mailbox kernels) and a verdict:
 
 ```bash
 nvcc -O2 -std=c++20 -arch=sm_120a -o build/mailbox_probe tools/tp2/mailbox_probe.cu
 ./build/mailbox_probe            # devices 0 1; add `--simulate-hang` to see the timeout report
+./build/mailbox_probe --payload 40960 --legacy   # the original exchange kernel
+./build/mailbox_probe --sweep    # maintainer: every kernel variant at 4, 10 and 40 KiB
+./build/mailbox_probe --timed --payload 40960    # maintainer: per-phase clock64 anatomy
 ```
 
 Exit status 0 means the mailbox is usable, 2 that the engine will run on copies (`--no-tp-mailbox`
-on builds without the startup probe), 1 a CUDA error or wrong sums. On 2× RTX 5070 Ti without
-P2P (driver 595.91, CUDA 13.1): startup exchange 0.03 ms, 8.7 µs per 10 KiB exchange in a graph
-against 17.2 µs on copies; a missing peer is reported after about 0.8 s.
+on builds without the startup probe), 1 a CUDA error or wrong sums (every exchange is checked bit
+for bit against a CPU reference). On 2× RTX 5070 Ti without P2P, PCIe 5.0 x8 each (driver 595.91,
+CUDA 13.1), per exchange in a graph of 128, two alternating slots:
+
+| payload | pipelined kernel (default) | original kernel (`--legacy`) | copies |
+|--:|--:|--:|--:|
+| 4 KiB | 3.5 µs | 7.8 µs | 15.9 µs |
+| 10 KiB (decode token) | 3.7 µs | 8.8 µs | 17.2 µs |
+| 40 KiB (MTP-3 verify) | 6.2 µs | 19.6 µs | 20.0 µs |
+
+The startup exchange takes about 0.03 ms and a missing peer is reported after about 0.8 s with
+either kernel.
 
 ## Artifact workflow
 

@@ -200,6 +200,19 @@ and combines with the staged path's arithmetic, so the two transports are bit-id
 epochs rather than 0/1, so replays need no host reset, and two alternating slots suffice for any
 sequence of captured exchanges (the "slot reuse" argument in the kernel header).
 
+Two kernels implement that protocol. The **pipelined** kernel (the default) makes every warp an
+independent mailbox lane with its own 64-byte release line and epoch per slot: a warp loads all of
+its vectors before storing any, releases once after `__syncwarp`, polls the peer's matching line
+with `ld.acquire.sys` and reads its peer vectors with every load in flight, lane-contiguous (512
+bytes per warp access), then combines from the registers it published. No warp waits on another,
+so the peer starts reading a warp's chunk while later chunks are still being written, and the
+kernel needs no co-residency of its blocks. The **original** kernel publishes the whole payload
+behind one flag per slot after a device-scope arrival count of its blocks, and each thread moves
+its four vectors one dependent round trip at a time (the in-place stores keep the compiler from
+overlapping them). `NINFER_TP_MAILBOX_LEGACY=1` keeps the original kernel for A/B runs on one
+binary; both combine with the same arithmetic, so the choice changes timings only, and the startup
+log names it (`captured all-reduces: mailbox | exchange kernel pipelined`).
+
 The `ProgramImpl` constructor ([`program_impl.cpp`](../../src/models/qwen3_5/program/program_impl.cpp))
 sizes one slot for the widest single-request exchange, `hidden × (K+1)` BF16: 10 KiB for ordinary
 decode, 40 KiB for MTP3 at hidden 5120. Every all-reduce of a single-request captured round fits;
@@ -265,10 +278,14 @@ line with `p2p on` or `p2p off (host-staged copies)`, a `captured all-reduces: �
 line, and a warning whenever the mailbox was dropped or narrowed
 ([`operational_log.cpp`](../../src/serve/operational_log.cpp)); the timeout error names the
 transport and the probe time. [`tools/tp2/mailbox_probe.cu`](../../tools/tp2/mailbox_probe.cu) runs
-the same check without the engine or a model (nvcc and the CUDA runtime only, the production
-exchange kernel inlined, the spin limit as a parameter) and prints driver, devices, P2P, the startup
-exchange, both transports' per-exchange cost and a verdict: exit 0 mailbox usable, 2 copies, 1 CUDA
-error or wrong sums, 77 fewer than two devices ([Tools](../../tools/README.md#standalone-tp2-mailbox-probe)).
+the same check without the engine or a model (nvcc and the CUDA runtime only; it includes the
+production `peer_exchange.cuh`, so it builds from a checkout) and prints driver, devices, P2P, the
+startup exchange, both transports' per-exchange cost (both exchange kernels) and a verdict: exit 0
+mailbox usable, 2 copies, 1 CUDA error or wrong sums, 77 fewer than two devices
+([Tools](../../tools/README.md#standalone-tp2-mailbox-probe)). `--sweep` times every pipelined
+variant (vectors per lane, block size, poll flavour, sleep) at 4, 10 and 40 KiB, `--timed` stamps the
+phases of one exchange of each kernel with `clock64`, `--work US` puts a spin kernel between
+exchanges.
 
 ### 4.7 Measured costs
 
@@ -276,7 +293,10 @@ Only figures already recorded, with their scope:
 
 | Measurement | Scope | Source |
 |---|---|---|
-| mailbox 8.7 µs vs copies 17.2 µs per 10 KiB exchange in a graph; startup exchange 0.03 ms; missing peer reported after ~0.8 s | 2× RTX 5070 Ti, no P2P, driver 595.91, CUDA 13.1, standalone probe | [Tools](../../tools/README.md#standalone-tp2-mailbox-probe) |
+| mailbox 8.7 µs vs copies 17.2 µs per 10 KiB exchange in a graph; startup exchange 0.03 ms; missing peer reported after ~0.8 s | 2× RTX 5070 Ti, no P2P, driver 595.91, CUDA 13.1, standalone probe, original kernel | [Tools](../../tools/README.md#standalone-tp2-mailbox-probe) |
+| per exchange in a graph, pipelined vs original kernel vs copies: 3.7 / 8.8 / 17.2 µs at 10 KiB, 6.2 / 19.6 / 20.0 µs at 40 KiB (MTP-3 verify); every variant bit-exact | same pair, PCIe 5.0 x8 each, standalone probe (`--sweep`, `--timed`), 2026-09-27 | [Tools](../../tools/README.md#standalone-tp2-mailbox-probe) |
+| original kernel at 40 KiB, one thread's phases: 1.6 µs publish (four dependent load/store pairs), 7.0-7.4 µs `__threadfence_system` draining 16-byte stores at a 64-byte stride, 5.4-5.5 µs reading (four dependent PCIe round trips); pipelined kernel: 0.5 µs publish, 2.3 µs release fence, 1.1 µs read | same, `mailbox_probe --timed --payload 40960` (pipelined at 256 threads per block) | development measurements |
+| MTP3 decode, pipelined vs original kernel on one binary (`NINFER_TP_MAILBOX_LEGACY=1`): 19.96 vs 21.71 ms/round at 0k (−8.1 %), 20.66 vs 22.46 at 16k (−8.0 %), 22.36 vs 24.07 at 64k (−7.1 %), 108.3 vs 99.6 tok/s at 0k; with `--lm-head-draft` −8.8 / −8.7 / −7.6 %; `--no-tp-mailbox` 23.00 / 23.77 / 25.39 ms/round; identical output text on all three | same pair, QUASAR-QAT artifact, production flags at C=1, 400-token greedy generations, two ABBA rounds, 2026-09-27 | development measurements, not otherwise published |
 | mailbox ~41 µs vs staged ~277 µs per 10 KiB reduction, graph replay | 2× RTX 5060 Ti, Windows 11 WDDM, no P2P | `peer_mailbox.h` header |
 | copies cost ~220 µs per hop instead of ~17; decode without `--spec` 60 tok/s on the mailbox vs 22.5 on copies; MTP3 49 tok/s on copies everywhere | WSL2, 2× RTX 5070 Ti, reported in issue #1 | [README](../../README.md) |
 | MTP3 decode 102.3 tok/s at step 1, 101.1 at step 2, 97.1 with `--no-tp-mailbox`; plain decode 69.1 vs 59.8 on copies; identical output text on every transport | 2× RTX 5070 Ti, native Linux, QUASAR-QAT artifact, 400-token greedy generation, 3 runs, 2026-09-26 | development measurements, not otherwise published |
@@ -526,7 +546,7 @@ in [`tests/ops/tests.cmake`](../../tests/ops/tests.cmake), `tests/artifact/tests
 
 | Test | Checks |
 |---|---|
-| `ninfer_{allreduce,linear_split,output_head_split,attention_headlocal,attn_input_proj_split,gdn_projections_split,gdn_headsplit,linear_swiglu_split,linear_add_split}_test` | each split form at its shard shapes against the single-device Op; the all-reduce and row gather against FP64 and exact oracles; the mailbox inside a replayed graph, its selection by node count, and the hang report within the watchdog bound |
+| `ninfer_{allreduce,linear_split,output_head_split,attention_headlocal,attn_input_proj_split,gdn_projections_split,gdn_headsplit,linear_swiglu_split,linear_add_split}_test` | each split form at its shard shapes against the single-device Op; the all-reduce and row gather against FP64 and exact oracles; the mailbox (both exchange kernels) inside a replayed graph, its selection by node count, staged, original and pipelined transports bit for bit, and the hang report within the watchdog bound |
 | `ninfer_artifact_sharded_materialization_tp2_test` (+ one-device plan tests, `ninfer_qwen3_5_shard_map_test`) | Replicated, Rows, Columns, PrimaryOnly and SingleDevice parents on both devices, byte-compared with host-applied slices |
 | `ninfer_decode_graph_test`, `ninfer_kv_cache_test` | two-device capture and the update diagnostic; mirror replay of page and row mutations (on one device) |
 | `ninfer_qwen3_5_sharded_load_real_test` (+ `_mtp_real`) | per-device placement and bytes of the loaded artifact |
@@ -604,7 +624,7 @@ run by hand, not a CTest.
 | `src/models/qwen3_5/program/program_impl.*`, `graphs.cpp`, `graph_execution.h` | `PeerRuntime`, mirrors, mailbox, probe, step-down, capture and launch; causal scoring's split head |
 | `src/models/qwen3_5/program/planning/startup.*` | per-rank layouts, tp 2 graph allowances, tp 2 rejections |
 | `src/models/qwen3_5/program/{storage/context,prefill,decode,transactions/commit}.cpp`, `speculative/*` | row publication, rank 1 retained hidden, ingress upload, forced tokens, MTP round |
-| `include/ninfer/ops/allreduce.h`, `peer_mailbox.h`, `src/ops/common/{allreduce,peer_mailbox}.cu`, `src/ops/kernel/peer_exchange.cuh` | staged collectives, `PeerEvents`, mailbox and exchange kernel |
+| `include/ninfer/ops/allreduce.h`, `peer_mailbox.h`, `src/ops/common/{allreduce,peer_mailbox}.cu`, `src/ops/kernel/peer_exchange.cuh` | staged collectives, `PeerEvents`, mailbox and its two exchange kernels |
 | `include/ninfer/ops/{linear,linear_add,linear_swiglu,attn_input_proj,gdn_input_proj,gdn_gating_proj}.h`, `src/ops/common/split_launch.h`, `src/ops/launcher/concat_rows.*` | split forms, registered shard shapes, pair validation, logits interleave |
 | `src/serve/operational_log.cpp` | tensor-parallel startup lines and warnings |
 | `tools/tp2/mailbox_probe.cu`, `tools/golden/` | standalone mailbox check; tp 1 token-identity gate |
