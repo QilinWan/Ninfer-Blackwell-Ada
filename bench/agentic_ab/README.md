@@ -115,6 +115,16 @@ the serve log (taken from `arm.json` instead). The serve's human-readable `req#N
 (prompt, output, cache, TTFT, decode, `mtp accepted a/b`) are parsed and cross-checked against
 the request log for every request.
 
+**What three seeds resolve.** The first run on this tree (v0.1.1 against v0.2.0, two RTX 5070 Ti,
+`--profile agentic`, seeds 42-44, about 47 min per arm) resolved a 1-2 % difference only in the
+engine rows: prefill tok/s on the requests with no cache hit in either arm (+1.2 to +2.0 % per
+seed) and decode rounds/s with one request decoding (+1.0 to +3.2 %). Wall time, TTFT and output
+tok/s moved by -8 to +11 % between seeds with the same builds, because the sampled output volume
+(completion tokens -18 to +28 %) and the resulting cache evictions change with every run. With a
+196,608-token KV pool and no Host tier, the three sessions of this workload do not all stay
+cached: 31-33 % of prompt tokens came from the cache, and about 40 of the 75 continuing
+main-session turns prefilled their whole prompt again.
+
 ---
 
 ## The original suite (Windows): upstream + Windows port vs Wallawalla47/ninfer-custom
