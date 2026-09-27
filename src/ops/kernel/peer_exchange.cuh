@@ -242,10 +242,13 @@ inline constexpr int kPeerFlagStride = 16;
 // Sleep between two polls of the peer's flag; kPeerSpinLimit is calibrated with it.
 inline constexpr std::uint32_t kPeerPollSleepNs = 100u;
 
-// The production geometry: 16-byte vectors per lane and threads per block (see
-// tools/tp2/mailbox_probe.cu --sweep for the measurements behind them).
+// The production geometry: 16-byte vectors per lane and threads per block. Two warps per block
+// spread the 40 KiB MTP-3 verify payload over 20 SMs, which keeps more PCIe reads in flight than
+// 5 blocks of 256: 6.2 against 6.8 us per 40 KiB exchange, 3.8 against 4.4 at 10 KiB, on two
+// RTX 5070 Ti over PCIe 5.0 x8 (tools/tp2/mailbox_probe.cu --sweep; 1, 4 or 8 vectors per lane
+// are within 0.4 us, the early relaxed probe plus fence 0.6-1 us slower, the poll sleep neutral).
 inline constexpr int kPeerPipelinedVecsPerLane = 2;
-inline constexpr int kPeerPipelinedThreads     = 256;
+inline constexpr int kPeerPipelinedThreads     = 64;
 
 // Launch knobs of one pipelined exchange. Production passes the defaults; the standalone probe
 // varies them and, with kTimed, collects every warp's phase timestamps.
