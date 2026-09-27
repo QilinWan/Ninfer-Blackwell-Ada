@@ -575,6 +575,18 @@ run by hand, not a CTest.
 - **Not ported.** YaRN long-context RoPE from the pre-v3 fork line is not in this tree; RoPE has no
   per-rank override.
 
+- **Schedules and thresholds are per GPU.** The linear-op selectors (A16→A4 crossovers, MMA bands, TMA tiles
+  and thresholds) are upstream's RTX 5090 measurements, and every half shape inherits its parent's. Measured on
+  two RTX 5070 Ti (2026-09-27, 2.08 GHz, 707 GB/s pure read): the halves take 0.96-1.10× of parent/2 at
+  T=1..8 and the FP8 vocabulary half runs at 99 % of the measured bandwidth, so the shard kernels themselves
+  are not the gap; the crossovers are. A4 from T=3 on `linear_swiglu`, the down pair and the output pair
+  cut 5.0 % / 4.7 % of the MTP3 round at 0 / 16K, but change the numerics (4-bit activations in the T=4
+  verify step): GSM8K on 500 questions fell from 0.974 to 0.962 (7 lost, 1 gained, McNemar p = 0.07), while
+  perplexity at 1024-token chunks was bit-identical and could not see it. Only the neutral change is in the
+  tree (`2a596191`: the `[7168,5120]` attention shard keeps the 128-token TMA tile up to T=1024, −6.4 %).
+  Procedure for another board: `bench/ops` sweeps on each half and its parent at T=1,4,8,16,32,512,1024
+  ([Linear tuning](linear-tuning.md) §2-3), then GSM8K on the candidate, not perplexity alone.
+
 ## 12. File map
 
 | Path | Role in the two-GPU mode |

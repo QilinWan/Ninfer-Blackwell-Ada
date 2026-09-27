@@ -52,6 +52,15 @@
 >   `netsh interface portproxy` rule to the WSL2 address, which changes at every restart.
 >   [`tools/tp2/mailbox_probe.cu`](tools/README.md#standalone-tp2-mailbox-probe) tells in seconds,
 >   without a model, whether the mailbox works on a machine.
+> - **Tuning is per GPU.** The linear-op selectors (A16→A4 crossovers, MMA bands, TMA tiles and
+>   thresholds) were measured by upstream on an RTX 5090, and the tp 2 half shapes inherit their
+>   parents' settings. On two RTX 5070 Ti the halves cost about half their parents (0.96-1.10× of
+>   parent/2 at small T), but the best thresholds differ: A4 from T=3 on the SwiGLU, down and output
+>   projections would cut ~5 % of the MTP3 round time at a measured −1.2 pt on GSM8K (500 questions),
+>   so only the neutral change (128-token TMA tile on the attention shard at T=1024) is applied. On
+>   another board, re-measure with the `bench/ops` sweeps (see [Linear tuning](docs/maintainer/linear-tuning.md))
+>   and validate with GSM8K, not only perplexity, which scores in 1024-token chunks and cannot see
+>   small-T routes.
 > - **Weights.** Verified with the Qwen3.8-27B NVFP4 artifact (`qwen3_8_27b_nvfp4.ninfer`: NVFP4
 >   MLP in layers 0-55, FP8 elsewhere) and with an all-NVFP4 conversion of the QUASAR-QAT
 >   checkpoint (every large layer projection NVFP4; GDN `a`/`b` decoded to BF16, head and embedding
