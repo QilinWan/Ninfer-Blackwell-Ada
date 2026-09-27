@@ -399,6 +399,7 @@ proposal head is loaded on rank 0 only and proposes there alone). The DFlash2 dr
 the ranks; a drafter with full-attention layers is not supported there (its KV has no rank 1
 mirror). `--spec dflash`, `--vision`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and
 `rk4v4-e8` KV types are rejected at startup, as is a nonzero `--host-context-mib`.
+`ninfer-perplexity` takes the same `--tp 2 --devices A,B` ([Perplexity](perplexity.md#two-gpus)).
 The split attention and Gated DeltaNet projections take FP8 or NVFP4 weights and the split MLP
 FP8 or NVFP4, so both the official mixed artifact (FP8 attention and GDN, NVFP4 MLP) and an
 all-NVFP4 recipe run at `--tp 2`; the MTP head splits only in Q8, as the official recipes store it.

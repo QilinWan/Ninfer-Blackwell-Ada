@@ -40,6 +40,29 @@ report is `report.json` under `profiles/perplexity/` unless `--output` supplies 
 For KV-format comparisons, the recommended long-context profile is the full corpus with
 `--context 65536 --stride 32768` and without `--quick`.
 
+## Two GPUs
+
+An artifact too large for one board is scored across two with the `--tp 2 --devices A,B` of
+`ninfer` and `ninfer-serve` ([Two GPUs](cli.md#two-gpus)):
+
+```bash
+./build/apps/ninfer-perplexity models/qwen3_8_27b_nvfp4.ninfer \
+  --corpus eval/corpora/perplexity-1m/manifest.json --quick \
+  --tp 2 --devices 0,1 --kv-dtype int8
+```
+
+Each window runs the two-GPU prefill: every layer is split across the ranks, and rank 1 holds half
+of the KV cache and recurrent state. For each tile of up to 1,024 scored positions rank 1 receives
+a copy of the final hidden columns, each rank projects its half of the vocabulary, and rank 0
+gathers the complete logits and computes the target log-probabilities as on one GPU. Windows,
+metric and report are unchanged; the report's `execution` block adds `tp` and `devices`.
+
+As for every `--tp 2` run, the Main KV types are `bf16` and `int8` only, so the default `fp8` is
+rejected at startup. The split projections sum their halves in a different order and round each
+partial to BF16, so a tp 2 perplexity is close to a single-GPU one of the same artifact but not
+bit-identical: compare tp 2 runs with tp 2 runs. The score tile's workspace is about twice the
+single-GPU one, roughly 1 GiB on each GPU for a 248,320-token vocabulary.
+
 ## Metric
 
 For a stream `x[0..N)`, every token after `x[0]` is scored exactly once. A window `[b,e)` with target

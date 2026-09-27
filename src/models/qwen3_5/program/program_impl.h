@@ -390,6 +390,9 @@ public:
         std::optional<ops::GdnReplayFoldPlan> replay_fold;
         qwen3_5::RoundState io;
         Tensor prefill_hidden;
+        // Causal scoring only: rank 1's copy of the staged hidden columns, the input of its half
+        // of the vocabulary-split output head.
+        Tensor score_hidden;
         // Views rank 1's ordinary decode frame; empty under a speculative backend.
         execution::OrdinaryPeerFrame ordinary;
     };
@@ -662,6 +665,9 @@ public:
     // Writes rank 1's prefill Text KV row scalar to the row rank 0 just published, and checks the
     // mirrored execution tables agree. No-op at width 1.
     void publish_peer_kv_rows(const SequenceState& sequence);
+    // Tensor-parallel causal scoring: the complete [V,C] logits of rank 0's staged hidden
+    // columns [H,C] through the vocabulary-split output head, gathered on rank 0.
+    void project_score_tile_split(const Tensor& hidden, const Tensor& logits);
     // True when rank 1 keeps its own copy of every retained target hidden: at tensor-parallel
     // width 2 under MTP, whose bridge reads it on both ranks.
     [[nodiscard]] bool peer_retains_hidden() const noexcept {

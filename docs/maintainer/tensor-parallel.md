@@ -44,7 +44,7 @@ What the mode rejects, and where the first check sits:
 
 | Rejected at tp 2 | First check |
 |---|---|
-| `CausalScoring` purpose, `--spec dflash` | `validate_options` in `model_instance.cpp`, before the artifact is read; again in the planner and `ProgramImpl` |
+| `--spec dflash` | `validate_options` in `model_instance.cpp`, before the artifact is read; again in the planner and `ProgramImpl` |
 | `--spec dflash2` without `--lm-head-draft` | `validate_options`; `validate_tensor_parallel` in [`load.cpp`](../../src/models/qwen3_5/load.cpp); planner |
 | DFlash2 drafter with full-attention layers | planner (`startup.cpp`): that drafter KV pool would have no rank 1 mirror |
 | KV storage other than `bf16` and `int8` | `validate_options`; `TextContext`: the head-local `[256,12,2]` attention geometry is registered for BF16 and INT8-G64 only |
@@ -153,7 +153,8 @@ into the `[V, C]` logits; rank 1's stream waits on `pull_done(0)` before it may 
 partial. The interleave used to be two `cudaMemcpy2DAsync` copies. `07f76beb` replaced them with the
 kernel because a captured 2D memcpy node cannot be updated in place when its column count or buffers
 change between CUDA Graph profiles of one class (§5). The same gather serves prefill, ordinary
-decode, verification, the MTP proposals and the zero-suffix head; rank 1 keeps no logits.
+decode, verification, the MTP proposals, the zero-suffix head and the score tiles of causal
+scoring (`ProgramImpl::project_score_tile_split`); rank 1 keeps no logits.
 `ops::allgather_rows` ([`allreduce.h`](../../include/ninfer/ops/allreduce.h)) is used only by tests.
 
 **After the gather.** In an ordinary round ([`decode.cpp`](../../src/models/qwen3_5/program/decode.cpp))
@@ -509,6 +510,12 @@ BF16 Ops on one device. It does not cover the NVFP4 and INT-quantized GEMMs, MTP
 Vision, prefix reuse or concurrent requests; a board that holds a 27B artifact would let
 `record.sh` cover the GEMMs as-is.
 
+**Perplexity at tp 2.** `ninfer-perplexity --tp 2` ([Perplexity](../perplexity.md#two-gpus)) scores
+through `ProgramImpl::causal_score`: its chunks run the split prefill, and each score tile of up to
+1,024 columns goes through the vocabulary-split head. It is the numerical check a 27B artifact has
+at tp 2: two builds compared on the same corpus at tp 2, and tp 1 against tp 2 on the synthetic
+model above, whose FP8 head halves (`n124160_k5120`) it drives at up to 1,024 columns.
+
 ## 10. Tests
 
 Every two-device test uses devices 0 and 1 and returns 77 (`SKIP_RETURN_CODE 77`, reported as
@@ -532,8 +539,9 @@ in [`tests/ops/tests.cmake`](../../tests/ops/tests.cmake), `tests/artifact/tests
 | `ninfer_serve_engine_failure_real_test` | a thrown decode-round failure (injected by wrapping `cudaStreamSynchronize`) stops the server with `engine_failed()` set, so it exits 2 |
 
 A real artifact does not fit one board, so the real tests are semantic and do not compare with
-tp 1. Beyond the per-Op suites, the only numerical tp 2 versus tp 1 comparison is the synthetic
-`text_context_tp2` parity (FP8 projections, ordinary prefill and decode). The golden gate is a tool
+tp 1. Beyond the per-Op suites, the numerical tp 2 versus tp 1 comparisons are the synthetic
+`text_context_tp2` parity (FP8 projections, ordinary prefill and decode) and, by hand, the
+perplexity of the same synthetic model at both widths (§9). The golden gate is a tool
 run by hand, not a CTest.
 
 ## 11. Known limits and not-done items
@@ -572,7 +580,7 @@ run by hand, not a CTest.
 | Path | Role in the two-GPU mode |
 |---|---|
 | `include/ninfer/types.h` | `EngineOptions::{tp,devices,vision_device,tp_mailbox}`, `LoadSummary::{devices,peer_access,tp_transport,…}`, graph observation |
-| `src/product/tensor_parallel_options.h`, `apps/cli/options.cpp`, `src/serve/serve_options.cpp` | `--tp`, `--devices`, `--no-tp-mailbox`, Host-tier defaults at tp 2 |
+| `src/product/tensor_parallel_options.h`, `apps/cli/options.cpp`, `apps/perplexity/options.cpp`, `src/serve/serve_options.cpp` | `--tp`, `--devices`, `--no-tp-mailbox`, Host-tier defaults at tp 2 |
 | `src/runtime/engine/engine.cpp`, `model_instance.cpp`, `kv_capacity.*` | `ExecutionContext` and peer access, tp 2 checks and defaults, per-rank budgets, symmetric KV resolution, `LoadSummary` |
 | `src/runtime/engine/engine_core.h`, `context_cache/resource_manager.h` | Host-less private-capture reclaim |
 | `src/core/device.h`, `decode_graph.*`, `paged_kv_cache.*` | `ExecutionContext`; two-device capture bridge, launch gate, update diagnostic; KV mirrors and mirror leases |
@@ -581,7 +589,7 @@ run by hand, not a CTest.
 | `src/models/qwen3_5/execution/tp.*` | `TpExecution`, `shard_text_config`, rank-0 logits gather |
 | `src/models/qwen3_5/execution/{text,attention,gdn,ffn,mtp,draft,vision}.*`, `linear.h` | split Text, MTP, verification, DFlash2 and Vision schedules |
 | `src/models/qwen3_5/state/state_image.h` | StateImage mirror |
-| `src/models/qwen3_5/program/program_impl.*`, `graphs.cpp`, `graph_execution.h` | `PeerRuntime`, mirrors, mailbox, probe, step-down, capture and launch |
+| `src/models/qwen3_5/program/program_impl.*`, `graphs.cpp`, `graph_execution.h` | `PeerRuntime`, mirrors, mailbox, probe, step-down, capture and launch; causal scoring's split head |
 | `src/models/qwen3_5/program/planning/startup.*` | per-rank layouts, tp 2 graph allowances, tp 2 rejections |
 | `src/models/qwen3_5/program/{storage/context,prefill,decode,transactions/commit}.cpp`, `speculative/*` | row publication, rank 1 retained hidden, ingress upload, forced tokens, MTP round |
 | `include/ninfer/ops/allreduce.h`, `peer_mailbox.h`, `src/ops/common/{allreduce,peer_mailbox}.cu`, `src/ops/kernel/peer_exchange.cuh` | staged collectives, `PeerEvents`, mailbox and exchange kernel |

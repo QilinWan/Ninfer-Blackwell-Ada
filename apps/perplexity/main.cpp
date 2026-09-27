@@ -1,5 +1,6 @@
 #include "corpus.h"
 #include "evaluation.h"
+#include "options.h"
 
 #include "ninfer/engine.h"
 #include "product/logging/logging.h"
@@ -10,7 +11,6 @@
 #include <spdlog/logger.h>
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <cctype>
 #include <cstdint>
@@ -35,104 +35,11 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using json  = nlohmann::json;
 using ninfer::perplexity::CorpusSelection;
+using ninfer::perplexity::Options;
+using ninfer::perplexity::parse_options;
 using ninfer::perplexity::ScoreAggregate;
+using ninfer::perplexity::usage_text;
 using ninfer::perplexity::WindowPlan;
-
-struct Options {
-    bool help_requested = false;
-    std::filesystem::path artifact;
-    std::optional<std::filesystem::path> corpus;
-    std::optional<std::filesystem::path> text;
-    std::optional<std::filesystem::path> output;
-    std::uint32_t context               = 4096;
-    std::uint32_t stride                = 2048;
-    int device                          = 0;
-    ninfer::KvCacheStorage kv           = ninfer::KvCacheStorage::Fp8E4M3Row256;
-    bool quick                          = false;
-    ninfer::product::LogLevel log_level = ninfer::product::LogLevel::Info;
-};
-
-std::string usage_text() {
-    return "usage: ninfer-perplexity <model.ninfer> "
-           "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
-           "       [--context N] [--stride N] [--device N]\n"
-           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--output <directory>]\n"
-           "       [--log-level trace|debug|info|warning|error|critical|off]\n";
-}
-
-[[noreturn]] void usage_error(std::string_view message) {
-    throw std::invalid_argument(std::string(message));
-}
-
-template <class Integer>
-Integer parse_integer(std::string_view text, const char* label) {
-    Integer value{};
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error != std::errc{} || end != text.data() + text.size()) {
-        usage_error(std::string("invalid ") + label + ": " + std::string(text));
-    }
-    return value;
-}
-
-Options parse_options(int argc, char** argv) {
-    if (argc == 2 && std::string_view(argv[1]) == "--help") {
-        return Options{.help_requested = true};
-    }
-    if (argc < 2 || std::string_view(argv[1]).starts_with("--")) {
-        usage_error("artifact path is required");
-    }
-    Options out;
-    out.artifact = argv[1];
-    for (int i = 2; i < argc; ++i) {
-        const std::string_view option = argv[i];
-        const auto value              = [&](const char* label) -> std::string_view {
-            if (++i >= argc) { usage_error(std::string(label) + " requires a value"); }
-            return argv[i];
-        };
-        if (option == "--corpus") {
-            out.corpus = std::filesystem::path(value("--corpus"));
-        } else if (option == "--text") {
-            out.text = std::filesystem::path(value("--text"));
-        } else if (option == "--quick") {
-            out.quick = true;
-        } else if (option == "--context") {
-            out.context = parse_integer<std::uint32_t>(value("--context"), "context");
-        } else if (option == "--stride") {
-            out.stride = parse_integer<std::uint32_t>(value("--stride"), "stride");
-        } else if (option == "--device") {
-            out.device = parse_integer<int>(value("--device"), "device");
-        } else if (option == "--kv-dtype") {
-            const std::string_view dtype = value("--kv-dtype");
-            if (dtype == "bf16") {
-                out.kv = ninfer::KvCacheStorage::BFloat16;
-            } else if (dtype == "int8") {
-                out.kv = ninfer::KvCacheStorage::Int8Group64;
-            } else if (dtype == "fp8") {
-                out.kv = ninfer::KvCacheStorage::Fp8E4M3Row256;
-            } else if (dtype == "nvfp4") {
-                out.kv = ninfer::KvCacheStorage::Nvfp4Group16;
-            } else if (dtype == "k8v4") {
-                out.kv = ninfer::KvCacheStorage::Fp8KeyNvfp4Value;
-            } else {
-                usage_error("--kv-dtype must be bf16, int8, fp8, nvfp4, or k8v4");
-            }
-        } else if (option == "--output") {
-            out.output = std::filesystem::path(value("--output"));
-        } else if (option == "--log-level") {
-            out.log_level = ninfer::product::parse_log_level(value("--log-level"));
-        } else {
-            usage_error("unknown option: " + std::string(option));
-        }
-    }
-    if (out.corpus.has_value() == out.text.has_value()) {
-        usage_error("exactly one of --corpus and --text is required");
-    }
-    if (out.quick && !out.corpus) { usage_error("--quick requires --corpus"); }
-    if (out.context < 2 || out.stride == 0 || out.stride >= out.context) {
-        usage_error("context/stride must satisfy context>=2 and 1<=stride<context");
-    }
-    return out;
-}
 
 std::string kv_name(ninfer::KvCacheStorage value) {
     switch (value) {
@@ -213,6 +120,8 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
     engine_options.artifact_path    = options.artifact;
     engine_options.purpose          = ninfer::EnginePurpose::CausalScoring;
     engine_options.device           = options.device;
+    engine_options.tp               = options.tp;
+    engine_options.devices          = options.devices;
     engine_options.max_context      = options.context;
     engine_options.kv_cache         = options.kv;
     engine_options.startup_observer = startup_log.observer();
@@ -365,6 +274,17 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
         domain_reports.push_back(std::move(item));
     }
 
+    json execution{{"purpose", "causal_scoring"},
+                   {"device", options.device},
+                   {"context_tokens", options.context},
+                   {"stride_tokens", options.stride},
+                   {"prefill_chunk_tokens", 1024},
+                   {"score_tile_tokens", 1024},
+                   {"kv_dtype", kv_name(options.kv)}};
+    if (options.tp != 1) {
+        execution["tp"]      = options.tp;
+        execution["devices"] = options.devices;
+    }
     json report{
         {"schema_version", 2},
         {"metric",
@@ -380,14 +300,7 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
           {"mode", corpus.mode},
           {"source", corpus.source.string()},
           {"stream_count", streams.size()}}},
-        {"execution",
-         {{"purpose", "causal_scoring"},
-          {"device", options.device},
-          {"context_tokens", options.context},
-          {"stride_tokens", options.stride},
-          {"prefill_chunk_tokens", 1024},
-          {"score_tile_tokens", 1024},
-          {"kv_dtype", kv_name(options.kv)}}},
+        {"execution", std::move(execution)},
         {"timing",
          {{"load_seconds", load.load_seconds},
           {"read_and_tokenize_seconds", preflight_seconds},
@@ -414,8 +327,11 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
     std::cout << "Perplexity result\n"
               << "artifact: " << load.model_name << '\n'
               << "kv: " << kv_name(options.kv) << ", corpus: " << corpus.corpus_id << " / "
-              << corpus.mode << ", context/stride: " << options.context << '/' << options.stride
-              << "\n\n";
+              << corpus.mode << ", context/stride: " << options.context << '/' << options.stride;
+    if (options.tp != 1) {
+        std::cout << ", tp 2 on devices " << options.devices[0] << ',' << options.devices[1];
+    }
+    std::cout << "\n\n";
     std::cout << std::left << std::setw(24) << "domain" << std::right << std::setw(16) << "tokens"
               << std::setw(16) << "mean_nll" << std::setw(16) << "ppl" << '\n';
     for (const auto& [domain, aggregate] : domains) {

@@ -63,12 +63,10 @@ void validate_options(const EngineOptions& options) {
         throw std::invalid_argument("Engine media_preprocess_threads must be in [0,64]");
     }
     if (options.tp == 2) {
-        // Rejected before the artifact is read: the two-device schedule covers prefill, the
-        // ordinary decode round, the MTP round and the DFlash2 round of the dense Text model only
-        // (models/qwen3_5/execution/text.h).
-        if (options.purpose != EnginePurpose::Generation) {
-            throw std::invalid_argument("Engine tp 2 does not support CausalScoring");
-        }
+        // Rejected before the artifact is read: the two-device schedule covers text prefill,
+        // the ordinary decode round, the MTP round, the DFlash2 round of the dense Text model
+        // and causal scoring over its text prefill, only (models/qwen3_5/execution/text.h);
+        // Vision stays single-device in this tree (see the --tp 2 Vision rejection below).
         if (options.speculative.backend == SpeculativeBackend::DFlash) {
             throw std::invalid_argument("Engine tp 2 does not support DFlash speculative decoding");
         }

@@ -170,7 +170,8 @@ struct EngineOptions {
     // Tensor-parallel width, 1 or 2. At 2 the dense Text model is split across `devices`
     // (one id per rank, rank 0 first; rank 0 must equal `device`) for text generation, ordinary,
     // with MTP or with DFlash2 speculative decoding (DFlash2 with the optimized proposal head
-    // only; its drafter runs on rank 0): DFlash, Vision, CausalScoring, the MoE architecture, KV
+    // only; its drafter runs on rank 0; CausalScoring runs on the two-rank forward): DFlash, Vision,
+    // the MoE architecture, KV
     // storage other than BF16/INT8 and the Host context-cache tiers are rejected. At 1 `devices`
     // is empty or {device}.
     int tp = 1;

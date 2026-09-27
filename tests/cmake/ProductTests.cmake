@@ -18,6 +18,14 @@ ninfer_add_test(ninfer_perplexity_evaluation_test
 target_include_directories(ninfer_perplexity_evaluation_test PRIVATE
   ${PROJECT_SOURCE_DIR}/apps/perplexity)
 
+ninfer_add_test(ninfer_perplexity_options_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_perplexity_options.cpp"
+          ${PROJECT_SOURCE_DIR}/apps/perplexity/options.cpp
+  LIBRARIES ninfer_runtime_support ninfer_product_logging)
+
+target_include_directories(ninfer_perplexity_options_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/apps/perplexity)
+
 ninfer_add_test(ninfer_cli_options_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_cli_options.cpp" ${PROJECT_SOURCE_DIR}/apps/cli/options.cpp
   LIBRARIES ninfer_runtime_support ninfer_product_logging)

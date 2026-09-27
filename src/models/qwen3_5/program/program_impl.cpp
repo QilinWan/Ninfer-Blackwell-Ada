@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
+#include "models/qwen3_5/execution/workspace.h"
 #include "core/startup.h"
 #include "core/device.h"
 #include "ninfer/ops/target_logprobs.h"
@@ -59,9 +60,11 @@ ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const Sequence
     }
     io             = qwen3_5::RoundState(backing, own.round);
     prefill_hidden = own.prefill_hidden.bind(backing);
+    if (own.score_hidden) { score_hidden = own.score_hidden->bind(backing); }
+    // A scoring Program decodes nothing: its round state has no decode frame.
     if (static_cast<int>(io.ordinary.has_value()) + static_cast<int>(io.mtp_decode.has_value()) +
             static_cast<int>(io.dflash_decode.has_value()) !=
-        1) {
+        (plan.causal_scoring ? 0 : 1)) {
         throw std::logic_error("tensor-parallel rank 1 needs exactly one of the ordinary, MTP and "
                                "DFlash decode frames");
     }
@@ -288,7 +291,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     if (peer) {
         // Rank 1's prefill row scalar starts at 0; every publish that writes rank 0's writes it.
         set_peer_i32(peer->io.text_kv_table_row, 0);
-        set_peer_i32(peer->io.backend_kv_table_row, 0);
+        if (!causal_scoring) { set_peer_i32(peer->io.backend_kv_table_row, 0); }
         const bool mtp         = speculative_backend == SpeculativeBackend::Mtp;
         const bool speculative = speculative_backend != SpeculativeBackend::None;
         if (mtp && (!peer->io.mtp || !peer->io.mtp_decode || !peer->replay_records ||
@@ -674,6 +677,7 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
                 throw std::logic_error("causal score staging has an invalid shape");
             }
             work.reset();
+            if (peer) { peer->work.reset(); }
             mark_workspace_usage(workspace_plan.causal_score);
             const auto columns = static_cast<std::int32_t>(staged_columns);
             Tensor logits      = work.alloc(
@@ -681,7 +685,12 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
             Tensor target_ids = work.alloc(DType::I32, {columns});
             Tensor logprobs   = work.alloc(DType::FP32, {columns});
             Tensor hidden     = score_hidden->slice(1, 0, columns);
-            execution::project(hidden, parameters.text.output_head, logits, work, device.stream);
+            if (peer) {
+                project_score_tile_split(hidden, logits);
+            } else {
+                execution::project(hidden, parameters.text.output_head, logits, work,
+                                   device.stream);
+            }
             CUDA_CHECK(cudaMemcpyAsync(target_ids.data, staged_targets.data(), target_ids.bytes(),
                                                     cudaMemcpyHostToDevice, device.stream));
             ops::target_logprobs(logits, target_ids,
@@ -689,20 +698,23 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
                                               logprobs, device.stream);
             CUDA_CHECK(cudaMemcpyAsync(score_logprobs_host->data(), logprobs.data, logprobs.bytes(),
                                                     cudaMemcpyDeviceToHost, device.stream));
-            device.synchronize();
+            synchronize_devices();
             const auto* host = static_cast<const float*>(score_logprobs_host->data());
             output.insert(output.end(), host, host + staged_columns);
             staged_targets.clear();
             staged_columns = 0;
             work.reset();
+            if (peer) { peer->work.reset(); }
         };
 
         std::uint32_t cursor = 0;
         while (cursor < predictor_count) {
             const std::uint32_t nominal = std::min(prefill_chunk, predictor_count - cursor);
+            // At tp 2 the chunk runs TextContext's split schedule on both ranks; rank 1's KV row
+            // and StateImage slot are rank 0's, replayed by the mirrors.
             execution::PrefillContext schedule_state{
                 {device, parameters, work, state_images->linear(), nullptr, io, prefill_hidden,
-                 prefill_chunk, proposal_head},
+                 prefill_chunk, proposal_head, tp_binding()},
                 decoder->text_kv.execution_view(text_kv_addresses->execution_row(*address)),
                 {},
                 decoder->text_kv,
@@ -756,14 +768,40 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
         return output;
     } catch (...) {
         try {
-            device.synchronize();
+            synchronize_devices();
         } catch (...) {}
         work.reset();
+        if (peer) { peer->work.reset(); }
         try {
             cleanup();
         } catch (...) {}
         throw;
     }
+}
+
+void ProgramImpl::project_score_tile_split(const Tensor& hidden, const Tensor& logits) {
+    // The vocabulary-split output head over the staged columns, as project_split_output_head does
+    // for one column: rank 1 copies rank 0's hidden once rank 0's stream has staged it, each rank
+    // projects its half, and rank 0 gathers both halves into `logits`.
+    const DeviceContext& rank1 = peer->device;
+    Tensor peer_hidden         = peer->score_hidden.slice(1, 0, hidden.ne[1]);
+    CUDA_CHECK(cudaEventRecord(peer_events->inputs_ready(0), device.stream));
+    {
+        const ScopedCurrentDevice scope(rank1.device);
+        CUDA_CHECK(cudaStreamWaitEvent(rank1.stream, peer_events->inputs_ready(0), 0));
+        CUDA_CHECK(cudaMemcpyAsync(peer_hidden.data, hidden.data, hidden.bytes(),
+                                   cudaMemcpyDeviceToDevice, rank1.stream));
+    }
+    const execution::LinearParameters& head0 = parameters.text.output_head;
+    const execution::LinearParameters& head1 = peer_parameters->text.output_head;
+    const std::int32_t columns               = hidden.ne[1];
+    const auto part0 =
+        execution::workspace::tp_logits(work, head0.weight.n, head1.weight.n, columns, true);
+    const auto part1 =
+        execution::workspace::tp_logits(peer->work, head1.weight.n, head0.weight.n, columns, false);
+    execution::output_logits_split_rank0({hidden, peer_hidden}, {&head0, &head1},
+                                         {part0.partial, part1.partial}, logits, part0.staging,
+                                         {&work, &peer->work}, *execution_context, *peer_events);
 }
 
 void ProgramImpl::start_context_transfer_timer(runtime::ContextResourceClass resource) {
