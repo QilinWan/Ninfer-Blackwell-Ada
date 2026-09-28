@@ -11,11 +11,12 @@
 > - **Verified on:** two RTX 5070 Ti 16 GB without peer access, Linux, CUDA 13.1, core clocks
 >   capped at about 2.1 GHz. Other GPUs and P2P-capable pairs are untested.
 > - **Measured** with upstream's own benchmark suite against the published RTX 5090 runs, same
->   weights on both, uncapped clocks: plain decode 94-96% of the 5090 (68.7 vs 71.2 tok/s at 7.7k),
->   MTP3 79-87% (corpus of 75 requests 139.7 vs 161.1), prefill 58-86%; with the QUASAR-QAT
->   artifact 90-97% MTP3 and above the 5090 in plain decode. Full tables, per category and
->   concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md). At clocks capped to
->   2.1 GHz, one request, decode at 0 / 16K context: plain 58 / 57, MTP3 110 / 117, DFlash2 118 / 120.
+>   weights on both. v0.2.2 with the core clocks locked at 2.1 GHz (2026-09-28): plain decode 82% of
+>   the 5090 (58.6 vs 71.2 tok/s at 7.7k), MTP3 77% (corpus at C=1, 123.4 vs 161.1), prefill 50% at
+>   7.7k; with the QUASAR-QAT artifact plain decode 88-96%, MTP3 75-87% (corpus at C=1 139.6 tok/s),
+>   DFlash2 83%. Uncapped, on v0.1.x (2026-09-24): plain decode 94-96%, MTP3 79-87%, prefill 58-86%;
+>   the lock alone costs about 17% of decode and 14-22% of prefill. Full tables, per category and
+>   concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md).
 >   GSM8K 0.975-0.985, the same as vLLM on the same weights.
 > - **Related forks and prior art.** The two-GPU design originates in Wael Mansour's
 >   [ninfer-tp2-1m](https://github.com/wamansou/ninfer-tp2-1m) (August 2026, 2× RTX 5090, YaRN 1M),
