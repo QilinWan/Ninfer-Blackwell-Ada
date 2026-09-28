@@ -300,6 +300,7 @@ Only figures already recorded, with their scope:
 | per exchange in a graph, pipelined vs original kernel vs copies: 3.7 / 8.8 / 17.2 µs at 10 KiB, 6.2 / 19.6 / 20.0 µs at 40 KiB (MTP-3 verify); every variant bit-exact | same pair, PCIe 5.0 x8 each, standalone probe (`--sweep`, `--timed`), 2026-09-27 | [Tools](../../tools/README.md#standalone-tp2-mailbox-probe) |
 | original kernel at 40 KiB, one thread's phases: 1.6 µs publish (four dependent load/store pairs), 7.0-7.4 µs `__threadfence_system` draining 16-byte stores at a 64-byte stride, 5.4-5.5 µs reading (four dependent PCIe round trips); pipelined kernel: 0.5 µs publish, 2.3 µs release fence, 1.1 µs read | same, `mailbox_probe --timed --payload 40960` (pipelined at 256 threads per block) | development measurements |
 | MTP3 decode, pipelined vs original kernel on one binary (`NINFER_TP_MAILBOX_LEGACY=1`): 19.96 vs 21.71 ms/round at 0k (−8.1 %), 20.66 vs 22.46 at 16k (−8.0 %), 22.36 vs 24.07 at 64k (−7.1 %), 108.3 vs 99.6 tok/s at 0k; with `--lm-head-draft` −8.8 / −8.7 / −7.6 %; `--no-tp-mailbox` 23.00 / 23.77 / 25.39 ms/round; identical output text on all three | same pair, QUASAR-QAT artifact, production flags at C=1, 400-token greedy generations, two ABBA rounds, 2026-09-27 | development measurements, not otherwise published |
+| MTP3 decode with `--lm-head-draft`, proposal head split vs whole on rank 0 on one binary (`NINFER_TP_DRAFT_HEAD=primary`): 17.93 vs 18.68 ms/round at 0k (−4.0 %), 18.61 vs 19.35 at 16k (−3.8 %), 20.32 vs 21.06 at 64k (−3.5 %), 123.2 vs 118.3 tok/s at 0k; identical output text and acceptance, also against main; weights on rank 0 −170 MiB, on rank 1 +170 MiB; DFlash2 K=4 unchanged | same pair, QUASAR-QAT artifact (DFlash2: `_df2`), production flags at C=1, 400-token greedy generations, two ABBA rounds, 2026-09-28 | development measurements, not otherwise published |
 | mailbox ~41 µs vs staged ~277 µs per 10 KiB reduction, graph replay | 2× RTX 5060 Ti, Windows 11 WDDM, no P2P | `peer_mailbox.h` header |
 | copies cost ~220 µs per hop instead of ~17; decode without `--spec` 60 tok/s on the mailbox vs 22.5 on copies; MTP3 49 tok/s on copies everywhere | WSL2, 2× RTX 5070 Ti, reported in issue #1 | [README](../../README.md) |
 | MTP3 decode 102.3 tok/s at step 1, 101.1 at step 2, 97.1 with `--no-tp-mailbox`; plain decode 69.1 vs 59.8 on copies; identical output text on every transport | 2× RTX 5070 Ti, native Linux, QUASAR-QAT artifact, 400-token greedy generation, 3 runs, 2026-09-26 | development measurements, not otherwise published |
@@ -440,7 +441,8 @@ bottleneck anyway.
 
 **MTP.** The MTP head is split like a Text layer. Its `fc` input projection is split by input
 columns, so rank 0 contracts the normalized token embedding, rank 1 the normalized target hidden,
-and only rank 0 embeds tokens; each MTP forward contains three all-reduces. `--draft-tokens` keeps
+and only rank 0 embeds tokens; each MTP forward contains three all-reduces, and each proposal
+through the split optimized head one more. `--draft-tokens` keeps
 its range 1..5, and K sets the mailbox slot size and the MTP graph profiles. Without
 `--lm-head-draft` the proposal head is the vocabulary-split `text/output_head`, gathered on rank 0
 before the argmax. With it the optimized head (Q4 `[131072,5120]`, indexed) is split by rows too,
@@ -455,8 +457,8 @@ rank 1's candidate only when strictly larger (`ops::argmax_split_select`, the lo
 half row equals the whole head's row bit for bit, so the proposals are the ones rank 0 alone
 proposed before the split; rank 1 needs no token, since only rank 0 embeds.
 `NINFER_TP_DRAFT_HEAD=primary` keeps the head PrimaryOnly on rank 0 (its placement before the
-split) for A/B runs on one binary; the startup log names the
-placement (`MTP proposal head: split by vocabulary | rank 0`). One captured round
+split) for A/B runs on one binary; the startup log names the placement (`MTP proposal head: split
+by vocabulary`, or `rank 0`). One captured round
 (`mtp_decode_batch_body` in [`speculative/mtp.cpp`](../../src/models/qwen3_5/program/speculative/mtp.cpp)):
 
 1. Upload the ingress record to both ranks' frames; each prepares its verify ids and positions.

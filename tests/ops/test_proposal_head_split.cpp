@@ -12,6 +12,10 @@
 //   3. the selection on planted logits: equal maxima across and inside the halves, the maximum in
 //      either half, all -inf, and a NaN in row 0, at a tiled (65536) and a one-tile (300) block.
 //
+// The patterned Q4 fixture repeats a few hundred row classes, so the whole head's maximum recurs in
+// both halves and case 2 exercises the tie across the halves (rank 0 wins every column); rank 1
+// winning is case 3's.
+//
 // Every case needs two CUDA devices in one process and the suite reports 77 with fewer. The
 // registry probe is host-only and runs first.
 #include "ninfer/ops/allreduce.h"
