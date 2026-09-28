@@ -69,3 +69,5 @@ See `recorded/`: one directory per run with both sides' `case-*.ids` and the com
 - `2026-09-25` — fork `2e7f7d3a` vs upstream `bace20dc`: **identical** on all three cases.
 - `2026-09-27` — fork `b3f93dd6` (merge of upstream `e31bc99b`) vs upstream `e31bc99b`: **identical**
   on all three cases.
+- `2026-09-28` — fork `44a58463` (v0.2.1 plus the pipelined mailbox kernel) vs upstream `e31bc99b`:
+  **identical** on all three cases, and identical to the `2026-09-27` ids.
