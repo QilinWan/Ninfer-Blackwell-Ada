@@ -34,6 +34,57 @@ add the effect of lighter weights on the same pair; the 5090 was not run with QU
 official weights were re-measured only for the headline points (plain decode and prefill at 7,680
 tokens, MTP3 corpus at C=1); their other points are in the earlier run.
 
+The headline points were measured again the same day on **v0.2.3 with uncapped clocks**, next to the
+2.1 GHz tables: see [v0.2.3, uncapped clocks](#v023-uncapped-clocks-2026-09-28).
+
+## v0.2.3, uncapped clocks (2026-09-28)
+
+Candidate v0.2.3 (`91582814`: v0.2.2 plus the MTP proposal head split across the two ranks and faster
+NVFP4 A16 sliced-K and down SIMT kernels on 70-SM GPUs), **core clocks uncapped** (`nvidia-smi -rgc`:
+2.87-2.91 GHz on the first board and 2.75-2.78 GHz on the second under load, per-step medians, the same
+regime as the [earlier run](#earlier-run-2026-09-2425-v01x-uncapped-clocks)); same runners, wrapper and
+flags as above. Before measuring, GSM8K (500 questions, C=1, `--lm-head-draft`) produced the same text
+as v0.2.2 on 500 of 500 questions (the same 185,717 tokens in the same 58,927 MTP rounds).
+
+| metric | RTX 5090 | pair, official | share | pair, QUASAR | share |
+|---|--:|--:|--:|--:|--:|
+| structured-output decode phase, MTP3, C=1, tok/s (15 requests: 3 fixtures × 5 seeds, mean ± sd) | 219.8 | 220.0 ± 10.2 | 100% | 254.5 ± 11.4 | 116% |
+| prefill at 7,680 tokens, tok/s (5 seeds) | 8,340.4 | 4,956.1 | 59% | 6,001.6 | 72% |
+| server TTFT at 7,680 tokens, s | 0.93 | 1.55 |  | 1.28 |  |
+| plain decode at 7,680 tokens, tok/s | 71.2 | 70.9 | 100% | 83.8 | 118% |
+| MTP3 corpus decode, C=1, tok/s (45 requests, 3 seeds; the 5090: 75) | 161.1 | 157.1 | 98% | — |  |
+
+Against the earlier uncapped run (v0.1.x, five seeds): structured output +16.6% with the official
+weights (188.7 → 220.0) and +20.6% with QUASAR (211.1 → 254.5): the MTP3 round went from about 17.3 to
+14.6 ms at 3.7 tokens per round (acceptance 90%). Prefill moved +2.8% / +1.2% and plain decode +3.1%:
+this release changes the decode round, not the prefill. The structured row ran only the three
+structured fixtures (`SCENARIO_FIXTURES` cut to that category and the long-decode fixtures dropped,
+see [Reproduction](#reproduction)); at C=1 with prefix reuse off every request is independent, so the
+per-request rate is the one the full corpus gives.
+
+The official-weights corpus at C=1 (makespan 2,865 s, acceptance 58.7%) is +15.2% on the earlier
+uncapped run's same three seeds (136.4) and +27.3% on v0.2.2 at 2.1 GHz (123.4). Per category (three
+seeds, decode phase per request) against the 5090: code 194.0 vs 194.3, story 126.8 vs 126.1,
+translation 189.6 vs 192.3, structured 219.8 vs 219.8, AIME26 #01 / #15 / #30 196.0 / 151.1 / 156.0
+vs 195.2 / 151.4 / 167.5. The QUASAR corpus was not re-measured on v0.2.3.
+
+Against llama.cpp on the same two boards, with the harness of the
+[earlier comparison](#against-llamacpp-on-the-same-two-boards-own-harness-earlier-run-uncapped-clocks)
+(same scripts and prompts). llama.cpp was not re-measured: its column is the 2026-09-24 uncapped run.
+NInfer runs MTP3 with `--lm-head-draft` (the earlier comparison ran it without), `--max-context 196608`,
+four device state slots and Vision.
+
+| load | llama.cpp | NInfer tp2 v0.2.3, official | ratio | NInfer tp2 v0.2.3, QUASAR | ratio |
+|---|--:|--:|--:|--:|--:|
+| cold prefill of a 16k prompt: TTFT s (tok/s) | 7.53 (2,197) | 3.60 (4,577) | 2.1x | 2.97 (5,546) | 2.5x |
+| decode tok/s at 0 / 16k / 64k / 123k / 184k context | 119.7 / 125.8 / 98.4 / 80.4 / 64.0 | 156.6 / 165.5 / 150.7 / 138.4 / 122.9 | 1.3-1.9x | 193.6 / 188.9 / 156.7 / 156.8 / 140.9 | 1.5-2.2x |
+| short prompts, decode tok/s (prose / code / math / list) | 117.5 / 154.7 / 148.4 / 126.0 | 129.6 / 219.1 / 194.4 / 131.8 | 1.05-1.42x | 156.2 / 241.1 / 220.1 / 163.6 | 1.30-1.56x |
+| 16-turn agent session to 93.7k tokens: wall · mean TTFT · GPU energy | 82.8 s · 3.62 s · 39.0 kJ | 46.5 s · 1.88 s · 21.6 kJ | −44% time | 41.5 s · 1.66 s · 18.6 kJ | −50% time |
+
+The prefill ratio barely moves from the earlier run (2.05x → 2.1x with the official weights); the
+decode ratio at 184K goes from 1.75x to 1.9x, partly from `--lm-head-draft`. In the agent session the
+mean TTFT is unchanged (prefill with prefix reuse dominates it) and the gain comes from decode.
+
 ## Decode saturation (NS: 16,384-token context, one 8,192-token generation per active request, MTP3)
 
 | C | RTX 5090 | pair, QUASAR | share |
@@ -196,7 +247,7 @@ done
 exec ./build/apps/ninfer-serve "${args[@]}" --tp 2 --devices 0,1
 EOF
 chmod +x serve-tp2.sh
-sudo nvidia-smi -lgc 2100    # the clock lock of these tables (-rgc for the earlier run's uncapped clocks)
+sudo nvidia-smi -lgc 2100    # the clock lock of these tables (-rgc for the uncapped v0.2.3 and earlier runs)
 python3 tools/bench/run_serve_concurrency.py --serve ./serve-tp2.sh --artifact qwen3_8_27b=out/qwen3_8_27b_nvfp4.ninfer \
   --mode mtp3 --sampling stochastic --suite decode-saturation --concurrency 1 --concurrency 2 --concurrency 4 --concurrency 8 \
   --decode-tokens 8192 --max-context 16384 --kv-capacity auto --output profiles/bench/tp2_decode_saturation
@@ -217,6 +268,18 @@ import sys; sys.path.insert(0, ".")
 from tools.bench import run_serve_corpus as corpus, run_serve_concurrency as conc
 corpus.SEEDS = corpus.SEEDS[:3]
 sys.exit(conc.main(sys.argv[1:]))   # or corpus.main(...) for the context profile
+```
+
+The v0.2.3 structured-output row keeps all five seeds (no `SEEDS` cut) and cuts the corpus to one category before calling
+`run_serve_concurrency.main()` with `--mode mtp3 --suite corpus-makespan --concurrency 1
+--max-context 131072 --kv-capacity auto`; its prefill row runs `run_serve_corpus.main()` with
+`--mode mtp0 --sampling stochastic`, five seeds and only the 8k NIAH fixture; the corpus row cuts
+`SEEDS` to three as above:
+
+```python
+corpus.SCENARIO_FIXTURES = {"structured": corpus.SCENARIO_FIXTURES["structured"]}
+corpus.LONG_DECODE_FIXTURES = ()           # structured-output row
+corpus.NIAH_FIXTURES = ("long_niah_8k",)   # prefill / plain decode row at 7,680 tokens
 ```
 
 `--lm-head-draft` (added by the runner for MTP3) works at `--tp 2`. The runners need Python 3.11+ and

@@ -11,12 +11,14 @@
 > - **Verified on:** two RTX 5070 Ti 16 GB without peer access, Linux, CUDA 13.1, core clocks
 >   capped at about 2.1 GHz. Other GPUs and P2P-capable pairs are untested.
 > - **Measured** with upstream's own benchmark suite against the published RTX 5090 runs, same
->   weights on both. v0.2.2 with the core clocks locked at 2.1 GHz (2026-09-28): plain decode 82% of
->   the 5090 (58.6 vs 71.2 tok/s at 7.7k), MTP3 77% (corpus at C=1, 123.4 vs 161.1), prefill 50% at
->   7.7k; with the QUASAR-QAT artifact plain decode 88-96%, MTP3 75-87% (corpus at C=1 139.6 tok/s),
->   DFlash2 83%. Uncapped, on v0.1.x (2026-09-24): plain decode 94-96%, MTP3 79-87%, prefill 58-86%;
->   the lock alone costs about 17% of decode and 14-22% of prefill. Full tables, per category and
->   concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md).
+>   weights on both. v0.2.3 with uncapped clocks (2026-09-28, about 2.9 / 2.8 GHz under load): MTP3
+>   decode on structured output 100% of the 5090 (220.0 vs 219.8 tok/s per request at C=1), plain
+>   decode 100% (70.9 vs 71.2 tok/s at 7.7k), MTP3 corpus at C=1 98% (157.1 vs 161.1 tok/s),
+>   prefill 59% at 7.7k (4,956 vs 8,340 tok/s); with the QUASAR-QAT artifact structured output 116%
+>   (254.5 tok/s), plain decode 118%, prefill 72%. v0.2.2 with the core clocks locked at 2.1 GHz (2026-09-28): plain decode 82%,
+>   MTP3 77% (corpus at C=1, 123.4 vs 161.1), prefill 50% at 7.7k; with QUASAR plain decode 88-96%,
+>   MTP3 75-87%, DFlash2 83%; the lock alone costs about 17% of decode and 14-22% of prefill. Full
+>   tables, per category and concurrency 1-8, in [Two-GPU performance](docs/performance/two-gpu.md).
 >   GSM8K 0.975-0.985, the same as vLLM on the same weights.
 > - **Related forks and prior art.** The two-GPU design originates in Wael Mansour's
 >   [ninfer-tp2-1m](https://github.com/wamansou/ninfer-tp2-1m) (August 2026, 2× RTX 5090, YaRN 1M),
@@ -84,8 +86,11 @@
 > - **KV cache types.** `bf16` and `int8` only; `fp8`, `nvfp4` and `k8v4` are rejected.
 > - **Where it pays off.** The gain grows with context: prompt processing is 1.5-2.1x and decode
 >   1.1x at short context to 1.65x at 184K (1.75x with uncapped clocks) against llama.cpp on the same two boards. On short
->   prose prompts llama.cpp with MTP was about 8% faster. Measured with one request at a time;
->   concurrency is measured up to 8 requests (see the two-GPU performance page).
+>   prose prompts llama.cpp with MTP was about 8% faster. With v0.2.3, uncapped and with `--lm-head-draft`
+>   (2026-09-28, against the same llama.cpp numbers): 2.1x on a cold 16K prompt, 1.3x decode at short
+>   context to 1.9x at 184K, a 16-turn agent session 44% shorter, and short prose prompts 10% faster.
+>   Measured with one request at a time; concurrency is measured up to 8 requests (see the two-GPU
+>   performance page).
 > - **Numerics.** The split matmuls sum their two halves in a different order than one GPU does,
 >   so long greedy generations can drift from a single-GPU run of the same weights. Measured
 >   quality matches: GSM8K 0.975-0.98 at `--tp 2`, vLLM on the same weights 0.98.
