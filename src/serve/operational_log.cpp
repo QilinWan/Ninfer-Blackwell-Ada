@@ -170,6 +170,12 @@ void append_failure_fields(std::ostringstream& out, const RequestFailure& failur
     }
 }
 
+// The tensor-parallel startup lines (tp2/operational_log_tp2.inc).
+void log_tensor_parallel(spdlog::logger& logger, const GenerationService& service,
+                         const ninfer::EngineOptions& engine,
+                         const ninfer::ContextCacheOptions& cache,
+                         const ninfer::MemorySummary& memory);
+
 } // namespace
 
 OperationalRecord render_request_start(const RequestLogContext& context) {
@@ -583,3 +589,5 @@ void OperationalLog::engine_failure() const {
 }
 
 } // namespace ninfer::serve
+
+#include "serve/tp2/operational_log_tp2.inc"
