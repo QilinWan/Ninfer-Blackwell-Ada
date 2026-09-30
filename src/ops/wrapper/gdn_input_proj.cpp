@@ -1108,7 +1108,8 @@ std::size_t conv_shard_projection_bytes(QType qtype, LinearPolicy policy, std::i
     if (!conv_shard_quantizes(qtype, policy, {max_width, batch_size, columns})) { return 0; }
     return qtype == QType::NVFP4
                ? detail::nvfp4_a4_workspace_capacity_bytes(columns, kShardHidden)
-               : detail::fp8_a8_workspace_capacity_bytes(columns, kShardHidden);
+               : detail::fp8_a8_workspace_capacity_bytes(
+                     columns, kShardHidden, detail::fp8_gdn_input_partial_capacity_bytes(columns));
 }
 
 } // namespace

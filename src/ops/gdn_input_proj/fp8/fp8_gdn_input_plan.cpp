@@ -91,7 +91,8 @@ void fp8_gdn_input_shard_dispatch(const Tensor& x, const Weight& weight, Tensor&
 void fp8_gdn_input_shard_a8_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                                      WorkspaceArena& workspace, cudaStream_t stream) {
     auto scope                   = workspace.scope();
-    const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(workspace, x.ne[1], weight.k);
+    const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(
+        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(x.ne[1]));
     fp8_gdn_input_shard_a8_launch(x, weight, qkv, z, scratch, stream);
 }
 
