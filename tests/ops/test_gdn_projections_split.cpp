@@ -1129,18 +1129,23 @@ int main() {
     failures += make_input_weights(ec, kFp8, 45U, weights);
     if (failures == 0) {
         failures += verify_split_rejections(ec, weights);
-        // Decode, the SIMT and bounded-MMA frontiers, the A8 threshold and the GEMM schedules.
+        // Decode, the SIMT (2..4) and sliced-K (5..16) frontiers, the A8 threshold (17), the A16
+        // GEMM schedules and each A8 tile band: 32/33, 64/65, the TMA tiles 128/129 and 192/193,
+        // the split-K bulk tiles from 193 and the mid tile at 385..512.
         failures += run_input_case(
-            ec, weights, 45U, {1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 33, 64, 65, 97, 128, 300},
+            ec, weights, 45U,
+            {1, 2, 4, 5, 16, 17, 32, 33, 64, 65, 97, 128, 129, 192, 193, 300, 385, 512, 513},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
-        // The conv forms take A8 from W=10 at B=1 and from B*W=9 when batched, not from T=8 as the
-        // bare projection does; W=8..10 and B*W=8..9 straddle both frontiers.
+        // The conv forms fuse A16 at B=1 through W=3 and take A8 from W=17 at B=1 and from B*W=17
+        // when batched, as the bare projection does from T=17; W=3..4, W=16..17 and B*W=16..18
+        // straddle those frontiers.
         const std::vector<ConvCase> snapshot_cases{{1, 1, false},  {1, 3, false}, {1, 4, false},
-                                                   {1, 8, false},  {1, 9, false}, {1, 10, false},
-                                                   {1, 24, false}, {2, 4, true},  {3, 3, false},
-                                                   {3, 4, true},   {8, 2, false}, {2, 16, true}};
-        const std::vector<ConvCase> record_cases{
-            {1, 4, false}, {1, 9, false}, {2, 4, false}, {3, 5, true}, {2, 16, false}};
+                                                   {1, 16, false}, {1, 17, false}, {1, 24, false},
+                                                   {2, 4, true},   {3, 3, false}, {3, 4, true},
+                                                   {8, 2, false},  {2, 8, false}, {2, 9, true},
+                                                   {2, 16, true}};
+        const std::vector<ConvCase> record_cases{{1, 4, false}, {1, 16, false}, {2, 4, false},
+                                                 {3, 5, true},  {2, 9, false},  {2, 16, false}};
         std::uint32_t seed = 61U;
         for (const ops::LinearPolicy policy :
              {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8}) {

@@ -485,11 +485,12 @@ int main() {
         std::cout << "peer access: " << (ops::enable_peer_access(ec) ? "direct" : "host-staged")
                   << '\n';
         failures += verify_split_rejections(ec);
-        // T reaches the A16 decode (1), SIMT (2..5), sliced-K MMA (6..33) and MMA routes, the A8
-        // crossover (5) and each A8 tile band up to the prefill tile, 97..128 at both ends.
+        // T reaches the A16 decode (1), sliced-K MMA (2..32) and MMA routes, the A8 crossover (17)
+        // and each A8 tile band at both ends: 32/33, 96/97, the TMA tiles 128/129, 192/193 and
+        // 288/289, and the split-K bulk tile from 289 (a partial wave at 385).
         failures += run_case(
             ec, QType::FP8_E4M3FN_ROW_BF16, 46U,
-            {1, 2, 4, 5, 6, 33, 34, 64, 65, 97, 128, 129, 145, 1024},
+            {1, 2, 16, 17, 24, 25, 32, 33, 64, 96, 97, 128, 129, 192, 193, 288, 289, 385, 1024},
             {ops::LinearPolicy::A16Only, ops::LinearPolicy::AllowA8, ops::LinearPolicy::AllowA4});
         // T reaches the A16 decode (1), SIMT (2), each sliced-K (3..24) and MMA tile band, the A4
         // crossover (3/4), each A4 MMA tile band and both TMA tiles. The shard keeps the 128-token

@@ -24,6 +24,7 @@
 
 #include "core/device.h"
 #include "core/weight.h"
+#include "ops/linear/fp8/fp8_geometry.h"
 #include "ops/linear/nvfp4/nvfp4_geometry.h"
 #include "ops/op_tester.h"
 #include "ops/quantized_weight.h"
@@ -254,7 +255,7 @@ int verify_registry() {
     };
     int failures = 0;
     for (const Entry& entry : admitted) {
-        for (const std::int32_t tokens : {1, 2, 8, 22, 25, 48, 1024}) {
+        for (const std::int32_t tokens : {1, 2, 8, 17, 20, 48, 1024}) {
             try {
                 (void)ops::linear_add_row_parallel_workspace_capacity_bytes(
                     entry.qtype, entry.n, entry.k, entry.policy, tokens, tokens);
@@ -400,11 +401,13 @@ int main() {
         constexpr auto kA8  = ops::LinearPolicy::AllowA8;
         constexpr auto kA4  = ops::LinearPolicy::AllowA4;
         // Token counts reach each half's decode, SIMT, A8/A4 crossover and MMA routes, the A4
-        // schedule seams, and (at 1024) the whole problem's TMA route. The NVFP4 A4 floors come
-        // from the constants the linear_add plan and each half's linear() read, so the cases
-        // straddle the crossover wherever it sits.
-        constexpr std::int32_t kDownA4   = ops::detail::kNvfp4DownFamilyFirstA4Tokens;
-        constexpr std::int32_t kOutputA4 = ops::detail::kNvfp4OutputFamilyFirstA4Tokens;
+        // schedule seams, the FP8 TMA and split-K tiles, and (at 1024) the whole problem's TMA
+        // route. The A8 and A4 floors come from the constants the linear_add plan and each half's
+        // linear() read, so the cases straddle the crossover wherever it sits.
+        constexpr std::int32_t kDownA4      = ops::detail::kNvfp4DownFamilyFirstA4Tokens;
+        constexpr std::int32_t kOutputA4    = ops::detail::kNvfp4OutputFamilyFirstA4Tokens;
+        constexpr std::int32_t kFp8DownA8   = ops::detail::kFp8DownFamilyFirstA8Tokens;
+        constexpr std::int32_t kFp8OutputA8 = ops::detail::kFp8OutputFamilyFirstA8Tokens;
         const std::vector<Case> cases{
             {"nvfp4 mlp down",
              QType::NVFP4,
@@ -425,14 +428,14 @@ int main() {
              5120,
              6144,
              32U,
-             {1, 5, 21, 22, 24, 25, 48, 1024},
+             {1, 4, 5, kFp8OutputA8 - 1, kFp8OutputA8, 48, 193, 769, 1024},
              {kA16, kA8}},
             {"fp8 mlp down",
              QType::FP8_E4M3FN_ROW_BF16,
              5120,
              17408,
              33U,
-             {1, 8, 24, 25, 48, 128, 1024},
+             {1, 8, kFp8DownA8 - 1, kFp8DownA8, 48, 65, 129, 257, 385, 1024},
              {kA16, kA8}},
         };
         for (const Case& test_case : cases) { failures += run_case(test_case, ec, events); }

@@ -643,7 +643,7 @@ int main() {
             {"fp8 gate_up",
              QType::FP8_E4M3FN_ROW_BF16,
              33U,
-             {1, 2, 3, 4, 5, 48, 128, 1024},
+             {1, 2, 3, 4, 5, 48, 128, 129, 193, 257, 1024},
              {kA16, kA8}},
         };
         for (const Case& test_case : cases) { failures += run_case(test_case, ec); }
