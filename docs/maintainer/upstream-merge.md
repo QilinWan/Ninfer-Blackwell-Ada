@@ -121,6 +121,12 @@ remaining hunks fall into these kinds; each file's hunks are small unless noted.
 | Engine-wide, public or product surface | `include/ninfer/types.h`, `apps/*/options.cpp`, `serve_options.cpp`, `kv_capacity.cpp`, `engine.cpp`, `resource_manager.h` (Host-less reclaim), artifact `binder`/`materializer`/`views` (multi-device materialization) | public API, CLI and loading paths |
 | Generic changes, candidates for upstream | `FuncAttrPerDevice` at every `cudaFuncSetAttribute` site, device SM count and balanced splits in the INT8 attention plan and kernels, A16 sliced-K with several row tiles per CTA (`nvfp4_a16_sliced_k_mma.cuh`), explicit rejection of unregistered head counts, per-step KV row publication (`publish_kv_rows`) | useful at one GPU too; proposing them upstream removes the conflicts at the root |
 
+**Before taking upstream's side of a conflict**, check what else of ours the file carries:
+`git log --no-merges <upstream>..<ours> -- <file>`. Not every fork change in an upstream file is tp2
+plumbing; some are bit-identical performance work that the gate only sees as ms/round (it happened
+during this refactor: the 70-SM sliced-K schedules of `91582814` in `nvfp4_linear_swiglu_small_t.cu`
+went missing, texts stayed identical, the 60 greedy prompts measured +2.8 % ms/round).
+
 Tests: the tp2 cases added to upstream test files (`test_decode_graph.cpp`, `test_kv_cache.cpp`,
 `test_serve_options.cpp`, `test_cli_options.cpp`, ...) are still inline.
 
