@@ -88,8 +88,12 @@ these files: the FP8 split-K partial reservations (`*_shard_partial_capacity_byt
 NVFP4 attention shard's TMA scale tile at T=1024 (`nvfp4_attn_input_shard_a4.cu`, via
 `tp2::DeviceTuning`).
 
-After a merge that rewrites these launchers the shard follows automatically. What can break, at
-compile or link time, never silently:
+After a merge that rewrites these launchers the shard follows automatically. Two changes would make
+it wrong silently, and `tools/tp2/check_shard_sources.py` (the gate's `shards` stage) fails on both:
+a template, inline or kernel definition outside an anonymous namespace in a re-included source (the
+parent's and the shard's bodies would share one name and the linker would keep one), and a renamed
+identifier appearing in a header the prelude does not include first. The rest breaks at compile or
+link time:
 
 - upstream renames or removes the output type, a launcher, or a source file → update the names
   header or the include in `tp2/`;

@@ -6,6 +6,8 @@
 # --record writes <reference-dir> from this build instead of comparing against it. Stages, in order
 # (default: all but build):
 #   build    cmake --build <build-dir> (no GPU)
+#   shards   tools/tp2/check_shard_sources.py on the source tree (no GPU): the shards compiled from
+#            upstream's sources (docs/maintainer/upstream-merge.md 2.4) cannot go silently wrong
 #   ctest    the unit, Op and two-device tests that a tp2 change can reach, plus the tp2 *_real tests
 #            (NINFER_TEST_ARTIFACT); --attention adds ninfer_softmax_attention_test (~12 min)
 #   golden   tools/golden/record.sh on the synthetic tp1 model; ids must equal the reference's
@@ -38,7 +40,7 @@ DF2_PROMPTS=${GATE_DF2_PROMPTS:-10}
 # Tests that cannot run on one 16 GB board (tp1 27B artifacts) or need a different artifact.
 CTEST_EXCLUDE=${GATE_CTEST_EXCLUDE:-ninfer_qwen3_5_(prefix|score|moe|dflash|dflash2|dflash_prefill)_real_test|ninfer_qwen3_5_vision_workspace_test}
 
-record=0; stages="ctest,golden,ppl,greedy,dflash2"; attention=0; out=""
+record=0; stages="shards,ctest,golden,ppl,greedy,dflash2"; attention=0; out=""
 while [ $# -gt 0 ]; do
     case $1 in
         --record) record=1; shift ;;
@@ -79,6 +81,13 @@ if has build; then
     else
         verdict build FAIL "see $out/build.log"; say "RESULT FAIL"; exit 1
     fi
+fi
+
+# ---------------------------------------------------------------- shards
+if has shards; then
+    if python3 "$src/tools/tp2/check_shard_sources.py" "$src" > "$out/shards.log" 2>&1; then
+        verdict shards PASS "$(tail -1 "$out/shards.log")"
+    else verdict shards FAIL "see $out/shards.log"; fi
 fi
 
 # ---------------------------------------------------------------- ctest
