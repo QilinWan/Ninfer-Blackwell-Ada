@@ -11,6 +11,8 @@ struct CausalGeometry : AttentionHeadMapping<QueryHeads, KVHeads> {
 };
 
 using CausalD256H24Kv4 = CausalGeometry<256, 24, 4>;
+// One device's half of [256,24,4] under two-device tensor parallelism (BF16 and INT8 caches).
+using CausalD256H12Kv2 = CausalGeometry<256, 12, 2>;
 using CausalD256H16Kv2 = CausalGeometry<256, 16, 2>;
 // The per-device half of 24Q/4KV under two-device tensor parallelism: 12 query heads on 2 KV
 // heads, a group of 6. Instantiated by the BF16 and INT8 cache kernels only; the FP8, NVFP4 and

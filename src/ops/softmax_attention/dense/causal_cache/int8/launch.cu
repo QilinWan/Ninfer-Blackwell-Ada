@@ -122,7 +122,7 @@ void tiled(const CausalAttentionOperands& p, Int8KvReadView cache, cudaStream_t 
     if (p.query_heads == 24)
         launch_int8_kv_tiled_mma<CausalD256H24Kv4, Int8KvTiledInstance>(p, cache, stream);
     else if (p.query_heads == 12)
-        throw std::logic_error("int8 causal tiled route has no 12/2 instantiation");
+        launch_int8_kv_tiled_mma<CausalD256H12Kv2, Int8KvTiledInstance>(p, cache, stream);
     else if (p.query_heads == 16)
         launch_int8_kv_tiled_mma<CausalD256H16Kv2, Int8KvTiledInstance>(p, cache, stream);
     else

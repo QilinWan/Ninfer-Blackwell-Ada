@@ -12,11 +12,12 @@ constexpr int kGroupedPrefillMaxWidth = 256;
 Bf16KvCausalPlan make_bf16_kv_causal_plan(int heads, int width, int batch,
                                           CausalAttentionExecutionEnvelope envelope,
                                           int multiprocessor_count) {
-    if (multiprocessor_count <= 0 || (heads != 24 && heads != 16) || width < 1 || batch < 1 ||
+    if (multiprocessor_count <= 0 || (heads != 24 && heads != 16 && heads != 12) || width < 1 || batch < 1 ||
         batch > 8 || (batch > 1 && width > 16) || envelope.min_visible_keys == 0 ||
         envelope.min_visible_keys > envelope.max_visible_keys ||
         envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys)
         throw std::invalid_argument("BF16 attention: invalid plan inputs");
+    // 12/2 is one device's half of 24/4 at tp 2: two KV heads with 24/4's group of six.
     const int kv_heads = heads == 24 ? 4 : 2, group = heads / kv_heads;
     const auto ceil_div = [](int a, int b) { return (a + b - 1) / b; };
     const int visible   = envelope.max_visible_keys;

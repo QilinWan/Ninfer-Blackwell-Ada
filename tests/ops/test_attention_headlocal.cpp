@@ -14,17 +14,16 @@
 // well-formed output, so only this per-head comparison can catch it.
 //
 // Parity is not bit-exact. Both geometries read identical cache rows (the K/V codecs work per
-// token and KV head), but 12/2 runs its own small-T split count (SmallTSplitScale 2 against 1)
-// and, from W=7, its own route, so the keys are partitioned and the partial Softmax states summed
-// in a different order, and the two FP32 results can round to adjacent BF16 outputs. One BF16 ulp
-// can exceed the storage's oracle criterion C itself: at an output of 0.26 the ulp is 1.95e-3,
-// while the INT8 gross limit 1.1e-3 + 3.0e-3 * max|reference| stays below it for any maximum
-// under 0.28. The causal Softmax Attention suite qualifies each geometry against the FP64 oracle
-// with C, so by the triangle inequality two qualified outputs differ by at most 2C, which is the
-// parity bound here. A wrong head mapping or cache row gives errors of the outputs' own magnitude,
-// far above 2C.
+// token and KV head), but 12/2 plans its own KV partition for two KV heads instead of four, so the
+// keys are split and the partial Softmax states summed in a different order, and the two FP32
+// results can round to adjacent BF16 outputs. One BF16 ulp can exceed the storage's oracle
+// criterion C itself: at an output of 0.26 the ulp is 1.95e-3, while the BF16 gross limit
+// 1.0e-3 + 2.7e-3 * max|reference| stays below it for any maximum under 0.35. The causal Softmax
+// Attention suite qualifies each geometry against the FP64 oracle with C, so by the triangle
+// inequality two qualified outputs differ by at most 2C, which is the parity bound here. A wrong
+// head mapping or cache row gives errors of the outputs' own magnitude, far above 2C.
 //
-// The prompt kernels and the INT8 dynamic small-T kernels opt into more than 48 KiB of dynamic
+// The tiled prefill kernels and the INT8 grouped kernels opt into more than 48 KiB of dynamic
 // shared memory, a per-device attribute, so the prefills on device 1 also check that the opt-in
 // reaches the second device.
 //
@@ -393,12 +392,14 @@ int main() {
         std::uint32_t seed = 900U;
         for (const KvCacheStorage storage :
              {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64}) {
-            // Decode, small-T, chunked small-T, prompt, long-context decode, and decode/verify
-            // batches, each after a history appended through the Op itself.
+            // Decode, grouped and parallel-grouped blocks on both sides of the 8-token seam,
+            // tiled prompt blocks, long-context decode, and decode/verify batches, each after a
+            // history appended through the Op itself.
             const std::vector<Case> cases{
-                {storage, 1, 64, 1},   {storage, 1, 61, 6},  {storage, 1, 63, 7},
-                {storage, 1, 127, 16}, {storage, 1, 0, 67},  {storage, 1, 129, 65},
-                {storage, 1, 2048, 1}, {storage, 4, 127, 1}, {storage, 2, 61, 16},
+                {storage, 1, 64, 1},   {storage, 1, 61, 6},   {storage, 1, 63, 7},
+                {storage, 1, 61, 8},   {storage, 1, 61, 9},   {storage, 1, 127, 16},
+                {storage, 1, 0, 67},   {storage, 1, 129, 65}, {storage, 1, 17, 257},
+                {storage, 1, 2048, 1}, {storage, 4, 127, 1},  {storage, 2, 61, 16},
             };
             for (const Case& test_case : cases) {
                 failures += run_case(ec, test_case, seed);
