@@ -5,6 +5,7 @@
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_output.cuh"
 #include "ops/linear/nvfp4/nvfp4_schedule.cuh"
 #include "ops/linear/nvfp4/nvfp4_template_launch.cuh"
+#include "core/tp2/device_tuning.h"
 #include "ops/attn_input_proj/nvfp4/nvfp4_attn_input_a4_tma_launch.h"
 
 #include <cuda_bf16.h>
@@ -62,9 +63,17 @@ void nvfp4_attn_input_a4_launch(const Tensor& x, const Weight& weight, Tensor& q
                                 Tensor& k, Tensor& v, Nvfp4A4Workspace workspace,
                                 cudaStream_t stream) {
     const std::int32_t tokens = x.ne[1];
-    const auto layout =
-        uses_tma(tokens) ? (tokens < 1024 ? Nvfp4ScaleLayout::Tiled128 : Nvfp4ScaleLayout::Tiled256)
-                         : Nvfp4ScaleLayout::RowMajor;
+    // The scale-tile bound of the TMA route is per device (core/tp2/device_tuning.h): the shard may
+    // want a different first 256-token width than its parent, and 36-SM boards are not measured
+    // here yet, so the table's 5060 Ti row keeps the parent's 1024.
+    const std::int32_t first_tiled256 =
+        weight.n == kNvfp4AttnInputShardRows
+            ? core::current_device_tuning().nvfp4_attn_input_shard_first_tiled256_tokens
+            : 1024;
+    const auto layout = uses_tma(tokens)
+                            ? (tokens < first_tiled256 ? Nvfp4ScaleLayout::Tiled128
+                                                       : Nvfp4ScaleLayout::Tiled256)
+                            : Nvfp4ScaleLayout::RowMajor;
     launch_nvfp4_a4_quantize(x, weight, workspace, layout, stream);
     if (uses_tma(tokens)) {
         launch_nvfp4_a4_tma_attention(
