@@ -24,7 +24,7 @@ so a merge either applies cleanly or conflicts on a line whose resolution is obv
 | `src/core/tp2/device_tuning.h` | the per-GPU table (§5) |
 | `src/core/tp2/` | dual-device CUDA Graph capture (`decode_graph_peer.h`, `decode_graph_tp2.inc`), KV mirrors (`paged_kv_cache_tp2.inc`) |
 | `src/runtime/engine/tp2/`, `src/serve/tp2/` | tp 2 Engine option checks, startup log lines |
-| `tools/tp2/` | `gate.sh` (§4), `mailbox_probe.cu` |
+| `tools/tp2/` | `gate.sh` (§4), `surface.sh` (§3), `mailbox_probe.cu` |
 | `tests/ops/test_*_split.cpp`, `test_allreduce.cpp`, `test_attention_headlocal.cpp`, `tests/models/qwen3_5/test_*tp2*.cpp` | two-device tests |
 
 ## 2. The four ways our code attaches to upstream
@@ -105,8 +105,9 @@ upstream selects the schedule family by comparing K with 6144/17408, so the halv
 
 ## 3. What still lives in upstream files
 
-Measured on the branch that introduced this layout (`refactor/tp2-isolation`): see the dossier for
-the numbers. The remaining hunks fall into these kinds; each file's hunks are small unless noted.
+`tools/tp2/surface.sh [<upstream-ref> [<ref>]]` measures the fork's footprint inside upstream's
+files (files, lines, hunks, and the files with the most hunks); run it before and after a merge. The
+remaining hunks fall into these kinds; each file's hunks are small unless noted.
 
 | Kind | Where | Why it cannot move |
 |---|---|---|

@@ -4,6 +4,8 @@
   stage against a recorded reference. Mandatory for every upstream merge and every change to the
   tp2 layer ([Merging upstream](../../docs/maintainer/upstream-merge.md#4-the-gate-mandatory-for-every-merge-and-every-tp2-change)).
 - `gate_client.py` — its serve-stage client (requests, request-log statistics, comparison).
+- `surface.sh` — the fork's footprint inside upstream's files: modified files, lines, hunks, the
+  files with the most hunks (`tools/tp2/surface.sh [<upstream-ref> [<ref>]]`).
 - `mailbox_probe.cu` — the standalone pinned-host mailbox check ([Tools](../README.md#standalone-tp2-mailbox-probe)).
 
 ## gate.sh
