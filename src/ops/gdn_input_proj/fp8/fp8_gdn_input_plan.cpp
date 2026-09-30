@@ -25,16 +25,30 @@ Fp8GdnInputRoute resolve_route(LinearPolicy policy, std::int32_t tokens) {
 
 } // namespace
 
-std::size_t fp8_gdn_input_workspace_capacity_bytes(LinearPolicy policy, std::int32_t min_tokens,
-                                                   std::int32_t max_tokens) {
+namespace {
+std::size_t workspace_capacity_bytes(std::int32_t rows, LinearPolicy policy,
+                                     std::int32_t min_tokens, std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("fp8 gdn_input_proj workspace: invalid token interval");
     }
     (void)resolve_route(policy, min_tokens);
     return resolve_route(policy, max_tokens) == Fp8GdnInputRoute::A8
-               ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8N16384K5120::kInputRows,
-                                                 fp8_gdn_input_partial_capacity_bytes(max_tokens))
+               ? fp8_a8_workspace_capacity_bytes(
+                     max_tokens, Fp8N16384K5120::kInputRows,
+                     fp8_gdn_input_partial_capacity_bytes(rows, max_tokens))
                : 0;
+}
+} // namespace
+
+std::size_t fp8_gdn_input_workspace_capacity_bytes(LinearPolicy policy, std::int32_t min_tokens,
+                                                   std::int32_t max_tokens) {
+    return workspace_capacity_bytes(Fp8N16384K5120::kOutputRows, policy, min_tokens, max_tokens);
+}
+
+std::size_t fp8_gdn_input_shard_workspace_capacity_bytes(LinearPolicy policy,
+                                                         std::int32_t min_tokens,
+                                                         std::int32_t max_tokens) {
+    return workspace_capacity_bytes(Fp8N8192K5120::kOutputRows, policy, min_tokens, max_tokens);
 }
 
 void fp8_gdn_input_a16_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
@@ -50,7 +64,7 @@ void fp8_gdn_input_a8_dispatch(const Tensor& x, const Weight& weight, Tensor& qk
                                WorkspaceArena& workspace, cudaStream_t stream) {
     auto scope                   = workspace.scope();
     const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(
-        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(x.ne[1]));
+        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(weight.n, x.ne[1]));
     fp8_gdn_input_a8_launch(x, weight, qkv, z, scratch, stream);
 }
 
@@ -92,7 +106,7 @@ void fp8_gdn_input_shard_a8_dispatch(const Tensor& x, const Weight& weight, Tens
                                      WorkspaceArena& workspace, cudaStream_t stream) {
     auto scope                   = workspace.scope();
     const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(
-        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(x.ne[1]));
+        workspace, x.ne[1], weight.k, fp8_gdn_input_partial_capacity_bytes(weight.n, x.ne[1]));
     fp8_gdn_input_shard_a8_launch(x, weight, qkv, z, scratch, stream);
 }
 

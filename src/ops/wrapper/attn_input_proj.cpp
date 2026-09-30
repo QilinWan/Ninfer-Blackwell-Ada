@@ -304,10 +304,11 @@ std::size_t attn_input_proj_column_parallel_workspace_capacity_bytes(QType shard
                                                                      std::int32_t min_tokens,
                                                                      std::int32_t max_tokens) {
     validate_policy(policy);
-    // The shard keeps the parent's input rows, and the workspace depends only on T and K.
+    // The shard keeps the parent's input rows; the FP8 workspace also holds its split-K partials.
     switch (shard_qtype) {
     case QType::FP8_E4M3FN_ROW_BF16:
-        return detail::fp8_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
+        return detail::fp8_attn_input_shard_workspace_capacity_bytes(policy, min_tokens,
+                                                                     max_tokens);
     case QType::NVFP4:
         return detail::nvfp4_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     case QType::BF16:

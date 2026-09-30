@@ -27,6 +27,17 @@ std::size_t fp8_attn_input_partial_capacity_bytes(std::int32_t max_tokens) {
     return std::max(parent, shard);
 }
 
+std::size_t fp8_attn_input_partial_capacity_bytes(std::int32_t rows, std::int32_t max_tokens) {
+    // Per problem, for the column-parallel wrapper: `fp8_a8_band_partial_bytes` scans the band and
+    // answers at the first width that really splits, so the same call gives the parent's T=385
+    // start and the shard's T=289 start from its row-tile count alone. The row-count-free query
+    // above keeps reserving the larger of the two, so a plan built without `rows` stays safe.
+    const std::size_t last = static_cast<std::size_t>(max_tokens);
+    if (last <= 288) return 0;
+    return fp8_a8_band_partial_bytes<Bulk>(289, last,
+                                          static_cast<std::size_t>(rows) / 256);
+}
+
 namespace {
 template <class Problem>
 void run_a8(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate, Tensor& key,

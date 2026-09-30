@@ -36,16 +36,30 @@ void launch_a16(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate, 
 
 } // namespace
 
-std::size_t fp8_attn_input_workspace_capacity_bytes(LinearPolicy policy, std::int32_t min_tokens,
-                                                    std::int32_t max_tokens) {
+namespace {
+std::size_t workspace_capacity_bytes(std::int32_t rows, LinearPolicy policy,
+                                     std::int32_t min_tokens, std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("fp8 attn_input_proj workspace: invalid token interval");
     }
     (void)resolve_route(policy, min_tokens);
     return resolve_route(policy, max_tokens) == Fp8AttnInputRoute::A8
-               ? fp8_a8_workspace_capacity_bytes(max_tokens, Fp8N14336K5120::kInputRows,
-                                                 fp8_attn_input_partial_capacity_bytes(max_tokens))
+               ? fp8_a8_workspace_capacity_bytes(
+                     max_tokens, Fp8N14336K5120::kInputRows,
+                     fp8_attn_input_partial_capacity_bytes(rows, max_tokens))
                : 0;
+}
+} // namespace
+
+std::size_t fp8_attn_input_workspace_capacity_bytes(LinearPolicy policy, std::int32_t min_tokens,
+                                                    std::int32_t max_tokens) {
+    return workspace_capacity_bytes(Fp8N14336K5120::kOutputRows, policy, min_tokens, max_tokens);
+}
+
+std::size_t fp8_attn_input_shard_workspace_capacity_bytes(LinearPolicy policy,
+                                                          std::int32_t min_tokens,
+                                                          std::int32_t max_tokens) {
+    return workspace_capacity_bytes(Fp8N7168K5120::kOutputRows, policy, min_tokens, max_tokens);
 }
 
 void fp8_attn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate,
@@ -60,7 +74,7 @@ void fp8_attn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& q, T
     }
     auto scope                   = workspace->scope();
     const Fp8A8Workspace scratch = allocate_fp8_a8_workspace(
-        *workspace, x.ne[1], weight.k, fp8_attn_input_partial_capacity_bytes(x.ne[1]));
+        *workspace, x.ne[1], weight.k, fp8_attn_input_partial_capacity_bytes(weight.n, x.ne[1]));
     fp8_attn_input_a8_launch(x, weight, q, gate, k, v, scratch, stream);
 }
 

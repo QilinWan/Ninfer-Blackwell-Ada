@@ -68,6 +68,13 @@ std::size_t fp8_gdn_input_partial_capacity_bytes(std::int32_t max_tokens) {
     return bytes;
 }
 
+std::size_t fp8_gdn_input_partial_capacity_bytes(std::int32_t rows, std::int32_t max_tokens) {
+    if (rows == Fp8N16384K5120::kOutputRows)
+        return fp8_gdn_input_partial_capacity_bytes(max_tokens);
+    // 32 row tiles: Bulk splits its last wave from T=193 (64 tiles) on; MidBulk needs less.
+    return max_tokens > 192 ? Bulk::kPartialBytes : 0;
+}
+
 void fp8_gdn_input_a8_launch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                              Fp8A8Workspace workspace, cudaStream_t stream) {
     launch_a8<Fp8N16384K5120, Fp8GdnInputOutput>(x, weight, qkv, z, workspace, stream);
