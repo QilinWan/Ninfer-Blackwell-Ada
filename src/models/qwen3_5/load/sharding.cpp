@@ -1,7 +1,7 @@
 #include "models/qwen3_5/load/sharding.h"
 
 #include "artifact/reader.h"
-#include "ninfer/ops/argmax.h"
+#include "ninfer/ops/tp2/argmax.h"
 
 #include <algorithm>
 #include <cstdlib>
