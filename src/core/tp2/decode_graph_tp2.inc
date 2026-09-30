@@ -1,0 +1,324 @@
+// Translation-unit fragment of src/core/decode_graph.cpp, included once at its end (after its
+// closing namespace): the dual-device capture (DecodeGraphPeerBridge, the peer capture overload,
+// node_count) and the cudaGraphExecUpdate diagnostic that update() reports. Not a header. Our
+// file; see docs/maintainer/upstream-merge.md.
+//
+// Multi-device capture constraints (CUDA 13.1). Re-qualify them on any new two-GPU topology.
+//
+//  1. Two live captures cannot be linked: cudaStreamWaitEvent on an event recorded inside a
+//     different live capture fails with cudaErrorStreamCaptureMerge. A tensor-parallel decode
+//     program is therefore ONE graph holding both devices' nodes, with the peer stream forked into
+//     the origin's capture (DecodeGraphPeerBridge).
+//  2. Memcpy nodes must name their memory by UVA pointer. cudaMemcpyPeerAsync is rejected inside a
+//     capture with cudaErrorStreamCaptureUnsupported; cudaMemcpyAsync(cudaMemcpyDeviceToDevice)
+//     over UVA pointers is captured (see pull_peer() in src/ops/common/allreduce.cu).
+//  3. cudaGraphExecUpdate requires the same topology, including node device residency. Profile
+//     swaps work because every profile of a family is captured from the same body against the
+//     same two DeviceContexts.
+//  4. No device-side launch: device-launchable graphs must be single-device, so instantiation
+//     keeps flags 0.
+//  5. Event records and waits become edges, not nodes, so node_count() measures real device work
+//     on both devices.
+
+#include "core/device_scope.h"
+
+#include <cstddef>
+#include <cstdio>
+#include <string>
+
+namespace ninfer {
+namespace {
+
+const char* update_result_name(cudaGraphExecUpdateResult result) noexcept {
+    switch (result) {
+    case cudaGraphExecUpdateSuccess: return "success";
+    case cudaGraphExecUpdateError: return "error";
+    case cudaGraphExecUpdateErrorTopologyChanged: return "topology changed";
+    case cudaGraphExecUpdateErrorNodeTypeChanged: return "node type changed";
+    case cudaGraphExecUpdateErrorFunctionChanged: return "function changed";
+    case cudaGraphExecUpdateErrorParametersChanged: return "parameters changed";
+    case cudaGraphExecUpdateErrorNotSupported: return "not supported";
+    case cudaGraphExecUpdateErrorUnsupportedFunctionChange: return "unsupported function change";
+    case cudaGraphExecUpdateErrorAttributesChanged: return "attributes changed";
+    }
+    return "unknown";
+}
+
+const char* node_type_name(cudaGraphNodeType type) noexcept {
+    switch (type) {
+    case cudaGraphNodeTypeKernel: return "kernel";
+    case cudaGraphNodeTypeMemcpy: return "memcpy";
+    case cudaGraphNodeTypeMemset: return "memset";
+    case cudaGraphNodeTypeHost: return "host";
+    case cudaGraphNodeTypeGraph: return "child graph";
+    case cudaGraphNodeTypeEmpty: return "empty";
+    case cudaGraphNodeTypeWaitEvent: return "event wait";
+    case cudaGraphNodeTypeEventRecord: return "event record";
+    case cudaGraphNodeTypeExtSemaphoreSignal: return "external semaphore signal";
+    case cudaGraphNodeTypeExtSemaphoreWait: return "external semaphore wait";
+    case cudaGraphNodeTypeMemAlloc: return "memory allocation";
+    case cudaGraphNodeTypeMemFree: return "memory free";
+    case cudaGraphNodeTypeConditional: return "conditional";
+    default: return "other";
+    }
+}
+
+// Where a memcpy operand lives: "device N", "host", "managed" or "unregistered host".
+std::string pointer_residence(const void* pointer) {
+    if (pointer == nullptr) { return "array"; }
+    cudaPointerAttributes attributes{};
+    if (cudaPointerGetAttributes(&attributes, pointer) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return "unknown";
+    }
+    switch (attributes.type) {
+    case cudaMemoryTypeDevice: return "device " + std::to_string(attributes.device);
+    case cudaMemoryTypeHost: return "host";
+    case cudaMemoryTypeManaged: return "managed";
+    default: return "unregistered host";
+    }
+}
+
+// ", <label> node <type>[ memset dst 0x.. width W height H]" for a node the update named, or
+// nothing when it named none. Diagnostic only: a failing query is reported, never thrown.
+std::string describe_node(const char* label, cudaGraphNode_t node) {
+    if (node == nullptr) { return {}; }
+    std::string text = std::string(", ") + label + " node ";
+    cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
+    if (cudaGraphNodeGetType(node, &type) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return text + "of unknown type";
+    }
+    text += node_type_name(type);
+    if (type == cudaGraphNodeTypeMemcpy) {
+        cudaMemcpy3DParms params{};
+        const cudaError_t status = cudaGraphMemcpyNodeGetParams(node, &params);
+        if (status == cudaSuccess) {
+            const void* source      = params.srcArray != nullptr ? nullptr : params.srcPtr.ptr;
+            const void* destination = params.dstArray != nullptr ? nullptr : params.dstPtr.ptr;
+            char buffer[256];
+            std::snprintf(buffer, sizeof(buffer),
+                          " (src %p on %s, dst %p on %s, extent %zux%zux%zu, pitch %zu/%zu, "
+                          "kind %d)",
+                          source, pointer_residence(source).c_str(), destination,
+                          pointer_residence(destination).c_str(), params.extent.width,
+                          params.extent.height, params.extent.depth, params.srcPtr.pitch,
+                          params.dstPtr.pitch, static_cast<int>(params.kind));
+            text += buffer;
+        } else {
+            (void)cudaGetLastError();
+            text += std::string(" (params unavailable: ") + cudaGetErrorName(status) + ")";
+        }
+    }
+    if (type == cudaGraphNodeTypeMemset) {
+        cudaMemsetParams params{};
+        if (cudaGraphMemsetNodeGetParams(node, &params) == cudaSuccess) {
+            char buffer[128];
+            std::snprintf(buffer, sizeof(buffer), " (dst %p, width %zu, height %zu, element %u)",
+                          params.dst, params.width, params.height, params.elementSize);
+            text += buffer;
+        } else {
+            (void)cudaGetLastError();
+        }
+    }
+    return text;
+}
+
+std::string describe_update_failure(cudaError_t err, const cudaGraphExecUpdateResultInfo& info) {
+    return std::string(cudaGetErrorName(err)) + " (update result " +
+           std::to_string(static_cast<int>(info.result)) + ", " +
+           update_result_name(info.result) + describe_node("rejected", info.errorNode) +
+           describe_node("installed", info.errorFromNode) + ")";
+}
+
+void destroy_event(cudaEvent_t& event) noexcept {
+    if (event != nullptr) {
+        log_cuda_error("cudaEventDestroy", cudaEventDestroy(event));
+        event = nullptr;
+    }
+}
+
+// Fork the peer stream into the capture that `stream` (the origin) has already begun.
+void fork_peer(cudaStream_t stream, const DecodeGraphPeerCapture& peer) {
+    const ScopedCurrentDevice scope;
+    ScopedCurrentDevice::select(peer.bridge->origin_device());
+    CUDA_CHECK(cudaEventRecord(peer.bridge->fork_event(), stream));
+    ScopedCurrentDevice::select(peer.bridge->peer_device());
+    CUDA_CHECK(cudaStreamWaitEvent(peer.stream, peer.bridge->fork_event(), 0));
+}
+
+// Join the peer stream back into the origin. Without this cudaStreamEndCapture reports
+// cudaErrorStreamCaptureUnjoined and the whole capture is discarded.
+void join_peer(cudaStream_t stream, const DecodeGraphPeerCapture& peer) {
+    const ScopedCurrentDevice scope;
+    ScopedCurrentDevice::select(peer.bridge->peer_device());
+    CUDA_CHECK(cudaEventRecord(peer.bridge->join_event(), peer.stream));
+    ScopedCurrentDevice::select(peer.bridge->origin_device());
+    CUDA_CHECK(cudaStreamWaitEvent(stream, peer.bridge->join_event(), 0));
+}
+
+void discard_dual_capture(cudaStream_t stream, const DecodeGraphPeerCapture* peer,
+                          bool peer_forked) noexcept {
+    // Best effort: rejoin the peer so the origin's EndCapture is well formed. If the capture was
+    // already invalidated these calls fail harmlessly and EndCapture then returns a null graph and
+    // clears BOTH streams' capture state, which is the outcome that matters. Hand-rolled rather
+    // than ScopedCurrentDevice because this runs on an exception path and must not throw.
+    int caller_device = 0;
+    const bool restore =
+        peer != nullptr && peer_forked && cudaGetDevice(&caller_device) == cudaSuccess;
+    if (peer != nullptr && peer_forked) {
+        log_cuda_error("cudaSetDevice(peer)", cudaSetDevice(peer->bridge->peer_device()));
+        log_cuda_error("cudaEventRecord(join)",
+                       cudaEventRecord(peer->bridge->join_event(), peer->stream));
+        log_cuda_error("cudaSetDevice(origin)", cudaSetDevice(peer->bridge->origin_device()));
+        log_cuda_error("cudaStreamWaitEvent(join)",
+                       cudaStreamWaitEvent(stream, peer->bridge->join_event(), 0));
+    }
+    cudaGraph_t discard = nullptr;
+    log_cuda_error("cudaStreamEndCapture(discard)", cudaStreamEndCapture(stream, &discard));
+    destroy_graph(discard);
+    if (peer != nullptr && peer_forked) {
+        // A stream left in capture mode would poison every later launch on it, so say so loudly
+        // rather than failing mysteriously later.
+        cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+        if (cudaStreamIsCapturing(peer->stream, &status) == cudaSuccess &&
+            status != cudaStreamCaptureStatusNone) {
+            std::fprintf(stderr,
+                         "CUDA cleanup failed: peer stream is still capturing after a discarded "
+                         "dual-device capture\n");
+        }
+    }
+    if (restore) { log_cuda_error("cudaSetDevice(restore)", cudaSetDevice(caller_device)); }
+}
+
+} // namespace
+
+DecodeGraphPeerBridge::DecodeGraphPeerBridge(int origin_device, int peer_device)
+    : origin_device_(origin_device), peer_device_(peer_device) {
+    if (origin_device == peer_device) {
+        throw std::invalid_argument(
+            "DecodeGraphPeerBridge requires two distinct devices; a capture cannot fork a stream "
+            "into itself");
+    }
+    const ScopedCurrentDevice scope;
+    cudaEvent_t created[4] = {nullptr, nullptr, nullptr, nullptr};
+    // fork_ and release_ are recorded on the origin, join_ and gate_ on the peer.
+    const int device_of[4] = {origin_device, peer_device, peer_device, origin_device};
+    for (int slot = 0; slot < 4; ++slot) {
+        cudaError_t status = cudaSetDevice(device_of[slot]);
+        if (status == cudaSuccess) {
+            status = cudaEventCreateWithFlags(&created[slot], cudaEventDisableTiming);
+        }
+        if (status != cudaSuccess) {
+            for (int done = 0; done < slot; ++done) { (void)cudaEventDestroy(created[done]); }
+            throw std::runtime_error(std::string("DecodeGraphPeerBridge: event creation failed: ") +
+                                     cudaGetErrorName(status) + ": " + cudaGetErrorString(status));
+        }
+    }
+    fork_    = created[0];
+    join_    = created[1];
+    gate_    = created[2];
+    release_ = created[3];
+}
+
+DecodeGraphPeerBridge::~DecodeGraphPeerBridge() {
+    destroy_event(fork_);
+    destroy_event(join_);
+    destroy_event(gate_);
+    destroy_event(release_);
+}
+
+DecodeGraphPeerBridge::DecodeGraphPeerBridge(DecodeGraphPeerBridge&& other) noexcept
+    : origin_device_(other.origin_device_), peer_device_(other.peer_device_), fork_(other.fork_),
+      join_(other.join_), gate_(other.gate_), release_(other.release_) {
+    other.fork_    = nullptr;
+    other.join_    = nullptr;
+    other.gate_    = nullptr;
+    other.release_ = nullptr;
+}
+
+DecodeGraphPeerBridge& DecodeGraphPeerBridge::operator=(DecodeGraphPeerBridge&& other) noexcept {
+    if (this == &other) { return *this; }
+    destroy_event(fork_);
+    destroy_event(join_);
+    destroy_event(gate_);
+    destroy_event(release_);
+    origin_device_ = other.origin_device_;
+    peer_device_   = other.peer_device_;
+    fork_          = other.fork_;
+    join_          = other.join_;
+    gate_          = other.gate_;
+    release_       = other.release_;
+    other.fork_    = nullptr;
+    other.join_    = nullptr;
+    other.gate_    = nullptr;
+    other.release_ = nullptr;
+    return *this;
+}
+
+void DecodeGraphPeerBridge::gate_launch(cudaStream_t peer_stream,
+                                        cudaStream_t origin_stream) const {
+    if (gate_ == nullptr) {
+        throw std::logic_error("a moved-from DecodeGraphPeerBridge cannot gate a graph launch");
+    }
+    const ScopedCurrentDevice scope;
+    ScopedCurrentDevice::select(peer_device_);
+    CUDA_CHECK(cudaEventRecord(gate_, peer_stream));
+    ScopedCurrentDevice::select(origin_device_);
+    CUDA_CHECK(cudaStreamWaitEvent(origin_stream, gate_, 0));
+}
+
+void DecodeGraphPeerBridge::gate_peer_after_launch(cudaStream_t peer_stream,
+                                                   cudaStream_t origin_stream) const {
+    if (release_ == nullptr) {
+        throw std::logic_error(
+            "a moved-from DecodeGraphPeerBridge cannot order peer work after a graph launch");
+    }
+    const ScopedCurrentDevice scope;
+    ScopedCurrentDevice::select(origin_device_);
+    CUDA_CHECK(cudaEventRecord(release_, origin_stream));
+    ScopedCurrentDevice::select(peer_device_);
+    CUDA_CHECK(cudaStreamWaitEvent(peer_stream, release_, 0));
+}
+
+void DecodeGraphDefinition::capture(cudaStream_t stream, const std::function<void()>& body,
+                                    const DecodeGraphPeerCapture& peer) {
+    if (peer.bridge == nullptr || peer.stream == nullptr) {
+        throw std::invalid_argument("dual-device capture requires a peer bridge and stream");
+    }
+
+    nvtx::ScopedRange capture_range(nvtx::Name::CudaGraphCapture, nvtx::Category::Graph);
+    reset();
+
+    CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+
+    bool peer_forked = false;
+    try {
+        fork_peer(stream, peer);
+        peer_forked = true;
+        body();
+        join_peer(stream, peer);
+    } catch (...) {
+        discard_dual_capture(stream, &peer, peer_forked);
+        throw;
+    }
+
+    cudaGraph_t graph = nullptr;
+
+    cudaError_t err = cudaStreamEndCapture(stream, &graph);
+    if (err != cudaSuccess) {
+        destroy_graph(graph);
+        CUDA_CHECK(err);
+    }
+
+    graph_ = graph;
+}
+
+std::size_t DecodeGraphDefinition::node_count() const {
+    if (graph_ == nullptr) { return 0; }
+    std::size_t nodes = 0;
+    CUDA_CHECK(cudaGraphGetNodes(graph_, nullptr, &nodes));
+    return nodes;
+}
+
+} // namespace ninfer
