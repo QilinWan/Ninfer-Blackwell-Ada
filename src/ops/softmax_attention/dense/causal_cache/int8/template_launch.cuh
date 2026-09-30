@@ -32,8 +32,8 @@ void launch_int8_kv_grouped_mma(const CausalAttentionOperands& p, Int8KvCacheVie
         static FuncAttrPerDevice attribute;
         attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     }
-    const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1),
-                    partition.capacity, p.batch);
+    const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1), p.batch,
+                    partition.capacity);
     kernel<<<grid, S::kThreads, bytes, stream>>>(
         p.q, input, p.positions, cache.keys, cache.values, cache.key_scales, cache.value_scales,
         cache.tables, cache.valid_columns, cache.table_rows, cache.table_stride, p.width,

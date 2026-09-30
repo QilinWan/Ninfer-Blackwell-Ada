@@ -80,9 +80,11 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
     const int tile_tokens = ParallelQueries ? min(TokenTile, full_width - column_begin) : TokenTile;
     const int partial_width = full_width;
     const int partial_begin = column_begin;
-    const int split         = static_cast<int>(blockIdx.y);
-    const int batch         = MultiBatch ? static_cast<int>(blockIdx.z) : 0;
-    const int split_count   = static_cast<int>(gridDim.y);
+    // Splits are the slowest grid axis: a row's live splits precede the idle capacity of every
+    // row, so live CTAs stay contiguous in launch order and spread over the SMs.
+    const int split         = static_cast<int>(blockIdx.z);
+    const int batch         = MultiBatch ? static_cast<int>(blockIdx.y) : 0;
+    const int split_count   = static_cast<int>(gridDim.z);
     const int tid           = static_cast<int>(threadIdx.x);
     const int warp          = tid >> 5;
     const int lane          = tid & 31;
