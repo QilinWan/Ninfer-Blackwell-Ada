@@ -18,6 +18,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -86,6 +87,7 @@ struct ColdTiming {
     double median_us = 0.0;
     double min_us    = 0.0;
     double p95_us    = 0.0;
+    double mean_us   = 0.0;
 };
 
 class TimedGraph {
@@ -156,7 +158,9 @@ inline ColdTiming summarize_timings(std::vector<double> samples) {
                      static_cast<std::size_t>(fraction * static_cast<double>(samples.size() - 1)));
         return samples[index];
     };
-    return {percentile(0.50), samples.front(), percentile(0.95)};
+    return {percentile(0.50), samples.front(), percentile(0.95),
+            std::accumulate(samples.begin(), samples.end(), 0.0) /
+                static_cast<double>(samples.size())};
 }
 
 template <class Launch>

@@ -747,7 +747,7 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
               "qk_full_op_tflops,pv_full_op_tflops,"
               "unique_kv_bytes,"
               "unique_kv_gbps,median_us,min_us,p95_us,graph_nodes,workspace_peak_bytes,graph_calls,"
-              "envelope_min,envelope_max\n";
+              "envelope_min,envelope_max,mean_us\n";
     for (const Result& result : results) {
         output << entry_name(result.entry) << ',' << result.geometry.name << ','
                << storage_name(result.storage) << ',' << mapping_name(result.mapping) << ','
@@ -764,7 +764,7 @@ void write_csv(const Options& options, const std::vector<Result>& results) {
         output << ',' << result.timing.median_us << ',' << result.timing.min_us << ','
                << result.timing.p95_us << ',' << result.graph_nodes << ',' << result.workspace_peak
                << ',' << result.graph_calls << ',' << result.envelope.min_visible_keys << ','
-               << result.envelope.max_visible_keys << '\n';
+               << result.envelope.max_visible_keys << ',' << result.timing.mean_us << '\n';
     }
 }
 
@@ -983,6 +983,7 @@ int main(int argc, char** argv) {
                                         result.timing.median_us /= result.graph_calls;
                                         result.timing.min_us /= result.graph_calls;
                                         result.timing.p95_us /= result.graph_calls;
+                                        result.timing.mean_us /= result.graph_calls;
                                         report(result);
                                         results.push_back(result);
                                     }
