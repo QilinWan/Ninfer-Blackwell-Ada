@@ -15,6 +15,7 @@ struct Int8KvCausalPlan {
     CausalKvPartition partition;
 };
 
+// sms is the launching device's SM count (causal_attention_sm_count()).
 Int8KvCausalPlan make_int8_kv_causal_plan(int heads, int width, int batch,
                                           CausalAttentionExecutionEnvelope envelope,
                                           int multiprocessor_count);

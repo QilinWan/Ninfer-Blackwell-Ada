@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include <vector>
+
 namespace ninfer::ops::detail {
 
 // Capture reserves partials for the largest live row. Producer and merge use
