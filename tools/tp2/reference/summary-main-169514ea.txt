@@ -1,0 +1,9 @@
+[2026-09-30 19:35:16] gate RECORD | build /home/feyd/ninfer-refactor-ref/build | ref /home/feyd/ninfer-runs/2026-10-01/refactor/ref | out /home/feyd/ninfer-runs/2026-10-01/refactor/ref | src bba98da5 dirty=0 | stages ctest,golden,ppl,greedy,dflash2
+[2026-09-30 19:35:16] clocks 2085 MHz 2092 MHz 
+[2026-09-30 19:43:30] ctest    PASS  100% tests passed, 0 tests failed out of 146; tp2 tests passed: 10; 494 s
+[2026-09-30 19:43:40] golden   REC   case-1-short: generated_tokens 128 case-2-medium: generated_tokens 128 case-3-long: generated_tokens 124 
+[2026-09-30 19:45:09] ppl-64k  REC   4.133481 (89 s)
+[2026-09-30 19:46:55] ppl-4k   REC   4.385905 (106 s)
+[2026-09-30 19:47:43] greedy   REC   60/60 answered; decode 185.10 t/s, acceptance 73.64 %, ms/round median 17.137 (n=60) (48 s)
+[2026-09-30 19:47:56] dflash2  REC   10/10 answered; decode 260.64 t/s, acceptance 61.50 %, ms/round median 19.952 (n=10) (13 s)
+[2026-09-30 19:47:56] RESULT RECORDED

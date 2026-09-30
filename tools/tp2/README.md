@@ -34,3 +34,15 @@ development workstation's. The script takes no GPU lease itself: wrap it
 `<build-dir>/gate/<timestamp>/` or `--out`. About 13 minutes on two RTX 5070 Ti.
 
 A WARN on ms/round is not a verdict: rerun the two builds alternated (A B B A) before deciding.
+
+### The recorded reference
+
+`reference/` is the reference the gate compares against on the development pair (two RTX 5070 Ti
+without P2P, eco clocks at 2085 MHz, nvcc 13.2, `sm_120a`, the default `GATE_*` artifacts):
+`tools/tp2/gate.sh <build> tools/tp2/reference`. It holds only what the stages compare (the
+prompts, the texts and request logs of `greedy` and `dflash2`, the perplexity tables, the golden
+ids) and the recording summaries. `ctest`, `golden`, `ppl` and `greedy` were recorded from `main`
+169514ea (v0.3.0; unchanged and bit-identical since, `summary-main-169514ea.txt`); `dflash2` was
+recorded again from v0.4.0 (60c47e45, the split DFlash2 drafter: same ten texts and acceptance,
+18.392 ms/round against 19.952 with the drafter on rank 0, `summary.txt`). Another board has
+other texts: record its own reference (`--record`) rather than comparing against this one.
