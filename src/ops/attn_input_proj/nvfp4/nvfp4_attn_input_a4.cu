@@ -68,7 +68,7 @@ void nvfp4_attn_input_a4_launch(const Tensor& x, const Weight& weight, Tensor& q
     // here yet, so the table's 5060 Ti row keeps the parent's 1024.
     const std::int32_t first_tiled256 =
         weight.n == kNvfp4AttnInputShardRows
-            ? core::current_device_tuning().nvfp4_attn_input_shard_first_tiled256_tokens
+            ? tp2::current_device_tuning().nvfp4_attn_input_shard_first_tiled256_tokens
             : 1024;
     const auto layout = uses_tma(tokens)
                             ? (tokens < first_tiled256 ? Nvfp4ScaleLayout::Tiled128
