@@ -71,3 +71,6 @@ See `recorded/`: one directory per run with both sides' `case-*.ids` and the com
   on all three cases.
 - `2026-09-28` — fork `44a58463` (v0.2.1 plus the pipelined mailbox kernel) vs upstream `e31bc99b`:
   **identical** on all three cases, and identical to the `2026-09-27` ids.
+- `2026-09-30` — fork `f19e6821` (merge of upstream `d44ab584`) vs upstream `d44ab584`: **identical**
+  on all three cases. Case 3 (INT8 KV) differs from the earlier records from token 100 on, on both
+  sides: upstream's reorganized INT8 attention.
