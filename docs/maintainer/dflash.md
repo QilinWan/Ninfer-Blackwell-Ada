@@ -320,7 +320,7 @@ prefill chunks and in verification, and only rank 0 appends to the draft context
 
 The commit folds both ranks' records with the same rows. Graph capture enrolls rank 1's stream in
 one two-device graph per profile; each topology class is budgeted 11 MiB on each rank
-(`kTp2DFlash2GraphClassAllowance`). Retained prefixes resume as on one device, since no DFlash
+(`tp2_dflash2_graph_class_allowance_bytes` in `core/tp2/device_tuning.h`). Retained prefixes resume as on one device, since no DFlash
 state is needed outside rank 0.
 
 ## Execution flow

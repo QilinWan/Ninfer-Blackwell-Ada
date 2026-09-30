@@ -9,7 +9,9 @@ in [Op development](op-development.md#26-tensor-parallel-forms), the KV mirror i
 [Paged KV context store](paged-kv-cache.md#56-tensor-parallel-mirror), parent slicing in
 [Artifact container](artifact-container.md), and DFlash2 at width 2 in
 [DFlash and DFlash2](dflash.md#tensor-parallel-execution). This document links them and owns the
-contracts that cut across them. It was checked against the tree at `a0369376`. Points where the
+contracts that cut across them. It was checked against the tree at `a0369376`; the file layout
+(§12) follows the isolation of `refactor/tp2-isolation`, and [Merging upstream](upstream-merge.md)
+says where the two-GPU code lives relative to upstream's files and how to merge. Points where the
 code, its comments and the development history disagree are collected in
 [Open questions](#open-questions).
 
@@ -342,9 +344,10 @@ at both widths, as upstream, and `update()` keeps a diagnostic that names the up
 rejected node.
 
 **Graph allowance.** At tp 1 the planner budgets graph classes from upstream constants. At tp 2 it
-uses measured constants in `startup.cpp`: `kTp2OrdinaryGraphAllowance` (8 MiB per batch size),
-`kTp2MtpGraphClassAllowance` (8 MiB per topology class and batch size) and
-`kTp2DFlash2GraphClassAllowance` (11 MiB per class). Each is max(3 × observed, 8 MiB) per device,
+uses the measured per-GPU values of [`core/tp2/device_tuning.h`](../../src/core/tp2/device_tuning.h):
+`tp2_ordinary_graph_allowance_bytes` (8 MiB per batch size), `tp2_mtp_graph_class_allowance_bytes`
+(8 MiB per topology class and batch size) and `tp2_dflash2_graph_class_allowance_bytes` (11 MiB per
+class). Each is max(3 × observed, 8 MiB) per device,
 observed being the free memory `prepare_graphs()` consumed per rank on two RTX 5070 Ti at 32K
 context, concurrency 1 and INT8 KV: 2.0/2.0 MiB for ordinary and for MTP3 (one class each), and
 18.0/12.0 MiB on rank 0/1 for DFlash2 K=4 over five classes. Concurrency above 1 was not measured;
@@ -609,8 +612,8 @@ run by hand, not a CTest.
 - **Host-less reuse.** Many parallel conversations evict the oldest idle ones. The reclaim does not
   check beforehand whether its releases can make the capture fit, so it can release continuations
   for a capture that is still skipped.
-- **Duplicated code.** `TextContext::prefill_impl_tp2` duplicates `prefill_impl`; a change to one
-  must be carried to the other.
+- **Duplicated code.** `TextContext::prefill_impl_tp2` (`execution/tp2/text_tp2.inc`) duplicates
+  `prefill_impl`; a change to one must be carried to the other.
 - **Not ported.** YaRN long-context RoPE from the pre-v3 fork line is not in this tree; RoPE has no
   per-rank override.
 
@@ -628,26 +631,32 @@ run by hand, not a CTest.
 
 ## 12. File map
 
+Our files hold the two-device code; upstream's files keep only the hooks [Merging upstream](upstream-merge.md)
+lists. The `tp2/` directories below are ours throughout.
+
 | Path | Role in the two-GPU mode |
 |---|---|
 | `include/ninfer/types.h` | `EngineOptions::{tp,devices,vision_device,tp_mailbox}`, `LoadSummary::{devices,peer_access,tp_transport,…}`, graph observation |
 | `src/product/tensor_parallel_options.h`, `apps/cli/options.cpp`, `apps/perplexity/options.cpp`, `src/serve/serve_options.cpp` | `--tp`, `--devices`, `--no-tp-mailbox`, Host-tier defaults at tp 2 |
-| `src/runtime/engine/engine.cpp`, `model_instance.cpp`, `kv_capacity.*` | `ExecutionContext` and peer access, tp 2 checks and defaults, per-rank budgets, symmetric KV resolution, `LoadSummary` |
+| `src/runtime/engine/engine.cpp`, `model_instance.cpp`, `tp2/model_instance_tp2.inc`, `kv_capacity.*` | `ExecutionContext` and peer access, tp 2 checks and defaults, per-rank budgets, symmetric KV resolution, `LoadSummary` |
 | `src/runtime/engine/engine_core.h`, `context_cache/resource_manager.h` | Host-less private-capture reclaim |
-| `src/core/device.h`, `decode_graph.*`, `paged_kv_cache.*` | `ExecutionContext`; two-device capture bridge, launch gate, update diagnostic; KV mirrors and mirror leases |
+| `src/core/device.h`, `src/core/tp2/{decode_graph_peer.h,decode_graph_tp2.inc,paged_kv_cache_tp2.inc}` | `ExecutionContext`; two-device capture bridge, launch gate, update diagnostic; KV mirrors and mirror leases |
+| `src/core/tp2/device_tuning.h` | per-GPU values: graph allowances, attention SM count, shard tile bounds |
 | `src/artifact/slices.*`, `binder.*`, `materializer.*`, `views.cpp` | shard geometry and plane copies, per-device placement, upload and views |
 | `src/models/load_options.h`, `src/models/qwen3_5/load/sharding.*`, `load.cpp` | `LoadOptions::{tp,vision_rank}`, placement rules, tp load checks |
 | `src/models/qwen3_5/execution/tp.*` | `TpExecution`, `shard_text_config`, rank-0 logits gather |
-| `src/models/qwen3_5/execution/{text,attention,gdn,ffn,mtp,draft,vision}.*`, `linear.h` | split Text, MTP, verification, DFlash2 and Vision schedules |
+| `src/models/qwen3_5/execution/tp2/` | split Text schedule (`text_tp2.inc`, `text_context_{public,private}.inc`), split attention/GDN/FFN/MTP forms, split projection helpers, tp2 workspace recipes |
+| `src/models/qwen3_5/execution/{draft,vision,parameters}.cpp` | DFlash2 and Vision two-device branches, `Parameters(model, rank)` |
 | `src/models/qwen3_5/state/state_image.h` | StateImage mirror |
-| `src/models/qwen3_5/program/program_impl.*`, `graphs.cpp`, `graph_execution.h` | `PeerRuntime`, mirrors, mailbox, probe, step-down, capture and launch; causal scoring's split head |
-| `src/models/qwen3_5/program/planning/startup.*` | per-rank layouts, tp 2 graph allowances, tp 2 rejections |
-| `src/models/qwen3_5/program/{storage/context,prefill,decode,transactions/commit}.cpp`, `speculative/*` | row publication, rank 1 retained hidden, ingress upload, forced tokens, MTP round |
-| `include/ninfer/ops/argmax.h`, `src/ops/launcher/argmax_split.cu` | split argmax of the optimized proposal head: pack, select |
+| `src/models/qwen3_5/program/tp2/` | `PeerRuntime`, mirrors, mailbox, probe, step-down (`program_impl_tp2.inc`, `program_impl_{public,private}.inc`); tp2 workspace plan and rejections (`startup_tp2.inc`); MTP bridge, split verification, split prefill head |
+| `src/models/qwen3_5/program/{graphs,prefill,decode,storage/context,transactions/commit}.cpp`, `graph_execution.h`, `planning/startup.*`, `speculative/mtp.cpp` | two-device branches: capture and launch, row publication, rank 1 retained hidden, ingress upload, forced tokens, per-rank layouts, the MTP round |
+| `include/ninfer/ops/tp2/`, `src/ops/wrapper/tp2/`, `src/ops/linear/tp2/` | column/row-parallel Op forms (`linear`, `linear_add`, `linear_swiglu`, `attn_input_proj`, `gdn_input_proj`, `gdn_gating_proj`) and the split argmax |
+| `src/ops/{attn_input_proj,gdn_input_proj,linear_swiglu}/tp2/` | shard and half problems compiled from upstream's launcher sources ([Merging upstream §2.4](upstream-merge.md#24-shards-compiled-from-upstreams-own-sources-srcopstp2_shard_cu)) |
 | `include/ninfer/ops/allreduce.h`, `peer_mailbox.h`, `src/ops/common/{allreduce,peer_mailbox}.cu`, `src/ops/kernel/peer_exchange.cuh` | staged collectives, `PeerEvents`, mailbox and its two exchange kernels |
-| `include/ninfer/ops/{linear,linear_add,linear_swiglu,attn_input_proj,gdn_input_proj,gdn_gating_proj}.h`, `src/ops/common/split_launch.h`, `src/ops/launcher/concat_rows.*` | split forms, registered shard shapes, pair validation, logits interleave |
-| `src/serve/operational_log.cpp` | tensor-parallel startup lines and warnings |
-| `tools/tp2/mailbox_probe.cu`, `tools/golden/` | standalone mailbox check; tp 1 token-identity gate |
+| `src/ops/common/split_launch.h`, `src/ops/launcher/{concat_rows,argmax_split}.*` | pair validation, logits interleave, split argmax launches |
+| `src/ops/tp2/sources.cmake` | registration of every tp2 Op source |
+| `src/serve/tp2/operational_log_tp2.inc` | tensor-parallel startup lines and warnings |
+| `tools/tp2/{gate.sh,gate_client.py,mailbox_probe.cu}`, `tools/golden/` | behavior-preservation gate; standalone mailbox check; tp 1 token-identity gate |
 
 ## Open questions
 

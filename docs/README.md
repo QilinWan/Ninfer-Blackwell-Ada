@@ -60,6 +60,7 @@ other references own narrower contracts:
 | [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | core design for continuation, retention, incremental resources, preemption and recovery |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
 | [Two-GPU tensor parallelism](maintainer/tensor-parallel.md) | `--tp 2` weight sharding, rank roles, all-reduce transports, two-device CUDA Graphs, mirrored state, tests and limits |
+| [Merging upstream](maintainer/upstream-merge.md) | where the two-GPU layer lives, the hooks it keeps in upstream's files, typical conflicts, the mandatory gate, adding a GPU or a model |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
 | [Operational logging](maintainer/logging.md) | log ownership, presentation, severity and data policy |
