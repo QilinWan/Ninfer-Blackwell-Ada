@@ -1061,9 +1061,10 @@ int verify_split_rejections(const ExecutionContext& ec, const InputWeights& weig
     for (int rank = 0; rank < 2; ++rank) {
         const auto slot = static_cast<std::size_t>(rank);
         set_device(ec, rank);
-        x_buffer[slot]   = DeviceBuffer(static_cast<std::size_t>(kHidden) * 8 * 2);
-        qkv_buffer[slot] = DeviceBuffer(static_cast<std::size_t>(kShardChannels) * 8 * 2);
-        z_buffer[slot]   = DeviceBuffer(static_cast<std::size_t>(kShardValueRows) * 8 * 2);
+        // Sized for the A8-without-workspace case below, the first A8 width (17).
+        x_buffer[slot]   = DeviceBuffer(static_cast<std::size_t>(kHidden) * 17 * 2);
+        qkv_buffer[slot] = DeviceBuffer(static_cast<std::size_t>(kShardChannels) * 17 * 2);
+        z_buffer[slot]   = DeviceBuffer(static_cast<std::size_t>(kShardValueRows) * 17 * 2);
     }
     const auto tensors = [&](std::int32_t first, std::int32_t second, DeviceBuffer* buffers,
                              std::int32_t rows) {
@@ -1089,10 +1090,10 @@ int verify_split_rejections(const ExecutionContext& ec, const InputWeights& weig
                                             z, ec);
     });
     failures += expect_invalid("A8 without workspace", [&] {
-        const auto x8   = tensors(8, 8, x_buffer.data(), kHidden);
-        const auto qkv8 = tensors(8, 8, qkv_buffer.data(), kShardChannels);
-        const auto z8   = tensors(8, 8, z_buffer.data(), kShardValueRows);
-        ops::gdn_input_proj_column_parallel(x8, weights.prepared, qkv8, z8,
+        const auto x17   = tensors(17, 17, x_buffer.data(), kHidden);
+        const auto qkv17 = tensors(17, 17, qkv_buffer.data(), kShardChannels);
+        const auto z17   = tensors(17, 17, z_buffer.data(), kShardValueRows);
+        ops::gdn_input_proj_column_parallel(x17, weights.prepared, qkv17, z17,
                                             ops::LinearPolicy::AllowA8, {nullptr, nullptr}, ec);
     });
     failures += expect_invalid("FP8 payload labelled NVFP4", [&] {
