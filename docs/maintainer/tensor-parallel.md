@@ -586,6 +586,12 @@ tp 1. Beyond the per-Op suites, the numerical tp 2 versus tp 1 comparisons are t
 perplexity of the same synthetic model at both widths (§9). The golden gate is a tool
 run by hand, not a CTest.
 
+[`tools/tp2/gate.sh`](../../tools/tp2/README.md) runs all of it against a recorded reference in about
+13 minutes: this CTest set with the real tests, the golden, `ninfer-perplexity --tp 2` at two
+windows, 60 greedy prompts through `ninfer-serve` with the production flags (texts and ms/round) and a
+short DFlash2 run. It is the gate of every upstream merge and every change to the tp2 layer
+([Merging upstream](upstream-merge.md#4-the-gate-mandatory-for-every-merge-and-every-tp2-change)).
+
 ## 11. Known limits and not-done items
 
 - **Two ranks, one verified pair.** Verified only on two RTX 5070 Ti 16 GB without P2P, Linux,
