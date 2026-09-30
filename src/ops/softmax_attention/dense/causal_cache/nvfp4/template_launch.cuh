@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/device.h"
+#include "ops/launcher/kernel_attr_once.h"
 #include "ops/softmax_attention/dense/causal_cache/nvfp4/grouped_mma.cuh"
 #include "ops/softmax_attention/common/causal_merge.cuh"
 #include <stdexcept>
@@ -27,9 +28,8 @@ void launch_nvfp4_kv_grouped_mma(const CausalAttentionOperands& p, Nvfp4KvCacheV
         nvfp4_kv_grouped_mma_kernel<G, S, MultiBatch, Masked, Input, ParallelQueries>;
     constexpr int bytes = S::kDynamicArena ? S::kArenaBytes : 0;
     if constexpr (S::kDynamicArena) {
-        static const auto status =
-            cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
-        CUDA_CHECK(status);
+        static FuncAttrPerDevice attribute;
+        attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     }
     const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1),
                     partition.capacity, p.batch);
