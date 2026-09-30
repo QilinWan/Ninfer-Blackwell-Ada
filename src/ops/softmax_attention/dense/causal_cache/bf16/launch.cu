@@ -2,6 +2,7 @@
 #include "ops/softmax_attention/dense/causal_cache/bf16/template_launch.cuh"
 #include "ops/softmax_attention/dense/causal_cache/bf16/plan.h"
 #include "ops/kv_cache/append/launch.h"
+#include <stdexcept>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -61,8 +62,10 @@ void tiled(const CausalAttentionOperands& p, Bf16KvReadView cache, const Bf16KvC
         invoke.template operator()<CausalD256H24Kv4>();
     else if (p.query_heads == 12)   // tensor-parallel half of 24/4
         invoke.template operator()<CausalD256H12Kv2>();
-    else
+    else if (p.query_heads == 16)
         invoke.template operator()<CausalD256H16Kv2>();
+    else
+        throw std::invalid_argument("BF16 attention: unsupported head geometry");
 }
 
 template <class Input>
@@ -80,8 +83,10 @@ void execute_grouped(const Tensor& q, Input input, const Tensor& positions, floa
             grouped_instance<CausalD256H24Kv4>(p, view, input, plan, partial, stream);
         else if (p.query_heads == 12)   // tensor-parallel half of 24/4
             grouped_instance<CausalD256H12Kv2>(p, view, input, plan, partial, stream);
-        else
+        else if (p.query_heads == 16)
             grouped_instance<CausalD256H16Kv2>(p, view, input, plan, partial, stream);
+        else
+            throw std::invalid_argument("BF16 attention: unsupported head geometry");
 }
 } // namespace
 

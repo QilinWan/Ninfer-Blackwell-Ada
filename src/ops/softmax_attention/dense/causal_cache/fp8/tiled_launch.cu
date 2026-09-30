@@ -3,6 +3,7 @@
 #include "ops/softmax_attention/dense/causal_cache/fp8/tile_io.cuh"
 #include "ops/softmax_attention/common/mxfp8_tiled_launch.cuh"
 #include "ops/softmax_attention/common/causal_tiled_merge.cuh"
+#include <stdexcept>
 
 namespace ninfer::ops::detail {
 void fp8_kv_tiled_attention(const CausalAttentionOperands& p, Fp8KvReadView cache,
@@ -19,7 +20,9 @@ void fp8_kv_tiled_attention(const CausalAttentionOperands& p, Fp8KvReadView cach
     };
     if (p.query_heads == 24)
         invoke.template operator()<CausalD256H24Kv4>();
-    else
+    else if (p.query_heads == 16)
         invoke.template operator()<CausalD256H16Kv2>();
+    else
+        throw std::invalid_argument("FP8 attention: unsupported head geometry");
 }
 } // namespace ninfer::ops::detail

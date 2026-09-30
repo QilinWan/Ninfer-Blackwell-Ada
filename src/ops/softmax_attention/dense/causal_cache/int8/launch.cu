@@ -3,6 +3,7 @@
 #include "ops/softmax_attention/dense/causal_cache/int8/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/int8/template_launch.cuh"
 #include "ops/kv_cache/append/launch.h"
+#include <stdexcept>
 
 namespace ninfer::ops::detail {
 namespace {
@@ -66,8 +67,10 @@ void execute_grouped(const Tensor& q, const Tensor& positions, float scale,
             grouped_instance<CausalD256H24Kv4>(p, view, input, plan.partition, partial.view(), stream);
         else if (plan.query_heads == 12)   // tensor-parallel half of 24/4
             grouped_instance<CausalD256H12Kv2>(p, view, input, plan.partition, partial.view(), stream);
-        else
+        else if (plan.query_heads == 16)
             grouped_instance<CausalD256H16Kv2>(p, view, input, plan.partition, partial.view(), stream);
+        else
+            throw std::invalid_argument("INT8 attention: unsupported head geometry");
 }
 
 template <class G, int Tokens>
@@ -106,9 +109,11 @@ void execute_parallel(const CausalAttentionOperands& p, Int8KvReadView cache,
     else if (plan.query_heads == 12)   // tensor-parallel half of 24/4
         parallel_grouped<CausalD256H12Kv2, Int8KvCausalPlan::kTokenTile>(p, cache, plan.partition,
                                                                          partial.view(), stream);
-    else
+    else if (plan.query_heads == 16)
         parallel_grouped<CausalD256H16Kv2, Int8KvCausalPlan::kTokenTile>(p, cache, plan.partition,
                                                                          partial.view(), stream);
+    else
+        throw std::invalid_argument("INT8 attention: unsupported head geometry");
 }
 
 void tiled(const CausalAttentionOperands& p, Int8KvReadView cache, cudaStream_t stream) {
@@ -118,8 +123,10 @@ void tiled(const CausalAttentionOperands& p, Int8KvReadView cache, cudaStream_t 
         launch_int8_kv_tiled_mma<CausalD256H24Kv4, Int8KvTiledInstance>(p, cache, stream);
     else if (p.query_heads == 12)
         throw std::logic_error("int8 causal tiled route has no 12/2 instantiation");
-    else
+    else if (p.query_heads == 16)
         launch_int8_kv_tiled_mma<CausalD256H16Kv2, Int8KvTiledInstance>(p, cache, stream);
+    else
+        throw std::invalid_argument("INT8 attention: unsupported head geometry");
 }
 
 } // namespace
