@@ -1,4 +1,4 @@
-[2026-09-30 23:55:27] gate RECORD | build /home/feyd/ninfer-c4/build | ref /home/feyd/ninfer-runs/2026-10-01/c4/ref-v040 | out /home/feyd/ninfer-runs/2026-10-01/c4/ref-v040 | src 60c47e45 dirty=0 | stages dflash2
-[2026-09-30 23:55:27] clocks 2085 MHz 2085 MHz 
-[2026-09-30 23:55:40] dflash2  REC   10/10 answered; decode 282.76 t/s, acceptance 61.50 %, ms/round median 18.392 (n=10) (13 s)
-[2026-09-30 23:55:40] RESULT RECORDED
+[2026-10-01 07:54:04] gate RECORD | build /home/feyd/ninfer-c4/build | ref /home/feyd/ninfer-runs/2026-10-01/v041/ref-main | out /home/feyd/ninfer-runs/2026-10-01/v041/ref-main | src fdf6c33a dirty=0 | stages dflash2
+[2026-10-01 07:54:04] clocks 2085 MHz 2092 MHz 
+[2026-10-01 07:54:17] dflash2  REC   10/10 answered; decode 281.55 t/s, acceptance 61.50 %, ms/round median 18.474 (n=10) (13 s)
+[2026-10-01 07:54:17] RESULT RECORDED

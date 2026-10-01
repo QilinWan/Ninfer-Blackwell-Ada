@@ -44,5 +44,6 @@ prompts, the texts and request logs of `greedy` and `dflash2`, the perplexity ta
 ids) and the recording summaries. `ctest`, `golden`, `ppl` and `greedy` were recorded from `main`
 169514ea (v0.3.0; unchanged and bit-identical since, `summary-main-169514ea.txt`); `dflash2` was
 recorded again from v0.4.0 (60c47e45, the split DFlash2 drafter: same ten texts and acceptance,
-18.392 ms/round against 19.952 with the drafter on rank 0, `summary.txt`). Another board has
+18.392 ms/round against 19.952 with the drafter on rank 0) and from fdf6c33a (the candidate
+selector on rank 1: same ten texts and acceptance, 18.474 ms/round, `summary.txt`). Another board has
 other texts: record its own reference (`--record`) rather than comparing against this one.
