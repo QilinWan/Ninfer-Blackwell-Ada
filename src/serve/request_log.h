@@ -74,6 +74,12 @@ public:
 
     [[nodiscard]] bool enabled() const noexcept { return output_.is_open(); }
 
+    // Message-level content log (raw client bodies + generated text/reasoning). Enabled
+    // independently of the metadata stream so a deployment can record content without the
+    // full measurement log, or the other way round.
+    void open_content_log(const std::string& path, const std::string& protected_artifact_path = {});
+    [[nodiscard]] bool content_enabled() const noexcept { return content_output_.is_open(); }
+
     [[nodiscard]] const std::string& server_instance_id() const noexcept {
         return server_instance_id_;
     }
@@ -89,8 +95,12 @@ public:
     void write_request_error(const RequestLogContext& context, const std::string& message);
     void write_throughput(const ThroughputReport& report);
 
+    void write_content_request(const RequestLogContext& context);
+    void write_content_response(const RequestLogContext& context, const GenerationOutcome& outcome);
+
 private:
     void append(std::string record);
+    void append_content(std::string record);
 
     std::string path_;
     std::string server_instance_id_;
@@ -98,6 +108,10 @@ private:
     std::mutex mutex_;
     std::shared_ptr<spdlog::logger> logger_;
     bool failed_ = false;
+
+    std::string content_path_;
+    std::ofstream content_output_;
+    bool content_failed_ = false;
 };
 
 } // namespace ninfer::serve

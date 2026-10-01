@@ -81,6 +81,10 @@ void configure_http_server_socket(socket_t socket) noexcept {
     httplib::default_socket_options(socket);
 #if defined(__linux__)
     const int enabled = 1;
+    // httplib's default_socket_options only sets SO_REUSEPORT, which does not let the listener
+    // rebind while connections from the previous instance are still in TIME_WAIT — a restart
+    // right after a client disconnect then fails with "cannot bind <host>:<port>".
+    set_socket_option(socket, SOL_SOCKET, SO_REUSEADDR, enabled);
     set_socket_option(socket, SOL_SOCKET, SO_KEEPALIVE, enabled);
     set_socket_option(socket, IPPROTO_TCP, TCP_KEEPIDLE, kKeepAliveIdleSeconds);
     set_socket_option(socket, IPPROTO_TCP, TCP_KEEPINTVL, kKeepAliveIntervalSeconds);

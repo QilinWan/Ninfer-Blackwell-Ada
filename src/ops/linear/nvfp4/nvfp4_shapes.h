@@ -15,4 +15,11 @@ extern const Nvfp4LinearShape kNvfp4N16384K5120;
 extern const Nvfp4LinearShape kNvfp4N34816K5120;
 extern const Nvfp4LinearShape kNvfp4N5120K6144;
 extern const Nvfp4LinearShape kNvfp4N5120K17408;
+extern const Nvfp4LinearShape kNvfp4N4096K4096;
+extern const Nvfp4LinearShape kNvfp4N1024K4096;
+extern const Nvfp4LinearShape kNvfp4N8192K4096;
+extern const Nvfp4LinearShape kNvfp4N24576K4096;
+extern const Nvfp4LinearShape kNvfp4N4096K12288;
+extern const Nvfp4LinearShape kNvfp4N248320K4096;
+extern const Nvfp4LinearShape kNvfp4N4096K8192;
 } // namespace ninfer::ops::detail

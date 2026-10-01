@@ -32,16 +32,17 @@ std::int64_t numel_allow_zero(const Tensor& t, const char* label) {
     return total;
 }
 
-void require_gate_shape(const Tensor& t, const char* label) {
-    if (t.ne[0] != 48 || t.ne[2] != 1 || t.ne[3] != 1) {
+void require_gate_shape(const Tensor& t, std::int32_t heads, const char* label) {
+    if (t.ne[0] != heads || t.ne[2] != 1 || t.ne[3] != 1) {
         throw std::invalid_argument(std::string("gdn_gating: ") + label +
-                                    " must have shape [48,T]");
+                                    " must have shape [heads,T]");
     }
 }
 
-void require_vector48_shape(const Tensor& t, const char* label) {
-    if (t.ne[0] != 48 || t.ne[1] != 1 || t.ne[2] != 1 || t.ne[3] != 1) {
-        throw std::invalid_argument(std::string("gdn_gating: ") + label + " must have shape [48]");
+void require_heads_vector_shape(const Tensor& t, std::int32_t heads, const char* label) {
+    if (t.ne[0] != heads || t.ne[1] != 1 || t.ne[2] != 1 || t.ne[3] != 1) {
+        throw std::invalid_argument(std::string("gdn_gating: ") + label +
+                                    " must have shape [heads]");
     }
 }
 
@@ -75,12 +76,15 @@ void gdn_gating(const Tensor& a, const Tensor& b, const Tensor& A_log, const Ten
     (void)numel_allow_zero(g, "g");
     (void)numel_allow_zero(beta, "beta");
 
-    require_gate_shape(a, "a");
-    require_gate_shape(b, "b");
-    require_gate_shape(g, "g");
-    require_gate_shape(beta, "beta");
-    require_vector48_shape(A_log, "A_log");
-    require_vector48_shape(dt_bias, "dt_bias");
+    // Head count comes from A_log; every registered GDN target has 32 or 48 value heads.
+    const std::int32_t heads = A_log.ne[0];
+    if (heads <= 0) { throw std::invalid_argument("gdn_gating: A_log must have positive heads"); }
+    require_gate_shape(a, heads, "a");
+    require_gate_shape(b, heads, "b");
+    require_gate_shape(g, heads, "g");
+    require_gate_shape(beta, heads, "beta");
+    require_heads_vector_shape(A_log, heads, "A_log");
+    require_heads_vector_shape(dt_bias, heads, "dt_bias");
     require_same_gate_shape(a, b, "b");
     require_same_gate_shape(a, g, "g");
     require_same_gate_shape(a, beta, "beta");

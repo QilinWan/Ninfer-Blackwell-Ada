@@ -452,6 +452,7 @@ struct FoldGeometry {
 
 using FoldGeometry48x48 = FoldGeometry<48, 16, 48, 10240>;
 using FoldGeometry30x32 = FoldGeometry<30, 16, 32, 8192>;
+using FoldGeometry24x32 = FoldGeometry<24, 16, 32, 8192>; // Qwen3.5-9B
 
 template <class Geometry>
 struct FoldAccess {

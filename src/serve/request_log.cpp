@@ -882,4 +882,107 @@ void JsonlRequestLog::append(std::string record) {
     }
 }
 
+namespace {
+// Content logs carry prompt and answer text, so they grow much faster than the metadata stream.
+// Keep one previous generation and cap the file at 64 MiB.
+constexpr std::uintmax_t kContentLogMaxBytes = 64ull * 1024 * 1024;
+} // namespace
+
+void JsonlRequestLog::open_content_log(const std::string& path,
+                                       const std::string& protected_artifact_path) {
+    if (path.empty()) { return; }
+    if (!protected_artifact_path.empty() &&
+        normalized_absolute_path(path) == normalized_absolute_path(protected_artifact_path)) {
+        throw std::invalid_argument("request content log must not overwrite the model artifact");
+    }
+    content_path_ = path;
+    content_output_.open(content_path_, std::ios::out | std::ios::app);
+    if (!content_output_) {
+        throw std::runtime_error("failed to open request content log for append: " + content_path_);
+    }
+}
+
+void JsonlRequestLog::write_content_request(const RequestLogContext& context) {
+    if (!content_enabled()) { return; }
+    Json record{{"event", "request_start"},
+                {"timestamp_unix_ms", unix_time_ms()},
+                {"server_instance_id", server_instance_id_.empty() ? Json(nullptr)
+                                                                   : Json(server_instance_id_)},
+                {"request_id", context.id},
+                {"protocol", context.protocol},
+                {"model", context.model},
+                {"stream", context.stream},
+                {"message_count", context.message_count},
+                {"tool_count", context.tool_count},
+                {"enable_thinking", context.enable_thinking},
+                {"requested_output_tokens", context.requested_output_tokens}};
+    // The client body is normally JSON; keep it structured when it parses so readers can query it.
+    if (context.request_body.empty()) {
+        record["body"] = nullptr;
+    } else {
+        Json parsed = Json::parse(context.request_body, nullptr, false);
+        record["body"] = parsed.is_discarded() ? Json(context.request_body) : std::move(parsed);
+    }
+    append_content(record.dump());
+}
+
+void JsonlRequestLog::write_content_response(const RequestLogContext& context,
+                                             const GenerationOutcome& outcome) {
+    if (!content_enabled()) { return; }
+    Json tool_calls = Json::array();
+    for (const ninfer::GeneratedToolCall& call : outcome.tool_calls) {
+        tool_calls.push_back(Json{{"name", call.name}, {"arguments", call.arguments_json}});
+    }
+    Json record{{"event", "request_done"},
+                {"timestamp_unix_ms", unix_time_ms()},
+                {"server_instance_id", server_instance_id_.empty() ? Json(nullptr)
+                                                                   : Json(server_instance_id_)},
+                {"request_id", context.id},
+                {"protocol", context.protocol},
+                {"model", context.model},
+                {"finish_reason", finish_reason_name(outcome.finish_reason)},
+                {"prompt_tokens", outcome.prompt_tokens},
+                {"completion_tokens", outcome.completion_tokens},
+                {"thinking_tokens", outcome.reasoning_tokens},
+                {"thinking_budget", outcome.thinking.configured_budget
+                                        ? Json(*outcome.thinking.configured_budget)
+                                        : Json(nullptr)},
+                {"text", outcome.text},
+                {"reasoning", outcome.reasoning},
+                {"tool_calls", std::move(tool_calls)},
+                {"timings_seconds",
+                 Json{{"ttft", outcome.metrics.ttft_seconds},
+                      {"prefill", outcome.metrics.prefill_seconds},
+                      {"decode", outcome.metrics.decode_seconds},
+                      {"total", outcome.metrics.total_seconds}}}};
+    append_content(record.dump());
+}
+
+void JsonlRequestLog::append_content(std::string record) {
+    bool report_failure = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (content_failed_) { return; }
+        std::error_code error;
+        const std::uintmax_t size = std::filesystem::file_size(content_path_, error);
+        if (!error && size >= kContentLogMaxBytes) {
+            content_output_.close();
+            std::error_code rename_error;
+            std::filesystem::rename(content_path_, content_path_ + ".1", rename_error);
+            if (rename_error) { std::filesystem::remove(content_path_ + ".1", rename_error); }
+            content_output_.open(content_path_, std::ios::out | std::ios::trunc);
+        }
+        content_output_ << record << '\n';
+        content_output_.flush();
+        if (!content_output_) {
+            content_failed_ = true;
+            report_failure  = true;
+        }
+    }
+    if (report_failure && logger_ != nullptr) {
+        logger_->error("request content log disabled | write failed | {}",
+                       product::format_pretty_text(content_path_));
+    }
+}
+
 } // namespace ninfer::serve

@@ -30,6 +30,9 @@ struct RequestLogContext {
     ninfer::ResolvedSamplingParameters sampling;
     double acquisition_seconds = 0.0;
     ninfer::PromptPreparationStats preparation;
+    // Raw client request body, carried only so an enabled content log can record what the client
+    // actually sent. Never serialized into the metadata stream.
+    std::string request_body;
 };
 
 struct RequestLogMetadata {
@@ -101,7 +104,8 @@ struct ThroughputReport {
 RequestLogContext make_request_log_context(std::uint64_t id, std::string protocol,
                                            const GenerationRequest& request,
                                            const RequestLogMetadata& metadata,
-                                           const PreparedRequest& prepared);
+                                           const PreparedRequest& prepared,
+                                           std::string request_body = {});
 RequestRejectionLogContext make_request_rejection_log_context(std::uint64_t id,
                                                               std::string protocol,
                                                               const GenerationRequest& request,

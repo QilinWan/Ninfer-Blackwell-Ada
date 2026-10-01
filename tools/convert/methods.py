@@ -293,9 +293,90 @@ def import_encoded(request: PrepareRequest) -> PreparedMethod:
     return request.job(produce=produce, auxiliaries=auxiliaries)
 
 
+# NVFP4 decoding contract (docs/maintainer/tensor-formats.md §3.3):
+#   W[n,k] = decode_e2m1(c[n,k]) * decode_e4m3fn(s[n,g]) / d_w,  g = k // 16
+# so the encoder picks one matrix divisor d_w that places the largest block scale at the
+# E4M3FN maximum, then rounds every 16-wide block's scale to E4M3FN and its codes to E2M1.
+_E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
+_E2M1_MAX = 6.0
+_E4M3FN_MAX = 448.0
+_NVFP4_GROUP = 16
+
+
+def _e2m1_words(scaled: torch.Tensor) -> torch.Tensor:
+    """Round finite values to the nearest E2M1 word, ties to the even code."""
+    magnitude = scaled.abs().clamp_(max=_E2M1_MAX)
+    midpoints = torch.tensor(_E2M1_MIDPOINTS, dtype=magnitude.dtype, device=magnitude.device)
+    down = torch.bucketize(magnitude, midpoints, right=False)
+    up = torch.bucketize(magnitude, midpoints, right=True)
+    codes = torch.where((down != up) & (down % 2 != 0), up, down).to(torch.uint8)
+    return codes | (scaled < 0).to(torch.uint8) * 8
+
+
+def quantize_nvfp4_matrix(
+    values: torch.Tensor, weight_divisor: float
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return packed E2M1 codes ``[rows, K/2]`` and natural E4M3FN scales ``[rows, K/16]``."""
+    rows, k = values.shape
+    if k % _NVFP4_GROUP:
+        raise ValueError("NVFP4 requires K to be a multiple of 16")
+    blocks = values.to(torch.float32).reshape(rows, k // _NVFP4_GROUP, _NVFP4_GROUP)
+    ideal = blocks.abs().amax(dim=-1) * (weight_divisor / _E2M1_MAX)
+    scale_words = ideal.clamp_(0.0, _E4M3FN_MAX).to(torch.float8_e4m3fn)
+    scales = scale_words.float()
+    safe = torch.where(scales > 0, scales, torch.ones_like(scales))
+    scaled = blocks * (weight_divisor / safe)[:, :, None]
+    scaled = torch.where((scales > 0)[:, :, None], scaled, torch.zeros_like(scaled))
+    words = _e2m1_words(scaled).reshape(rows, k)
+    packed = words[:, 0::2] | (words[:, 1::2] << 4)
+    return packed.contiguous(), scale_words.view(torch.uint8).contiguous()
+
+
+def nvfp4_blockwise(request: PrepareRequest) -> PreparedMethod:
+    """Quantize floating-point inputs to NVFP4 with a matrix divisor at the E4M3FN maximum.
+
+    Pass one finds the matrix max-abs; pass two rounds each 16-wide block. Every input row
+    lands in the same parent under one divisor, so the parent stays importable as a single
+    NVFP4 weight. This is weight-only quantization: no activation divisor is produced, so the
+    consuming sites must keep the default ``A16Only`` activation policy.
+    """
+    if request.target.format != "nvfp4" or len(request.target.shape) != 2:
+        raise ValueError("nvfp4_blockwise requires the nvfp4 matrix format")
+    _preflight(request)
+    n, k = request.target.shape
+    if n % 128 or k % _NVFP4_GROUP:
+        raise ValueError("nvfp4_blockwise needs N % 128 == 0 and K % 16 == 0")
+    chunk = max(128, request.rows_per_chunk // 128 * 128)
+
+    def produce(output):
+        amax = torch.zeros((), dtype=torch.float32, device=request.device)
+        for begin in range(0, n, chunk):
+            end = min(n, begin + chunk)
+            values = request.values(begin * k, end * k).to(request.device)
+            if not values.dtype.is_floating_point:
+                raise TypeError("nvfp4_blockwise source must provide floating-point values")
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError(f"{request.target.id}: source values are not finite")
+            amax = torch.maximum(amax, values.abs().amax().float())
+        if float(amax) == 0.0:
+            raise ValueError(f"{request.target.id}: an all-zero matrix has no NVFP4 divisor")
+        # Largest possible block scale (amax / 6) * d_w == 448 exactly at the matrix max-abs.
+        weight_divisor = _E4M3FN_MAX * _E2M1_MAX / float(amax)
+        divisor_word = struct.pack("<f", weight_divisor)
+        divisor = struct.unpack("<f", divisor_word)[0]
+        for begin in range(0, n, chunk):
+            end = min(n, begin + chunk)
+            values = request.values(begin * k, end * k).to(request.device).reshape(end - begin, k)
+            codes, scales = quantize_nvfp4_matrix(values, divisor)
+            output.write_codes(begin, codes.cpu(), scales.cpu(), divisor_word)
+
+    return request.job(produce=produce)
+
+
 METHODS: dict[str, Method] = {
     "cast_direct": cast_direct,
     "grouped_absmax": grouped_absmax,
     "fp8_row_maxabs": fp8_row_maxabs,
     "import_encoded": import_encoded,
+    "nvfp4_blockwise": nvfp4_blockwise,
 }
