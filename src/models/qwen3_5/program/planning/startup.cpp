@@ -1,4 +1,5 @@
 #include "models/qwen3_5/execution/attention.h"
+#include "models/qwen3_5/execution/composed.h"
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
@@ -301,9 +302,12 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                                              p.policy, first, last));
     };
     const auto add_scratch = [&](WorkspaceLayoutBuilder& layout,
-                                 const execution::LinearParameters& p, int first, int last) {
-        scratch(layout, ops::linear_add_workspace_capacity_bytes(
-                            p.weight.qtype, p.weight.n, p.weight.k, p.policy, first, last));
+                                 const execution::LinearParameters& p, bool composed, int first,
+                                 int last) {
+        scratch(layout, composed
+                            ? execution::composed_linear_add_workspace_bytes(p, first, last)
+                            : ops::linear_add_workspace_capacity_bytes(
+                                  p.weight.qtype, p.weight.n, p.weight.k, p.policy, first, last));
     };
     const auto target_body = [&](WorkspaceLayoutBuilder& layout, std::int32_t first,
                                  std::int32_t last, TextPhase phase, GdnWorkspacePath path,
@@ -325,13 +329,17 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                  dimension(config.attention->num_attention_heads),
                                  dimension(config.attention->num_key_value_heads)},
                                 plan.kv_storage, envelope, batch_size, min_width, max_width));
-                    add_scratch(layout, attention->output, first, last);
+                    add_scratch(layout, attention->output, attention->output_composed, first,
+                                last);
                 } else {
                     const auto& gdn = std::get<execution::GdnParameters>(block.mixer);
                     (void)workspace::gdn_control(layout, config, last);
-                    scratch(layout, ops::gdn_norm_gating_proj_workspace_capacity_bytes(
-                                        dimension(config.gdn->linear_num_value_heads),
-                                        dimension(config.hidden_size), first, last));
+                    scratch(layout, gdn.composed_control
+                                        ? execution::composed_gdn_control_workspace_bytes(
+                                              *gdn.composed_control, first, last)
+                                        : ops::gdn_norm_gating_proj_workspace_capacity_bytes(
+                                              dimension(config.gdn->linear_num_value_heads),
+                                              dimension(config.hidden_size), first, last));
                     (void)workspace::gdn_projection(layout, config, last);
                     if (path == GdnWorkspacePath::Snapshot) {
                         scratch(layout, execution::gdn_snapshot_workspace_bytes(
@@ -352,7 +360,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                             first, last));
                     }
                     (void)workspace::gdn_normalized_output(layout, config, last);
-                    add_scratch(layout, gdn.output, first, last);
+                    add_scratch(layout, gdn.output, gdn.output_composed, first, last);
                 }
             }
             auto stage = layout.scope();
@@ -658,7 +666,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                           dimension(draft->attention.num_key_value_heads)},
                                          {0, plan.capacity}, width, width, batch)));
                     for (const auto& block : parameters.draft->layers) {
-                        add_scratch(layout, block.output, tokens, tokens);
+                        add_scratch(layout, block.output, false, tokens, tokens);
                     }
                 }
                 {
@@ -671,7 +679,7 @@ WorkspacePlan build_workspace_plan(const SequencePlanImpl& plan) {
                                             tokens, tokens));
                     }
                     for (const auto& block : parameters.draft->layers) {
-                        add_scratch(layout, block.mlp.down, tokens, tokens);
+                        add_scratch(layout, block.mlp.down, false, tokens, tokens);
                     }
                 }
                 matrix(layout, DType::BF16, dimension(config.hidden_size), drafts * batch);

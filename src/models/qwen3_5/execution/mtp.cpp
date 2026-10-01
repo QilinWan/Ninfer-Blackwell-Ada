@@ -3,6 +3,7 @@
 #include "core/layout.h"
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/linear_pair.h"
+#include "models/qwen3_5/execution/composed.h"
 #include "ninfer/ops/mtp_pack.h"
 
 #include <algorithm>
@@ -28,8 +29,10 @@ std::size_t mtp_kv_workspace_bytes(const MtpProjectionParameters& parameters,
                                    const AttentionConfig& config, std::int32_t first,
                                    std::int32_t last) {
     if (parameters.rows) {
-        return ops::linear_pair_workspace_capacity_bytes((*parameters.rows)[1].weight,
-                                                         (*parameters.rows)[3].weight, first, last);
+        const auto& key = (*parameters.rows)[1];
+        if (!registered_pair(key.weight.n, key.weight.k)) { return 0; }
+        return ops::linear_pair_workspace_capacity_bytes(key.weight, (*parameters.rows)[3].weight,
+                                                         first, last);
     }
     WorkspaceLayoutBuilder layout;
     (void)layout.alloc(DType::BF16, {dimension(config.query_width()), last});
@@ -65,6 +68,14 @@ void mtp_projection(const Tensor& hidden, const MtpProjectionParameters& paramet
                              stream);
         return;
     }
+    if (!registered_mtp_split(config)) {
+        const auto& rows = *parameters.rows; // query, key, gate, value
+        composed_linear(hidden, rows[0], query, workspace, stream);
+        composed_linear(hidden, rows[1], key, workspace, stream);
+        composed_linear(hidden, rows[2], gate, workspace, stream);
+        composed_linear(hidden, rows[3], value, workspace, stream);
+        return;
+    }
     auto scope         = workspace.scope();
     const auto columns = hidden.ne[1];
     Tensor packed      = workspace.alloc(DType::BF16, {p.weight.n, columns});
@@ -84,8 +95,13 @@ void mtp_kv_projection(const Tensor& hidden, const MtpProjectionParameters& para
                        const AttentionConfig& config, Tensor& key, Tensor& value,
                        WorkspaceArena& workspace, cudaStream_t stream) {
     if (parameters.rows) {
-        ops::linear_pair(hidden, (*parameters.rows)[1].weight, (*parameters.rows)[3].weight, key,
-                         value, stream);
+        const auto& rows = *parameters.rows;
+        if (!registered_pair(rows[1].weight.n, rows[1].weight.k)) {
+            composed_linear(hidden, rows[1], key, workspace, stream);
+            composed_linear(hidden, rows[3], value, workspace, stream);
+            return;
+        }
+        ops::linear_pair(hidden, rows[1].weight, rows[3].weight, key, value, stream);
         return;
     }
     auto scope   = workspace.scope();

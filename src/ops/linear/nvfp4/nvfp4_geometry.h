@@ -35,6 +35,10 @@ using Nvfp4N5120K17408 = Nvfp4Geometry<5120, 17408>;
 using Nvfp4Activation5120Geometry  = Nvfp4ActivationGeometry<5120>;
 using Nvfp4Activation6144Geometry  = Nvfp4ActivationGeometry<6144>;
 using Nvfp4Activation17408Geometry = Nvfp4ActivationGeometry<17408>;
+// Qwen3.5-9B input widths (docs/maintainer/qwen3.5-9b-port.md §8.1).
+using Nvfp4Activation4096Geometry  = Nvfp4ActivationGeometry<4096>;
+using Nvfp4Activation12288Geometry = Nvfp4ActivationGeometry<12288>;
+using Nvfp4Activation8192Geometry  = Nvfp4ActivationGeometry<8192>;
 
 enum class Nvfp4GeometryId : std::uint8_t {
     N14336K5120,

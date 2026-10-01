@@ -194,6 +194,12 @@ void causal_attention_small_t_k8v4_launch(
             partial_l, out, stream);
         return;
     }
+    if (cache.num_kv_heads == CausalD256H16Kv4::KVHeads) {
+        causal_attention_small_t_k8v4_launch_for<CausalD256H16Kv4>(q, input, positions, scale, cache,
+                                                                   invocation, envelope, partial_acc,
+                                                                   partial_m, partial_l, out, stream);
+        return;
+    }
     causal_attention_small_t_k8v4_launch_for<CausalD256H16Kv2>(q, input, positions, scale, cache,
                                                                invocation, envelope, partial_acc,
                                                                partial_m, partial_l, out, stream);
@@ -217,6 +223,12 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
     PagedKVBatchLayerView batch_cache = single_row_paged_kv_batch_view(cache);
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_small_t_k8v4_launch_for<CausalD256H24Kv4>(
+            q, input, positions, scale, batch_cache, invocation, envelope, partial_acc, partial_m,
+            partial_l, out, stream);
+        return;
+    }
+    if (cache.num_kv_heads == CausalD256H16Kv4::KVHeads) {
+        causal_attention_small_t_k8v4_launch_for<CausalD256H16Kv4>(
             q, input, positions, scale, batch_cache, invocation, envelope, partial_acc, partial_m,
             partial_l, out, stream);
         return;

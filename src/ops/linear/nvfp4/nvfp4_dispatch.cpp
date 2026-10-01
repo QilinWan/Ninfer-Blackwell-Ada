@@ -7,7 +7,11 @@
 namespace ninfer::ops::detail {
 namespace {
 const std::array kShapes{&kNvfp4N14336K5120, &kNvfp4N16384K5120, &kNvfp4N34816K5120,
-                         &kNvfp4N5120K6144, &kNvfp4N5120K17408};
+                         &kNvfp4N5120K6144,  &kNvfp4N5120K17408,
+                         // Qwen3.5-9B (A16 only)
+                         &kNvfp4N4096K4096, &kNvfp4N1024K4096, &kNvfp4N8192K4096,
+                         &kNvfp4N24576K4096, &kNvfp4N4096K12288,
+                         &kNvfp4N248320K4096, &kNvfp4N4096K8192};
 
 const Nvfp4LinearShape& resolve_shape(std::int32_t n, std::int32_t k, LinearPolicy policy) {
     if (!valid_linear_policy(policy))

@@ -57,6 +57,22 @@ const Nvfp4LinearShape kNvfp4N5120K6144{5120, 6144, &nvfp4_a16_unsupported, &nvf
                                         &nvfp4_never_uses_a4};
 const Nvfp4LinearShape kNvfp4N5120K17408{5120, 17408, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
                                          &nvfp4_never_uses_a4};
+// Qwen3.5-9B shapes: registered by the 9B port so its dispatcher links, but NVFP4 stays a
+// Blackwell-only route on Ada. A groupwise-int 9B artifact never selects them.
+const Nvfp4LinearShape kNvfp4N4096K4096{4096, 4096, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                        &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N1024K4096{1024, 4096, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                        &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N8192K4096{8192, 4096, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                        &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N24576K4096{24576, 4096, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                         &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N4096K12288{4096, 12288, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                         &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N248320K4096{248320, 4096, &nvfp4_a16_unsupported,
+                                          &nvfp4_a4_unsupported, &nvfp4_never_uses_a4};
+const Nvfp4LinearShape kNvfp4N4096K8192{4096, 8192, &nvfp4_a16_unsupported, &nvfp4_a4_unsupported,
+                                        &nvfp4_never_uses_a4};
 
 void launch_nvfp4_w4a4_quantize(const Tensor&, const Weight&, Nvfp4W4a4Workspace, Nvfp4ScaleLayout,
                                 cudaStream_t) {

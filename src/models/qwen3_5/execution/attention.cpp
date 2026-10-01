@@ -1,4 +1,5 @@
 #include "models/qwen3_5/execution/attention.h"
+#include "models/qwen3_5/execution/composed.h"
 
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/rope.h"
@@ -24,6 +25,7 @@ std::size_t attention_projection_workspace_bytes(const AttentionParameters& para
     if (first <= 0 || last < first) {
         throw std::invalid_argument("attention projection: invalid column interval");
     }
+    if (parameters.composed) { return 0; }
     if (const auto* single = std::get_if<LinearParameters>(&parameters.projection)) {
         const auto& weight = single->weight;
         return ops::attn_input_proj_workspace_capacity_bytes(weight.qtype, weight.n, weight.k,
@@ -35,6 +37,11 @@ std::size_t attention_projection_workspace_bytes(const AttentionParameters& para
 void attention_projection(const Tensor& hidden, const AttentionParameters& parameters,
                           Tensor& query, Tensor& gate, Tensor& key, Tensor& value,
                           WorkspaceArena& workspace, cudaStream_t stream) {
+    if (parameters.composed) {
+        composed_attention_projection(hidden, *parameters.composed, query, gate, key, value,
+                                      workspace, stream);
+        return;
+    }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::attn_input_proj(hidden, pair->first, pair->second, query, gate, key, value, stream);
     } else {

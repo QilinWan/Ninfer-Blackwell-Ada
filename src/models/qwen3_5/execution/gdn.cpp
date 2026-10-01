@@ -1,4 +1,5 @@
 #include "models/qwen3_5/execution/gdn.h"
+#include "models/qwen3_5/execution/composed.h"
 
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/gdn_input_proj.h"
@@ -13,6 +14,9 @@ std::size_t gdn_projection_workspace_bytes(const GdnParameters& parameters, std:
     if (first <= 0 || last < first) {
         throw std::invalid_argument("GDN projection: invalid column interval");
     }
+    if (parameters.composed) {
+        return composed_gdn_projection_workspace_bytes(*parameters.composed, first, last);
+    }
     if (const auto* single = std::get_if<LinearParameters>(&parameters.projection)) {
         const auto& w = single->weight;
         return ops::gdn_input_proj_workspace_capacity_bytes(w.qtype, w.n, w.k, single->policy,
@@ -26,7 +30,10 @@ std::size_t gdn_snapshot_workspace_bytes(const GdnParameters& parameters, const 
                                          std::int32_t last_width) {
     const auto* single = std::get_if<LinearParameters>(&parameters.projection);
     std::size_t bytes;
-    if (single && single->weight.qtype != QType::Q8_G32_FP16) {
+    if (parameters.composed) {
+        bytes = composed_gdn_snapshot_workspace_bytes(*parameters.composed, batch, first_width,
+                                                      last_width);
+    } else if (single && single->weight.qtype != QType::Q8_G32_FP16) {
         const auto& w = single->weight;
         bytes         = ops::gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
             w.qtype, w.n, w.k, single->policy, batch, first_width, last_width);
@@ -45,7 +52,11 @@ std::size_t gdn_record_workspace_bytes(const GdnParameters& parameters, const Gd
                                        std::int32_t last_width) {
     const auto* single = std::get_if<LinearParameters>(&parameters.projection);
     std::size_t bytes;
-    if (single && single->weight.qtype != QType::Q8_G32_FP16) {
+    if (parameters.composed) {
+        // the record row receives the projection directly, but the split form stages it first
+        bytes = composed_gdn_projection_workspace_bytes(
+            *parameters.composed, batch * first_width, batch * last_width);
+    } else if (single && single->weight.qtype != QType::Q8_G32_FP16) {
         const auto& w = single->weight;
         bytes         = ops::gdn_input_proj_conv_record_workspace_capacity_bytes(
             w.qtype, w.n, w.k, single->policy, batch, first_width, last_width);
@@ -60,6 +71,10 @@ std::size_t gdn_record_workspace_bytes(const GdnParameters& parameters, const Gd
 
 void gdn_projection(const Tensor& hidden, const GdnParameters& parameters, Tensor& qkv, Tensor& z,
                     WorkspaceArena& workspace, cudaStream_t stream) {
+    if (parameters.composed) {
+        composed_gdn_projection(hidden, *parameters.composed, qkv, z, workspace, stream);
+        return;
+    }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::gdn_input_proj(hidden, pair->first, pair->second, qkv, z, stream);
     } else {
@@ -71,6 +86,12 @@ void gdn_projection(const Tensor& hidden, const GdnParameters& parameters, Tenso
 void gdn_norm_control(const Tensor& residual, const Tensor& norm, float epsilon,
                       const GdnParameters& parameters, Tensor& hidden, Tensor& g, Tensor& beta,
                       WorkspaceArena& workspace, DeviceExecutionView execution) {
+    if (parameters.composed_control) {
+        composed_gdn_norm_control(residual, norm, epsilon, *parameters.composed_control,
+                                  parameters.a_log, parameters.dt_bias, hidden, g, beta, workspace,
+                                  execution.stream);
+        return;
+    }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.control)) {
         ops::gdn_norm_gating_proj(residual, norm, epsilon, pair->first, pair->second,
                                   parameters.a_log, parameters.dt_bias, workspace, hidden, g, beta,
@@ -91,6 +112,12 @@ void gdn_projection_snapshot(const Tensor& hidden, const GdnParameters& paramete
     auto scope = workspace.scope();
     WorkspaceArena scratch(workspace.alloc_bytes(gdn_snapshot_workspace_bytes(
         parameters, config, hidden.ne[2], hidden.ne[1], hidden.ne[1])));
+    if (parameters.composed) {
+        composed_gdn_snapshot(hidden, *parameters.composed, parameters.convolution, conv_states,
+                              valid_columns, initial_slots, destination_slots, query, key, value,
+                              z, scratch, stream);
+        return;
+    }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::gdn_input_proj_conv_snapshot(hidden, pair->first, pair->second, parameters.convolution,
                                           conv_states, valid_columns, initial_slots,
@@ -111,6 +138,12 @@ void gdn_projection_record(const Tensor& hidden, const GdnParameters& parameters
     auto scope = workspace.scope();
     WorkspaceArena scratch(workspace.alloc_bytes(
         gdn_record_workspace_bytes(parameters, config, hidden.ne[2], hidden.ne[1], hidden.ne[1])));
+    if (parameters.composed) {
+        composed_gdn_record(hidden, *parameters.composed, parameters.convolution, conv_states,
+                            valid_columns, initial_slots, conv_record, query, key, value, z,
+                            scratch, stream);
+        return;
+    }
     if (const auto* pair = std::get_if<ops::PairedProjectionWeights>(&parameters.projection)) {
         ops::gdn_input_proj_conv_record(hidden, pair->first, pair->second, parameters.convolution,
                                         conv_states, valid_columns, initial_slots, conv_record,

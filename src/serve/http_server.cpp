@@ -218,6 +218,9 @@ HttpServer::HttpServer(ServeOptions options, std::shared_ptr<spdlog::logger> log
                                                             options_.response_store_max_bytes),
       operational_log_(logger),
       request_jsonl_(options_.request_log_jsonl, options_.artifact_path, std::move(logger)) {
+    if (!options_.request_log_content.empty()) {
+        request_jsonl_.open_content_log(options_.request_log_content, options_.artifact_path);
+    }
     const std::size_t queued_requests =
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests;
     const std::size_t worker_count = queued_requests + 1;
@@ -257,6 +260,7 @@ std::shared_ptr<HttpServer::RequestLifecycle> HttpServer::begin_request(RequestL
 
 void HttpServer::record_request_start(const RequestLogContext& context) {
     request_jsonl_.write_request_start(context);
+    request_jsonl_.write_content_request(context);
     operational_log_.request_start(context);
 }
 
@@ -268,6 +272,7 @@ void HttpServer::record_request_rejected(const RequestRejectionLogContext& conte
 void HttpServer::record_request_done(const RequestLogContext& context,
                                      const GenerationOutcome& outcome) {
     request_jsonl_.write_request_done(context, outcome);
+    request_jsonl_.write_content_response(context, outcome);
     operational_log_.request_done(context, outcome);
 }
 

@@ -48,8 +48,18 @@ struct Bf16Gdn35Geometry {
     static constexpr int kBlockN = 64;
 };
 
+// Qwen3.8-9B / Qwen3.5-9B Dense geometry: 32 GDN value heads over a 4096-wide hidden state.
+// The logical row count (2 * heads = 64) matches the MoE geometry, so the 64-column token tile and
+// its shared-memory footprint carry over unchanged; only K doubles.
+struct Bf16Gdn9bGeometry {
+    static constexpr int kHeads  = 32;
+    static constexpr int kHidden = 4096;
+    static constexpr int kBlockN = 64;
+};
+
 static_assert(Bf16Gdn27Geometry::kHidden % kBf16GdnBlockK == 0);
 static_assert(Bf16Gdn35Geometry::kHidden % kBf16GdnBlockK == 0);
+static_assert(Bf16Gdn9bGeometry::kHidden % kBf16GdnBlockK == 0);
 
 __device__ __forceinline__ int bf16_gdn_swizzle(int row, int col) {
     return (col & ~63) + gemm_swz64(row, col & 63);

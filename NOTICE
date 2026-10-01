@@ -1,0 +1,22 @@
+This product includes software developed by third parties:
+
+  NInfer (upstream engine)
+    Copyright the NInfer authors
+    https://github.com/Neroued/ninfer
+    Apache License 2.0
+
+  Ninfer-Blackwell-Ada (Blackwell + Ada ports; this repository's base)
+    Copyright the QilinWan authors
+    https://github.com/QilinWan/Ninfer-Blackwell-Ada
+    Apache License 2.0
+
+  qwen3_5_9b-v3 branch (composed projection routes for the Qwen3.5-9B geometry)
+    Copyright the BenJGadd/ninfer maintainers
+    https://github.com/BenJGadd/ninfer (branch qwen3_5_9b-v3, based on Neroued/ninfer)
+    Apache License 2.0
+
+Branch `qwen3.5-9b-ada` of this repository additionally contains local
+modifications (Ada build adaptation, BF16 GDN-control shape, split-parent
+composed GDN projection, request content log, SO_REUSEADDR fix) made by the
+maintainer of this fork; those modifications are distributed under the same
+Apache License 2.0. See docs/maintainer/qwen3.5-9b-ada-port.md.

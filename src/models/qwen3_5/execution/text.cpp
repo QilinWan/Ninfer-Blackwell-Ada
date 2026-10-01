@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/execution/text.h"
+#include "models/qwen3_5/execution/composed.h"
 #include "models/qwen3_5/execution/attention.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/ffn.h"
@@ -922,8 +923,12 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     }
     ops::sigmoid_mul(gate, a, s);
 
-    ops::linear_add(a.view({dimension(config_.attention->query_width()), T}), p.output.weight, x,
-                    p.output.policy, work_, s);
+    Tensor attended = a.view({dimension(config_.attention->query_width()), T});
+    if (p.output_composed) {
+        composed_linear_add(attended, p.output, x, work_, s);
+    } else {
+        ops::linear_add(attended, p.output.weight, x, p.output.policy, work_, s);
+    }
 }
 
 void TextContext::gdn_mix(const BlockParameters& w, Tensor& x, int gidx, Phase ph) {
@@ -1057,8 +1062,12 @@ void TextContext::gdn_mix(const BlockParameters& w, Tensor& x, int gidx, Phase p
                            dimension(config_.gdn->linear_num_value_heads), T});
     ops::gated_rmsnorm(o, p.norm, z, config_.rms_norm_eps, on, s);
 
-    ops::linear_add(on.view({dimension(config_.gdn->value_width()), T}), p.output.weight, x,
-                    p.output.policy, work_, s);
+    Tensor normalized = on.view({dimension(config_.gdn->value_width()), T});
+    if (p.output_composed) {
+        composed_linear_add(normalized, p.output, x, work_, s);
+    } else {
+        ops::linear_add(normalized, p.output.weight, x, p.output.policy, work_, s);
+    }
 }
 
 ops::SparseMoeHints TextContext::next_projection_hints(int layer) const {

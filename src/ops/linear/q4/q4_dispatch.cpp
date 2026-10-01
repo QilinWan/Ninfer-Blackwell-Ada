@@ -29,6 +29,14 @@ Q4Launch select_q4_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
     for (const auto& entry : kShapes) {
         if (entry.n == n && entry.k == k) return entry.select(t);
     }
+    // Unregistered shapes (Qwen3.5-9B: K=4096/12288) take generic routes, untuned. The
+    // exact-T and draft-head launchers stay behind their registered entries.
+    if (k % 128 == 0 && n % 64 == 0) {
+        if (t == 1) { return n == 131072 ? launch_q4_gemv_r4_w1_direct : launch_q4_gemv_r1_q8_direct; }
+        if (t <= 4) { return launch_q4_simt_r8_c4; }
+        if (t <= 16) { return launch_q4_simt_r8_c8; }
+        return launch_q4_mma_r64_c128;
+    }
     throw std::invalid_argument("q4 linear: unsupported shape");
 }
 

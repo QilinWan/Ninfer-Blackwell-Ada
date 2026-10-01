@@ -1,4 +1,5 @@
 #include "models/qwen3_5/execution/parameters.h"
+#include "models/qwen3_5/execution/composed.h"
 
 #include "core/weight_view.h"
 
@@ -53,12 +54,15 @@ public:
     }
 
     DenseParameters dense(const DenseWeights& w) const {
-        return {with_context(model_.weight(w.gate).name,
-                             [&] {
-                                 return ops::prepare_linear_swiglu_weight(model_.input(w.gate),
-                                                                          model_.input(w.up));
-                             }),
-                linear(w.down)};
+        DenseParameters out{with_context(model_.weight(w.gate).name,
+                                         [&] {
+                                             return ops::prepare_linear_swiglu_weight(
+                                                 model_.input(w.gate), model_.input(w.up));
+                                         }),
+                            linear(w.down)};
+        out.composed = !registered_swiglu(out.gate_up.weight.n, out.gate_up.weight.k) ||
+                       !registered_linear_add(out.down.weight.n, out.down.weight.k);
+        return out;
     }
 
     FfnParameters ffn(const BlockWeights& w) const {
@@ -88,25 +92,85 @@ public:
         out.input_norm          = tensor(w.input_norm);
         out.post_attention_norm = tensor(w.post_attention_norm);
         out.ffn                 = ffn(w);
+        const TextConfig& text = model_.config().text;
         if (const auto* a = std::get_if<AttentionWeights>(&w.mixer)) {
-            out.mixer = AttentionParameters{
-                ops::prepare_attn_input_proj_weights(model_.input(a->query), model_.input(a->key),
-                                                     model_.input(a->gate), model_.input(a->value)),
-                tensor(a->query_norm), tensor(a->key_norm), linear(a->output)};
+            AttentionParameters ap;
+            if (registered_attention_projection(text)) {
+                ap.projection = ops::prepare_attn_input_proj_weights(
+                    model_.input(a->query), model_.input(a->key), model_.input(a->gate),
+                    model_.input(a->value));
+            } else {
+                ap.composed = ComposedAttentionProjection{linear(a->query), linear(a->key),
+                                                          linear(a->gate), linear(a->value)};
+                ap.projection =
+                    ops::PairedProjectionWeights{ap.composed->query.weight, ap.composed->gate.weight};
+            }
+            ap.query_norm = tensor(a->query_norm);
+            ap.key_norm   = tensor(a->key_norm);
+            ap.output     = linear(a->output);
+            ap.output_composed =
+                !registered_linear_add(ap.output.weight.n, ap.output.weight.k);
+            out.mixer = std::move(ap);
             out.projection_prefetch =
                 prefetch(std::get<AttentionParameters>(out.mixer).projection, a->query);
         } else {
             const auto& g = std::get<GdnWeights>(w.mixer);
-            out.mixer     = GdnParameters{
-                ops::prepare_gdn_input_proj_weights(model_.input(g.query), model_.input(g.key),
-                                                        model_.input(g.value), model_.input(g.z)),
-                ops::prepare_gdn_gating_proj_weights(model_.input(g.a_projection),
-                                                         model_.input(g.b_projection)),
-                tensor(g.a_log),
-                tensor(g.dt_bias),
-                tensor(g.convolution),
-                tensor(g.norm),
-                linear(g.output)};
+            GdnParameters gp;
+            if (registered_gdn_projection(text)) {
+                gp.projection = ops::prepare_gdn_input_proj_weights(
+                    model_.input(g.query), model_.input(g.key), model_.input(g.value),
+                    model_.input(g.z));
+            } else {
+                const std::array qkv{model_.input(g.query), model_.input(g.key),
+                                     model_.input(g.value)};
+                const std::array qk{model_.input(g.query), model_.input(g.key)};
+                ComposedGdnProjection composed;
+                if (rows_share_one_parent(qkv)) {
+                    // The maintained recipes keep query|key|value in one contiguous parent, so
+                    // the convolution input is a single linear call.
+                    composed.query_key_value = with_context(
+                        model_.weight(g.query).name,
+                        [&] { return ops::prepare_linear_weight(qkv); });
+                    composed.channels = composed.query_key_value.weight.n;
+                } else if (rows_share_one_parent(qk)) {
+                    // The ninfer-5080 groupwise converter splits `query_key` from `value_z`; the
+                    // two halves then tile the same convolution input in two linear calls.
+                    composed.query_key_value = with_context(
+                        model_.weight(g.query).name,
+                        [&] { return ops::prepare_linear_weight(qk); });
+                    composed.value = with_context(
+                        model_.weight(g.value).name,
+                        [&] { return ops::prepare_linear_weight(model_.input(g.value)); });
+                    composed.channels =
+                        composed.query_key_value.weight.n + composed.value.weight.n;
+                    composed.split = true;
+                } else {
+                    throw std::invalid_argument(
+                        "GDN input projection: query, key and value live in three different "
+                        "parents; re-convert the checkpoint so query|key share a parent");
+                }
+                composed.z = linear(g.z);
+                gp.projection = ops::PairedProjectionWeights{composed.query_key_value.weight,
+                                                             composed.z.weight};
+                gp.composed   = std::move(composed);
+            }
+            if (registered_gdn_control(text)) {
+                gp.control = ops::prepare_gdn_gating_proj_weights(model_.input(g.a_projection),
+                                                                  model_.input(g.b_projection));
+            } else {
+                gp.composed_control =
+                    ComposedGdnControl{linear(g.a_projection), linear(g.b_projection)};
+                gp.control = ops::PairedProjectionWeights{gp.composed_control->a.weight,
+                                                          gp.composed_control->b.weight};
+            }
+            gp.a_log       = tensor(g.a_log);
+            gp.dt_bias     = tensor(g.dt_bias);
+            gp.convolution = tensor(g.convolution);
+            gp.norm        = tensor(g.norm);
+            gp.output      = linear(g.output);
+            gp.output_composed =
+                !registered_linear_add(gp.output.weight.n, gp.output.weight.k);
+            out.mixer = std::move(gp);
             out.projection_prefetch =
                 prefetch(std::get<GdnParameters>(out.mixer).projection, g.query);
         }

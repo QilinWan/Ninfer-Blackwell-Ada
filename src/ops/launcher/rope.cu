@@ -101,6 +101,16 @@ bool launch_fixed_pair(const Tensor& positions, int rotary_dim, float theta, Ten
                 return true;
             }
         }
+        if (q.ne[1] == 16 && k.ne[1] == 4) {
+            if (axes == 1) {
+                launch_fixed<RopeKernelMode::Text1D, 16, 4>(positions, &q, &k, stream);
+                return true;
+            }
+            if (axes == 3) {
+                launch_fixed<RopeKernelMode::TextMrope, 16, 4>(positions, &q, &k, stream);
+                return true;
+            }
+        }
         if (q.ne[1] == 16 && k.ne[1] == 2) {
             if (axes == 1) {
                 launch_fixed<RopeKernelMode::Text1D, 16, 2>(positions, &q, &k, stream);

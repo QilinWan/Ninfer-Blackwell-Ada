@@ -37,6 +37,14 @@ Q8Launch select_q8_a16_launch(std::int32_t n, std::int32_t k, std::int32_t t) {
     for (const auto& entry : kShapes) {
         if (entry.n == n && entry.k == k) return entry.select(t);
     }
+    // Unregistered shapes (Qwen3.5-9B: K=4096/8192/12288/4608, N down to 32 for the GDN
+    // control projections) take generic routes, untuned.
+    if (k % 128 == 0 && n % 32 == 0) {
+        if (t <= 4) { return launch_q8_simt_r8_c4; }
+        if (t <= 16) { return launch_q8_simt_r8_c8; }
+        if (t <= 895 || n % 64 != 0) { return launch_q8_mma_r32_c128; }
+        return launch_q8_mma_r64_c128;
+    }
     throw std::invalid_argument("q8 linear: unsupported shape");
 }
 
