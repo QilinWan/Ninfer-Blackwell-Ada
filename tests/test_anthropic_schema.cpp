@@ -9,6 +9,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -480,8 +481,19 @@ int test_thinking_and_count_tokens() {
     failures += check(api_param([&] { (void)parse(body); }) == "thinking",
                       "unknown Thinking mode defaulted to enabled");
     body["thinking"] = Json{{"type", "adaptive"}, {"display", "omitted"}};
-    failures += check(api_code([&] { (void)parse(body); }) == "thinking_display_not_supported",
-                      "hidden Thinking was accepted without restore semantics");
+    const AnthropicMessagesRequest hidden = parse(body);
+    failures += check(hidden.hide_thinking && hidden.generation.enable_thinking == true &&
+                          !parse(base_request()).hide_thinking,
+                      "display:omitted was not parsed as hidden adaptive Thinking");
+    body["thinking"] = Json{{"type", "adaptive"}, {"display", "summarized"}};
+    failures += check(!parse(body).hide_thinking, "display:summarized hid the Thinking text");
+    body["thinking"] = Json{{"type", "adaptive"}, {"display", "future"}};
+    failures += check(api_param([&] { (void)parse(body); }) == "thinking",
+                      "unknown Thinking display was accepted");
+    body["thinking"] = Json{{"type", "disabled"}, {"display", "omitted"}};
+    failures += check(api_param([&] { (void)parse(body); }) == "thinking",
+                      "display was accepted with disabled Thinking");
+    body["thinking"] = Json{{"type", "adaptive"}, {"display", "omitted"}};
 
     body["max_tokens"]                        = 0;
     body["temperature"]                       = "ignored for counting";
@@ -861,6 +873,8 @@ int main() {
     failures += test_aggregate_and_errors();
     failures += test_tool_call_presentation();
     failures += test_stream();
+    failures += test_hidden_reasoning_signature();
+    failures += test_hidden_reasoning_round_trip();
     if (failures != 0) {
         std::cerr << failures << " Anthropic adapter checks failed\n";
         return 1;
