@@ -66,7 +66,7 @@ struct Case {
 };
 
 const char* storage_name(KvCacheStorage storage) {
-    return storage == KvCacheStorage::BFloat16 ? "bf16" : "int8";
+    return storage == KvCacheStorage::BFloat16 ? "bf16" : storage == KvCacheStorage::Int8Group64 ? "int8" : "nvfp4";
 }
 
 // Paged K/V planes and one block-table row per sequence, on the current device. Logical page p of
@@ -391,7 +391,7 @@ int main() {
         const ExecutionContext ec({0, 1});
         std::uint32_t seed = 900U;
         for (const KvCacheStorage storage :
-             {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64}) {
+             {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Nvfp4Group16}) {
             // Decode, grouped and parallel-grouped blocks on both sides of the 8-token seam,
             // tiled prompt blocks, long-context decode, and decode/verify batches, each after a
             // history appended through the Op itself.
