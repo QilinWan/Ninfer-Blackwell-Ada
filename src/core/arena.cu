@@ -249,41 +249,65 @@ std::size_t DeviceArena::peak_used() const noexcept { return peak_; }
 
 void DeviceArena::reset_peak() noexcept { peak_ = off_; }
 
-PinnedHostBuffer::PinnedHostBuffer(std::size_t size_bytes) {
+PinnedHostBuffer::PinnedHostBuffer(std::size_t size_bytes, HostMapping mapping) {
     if (size_bytes == 0) { throw std::invalid_argument("PinnedHostBuffer size must be nonzero"); }
 
-    void* ptr             = nullptr;
-    const cudaError_t err = cudaMallocHost(&ptr, size_bytes);
-    if (err != cudaSuccess) {
-        throw std::runtime_error(cuda_error_message("cudaMallocHost failed", err));
+    void* ptr = nullptr;
+    if (mapping == HostMapping::Yes) {
+        const cudaError_t err =
+            cudaHostAlloc(&ptr, size_bytes, cudaHostAllocMapped | cudaHostAllocPortable);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(cuda_error_message("cudaHostAlloc (mapped) failed", err));
+        }
+    } else {
+        const cudaError_t err = cudaMallocHost(&ptr, size_bytes);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(cuda_error_message("cudaMallocHost failed", err));
+        }
     }
 
-    data_ = ptr;
-    size_ = size_bytes;
+    data_   = ptr;
+    size_   = size_bytes;
+    mapped_ = mapping == HostMapping::Yes;
 }
 
 PinnedHostBuffer::~PinnedHostBuffer() { free_pinned(data_); }
 
 PinnedHostBuffer::PinnedHostBuffer(PinnedHostBuffer&& other) noexcept
-    : data_(other.data_), size_(other.size_) {
-    other.data_ = nullptr;
-    other.size_ = 0;
+    : data_(other.data_), size_(other.size_), mapped_(other.mapped_) {
+    other.data_   = nullptr;
+    other.size_   = 0;
+    other.mapped_ = false;
 }
 
 PinnedHostBuffer& PinnedHostBuffer::operator=(PinnedHostBuffer&& other) noexcept {
     if (this == &other) { return *this; }
 
     free_pinned(data_);
-    data_ = other.data_;
-    size_ = other.size_;
+    data_   = other.data_;
+    size_   = other.size_;
+    mapped_ = other.mapped_;
 
-    other.data_ = nullptr;
-    other.size_ = 0;
+    other.data_   = nullptr;
+    other.size_   = 0;
+    other.mapped_ = false;
     return *this;
 }
 
 void* PinnedHostBuffer::data() const noexcept { return data_; }
 
 std::size_t PinnedHostBuffer::size() const noexcept { return size_; }
+
+void* PinnedHostBuffer::device_data() const {
+    if (!mapped_ || data_ == nullptr) {
+        throw std::logic_error("PinnedHostBuffer is not mapped into the device address space");
+    }
+    void* device          = nullptr;
+    const cudaError_t err = cudaHostGetDevicePointer(&device, data_, 0);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(cuda_error_message("cudaHostGetDevicePointer failed", err));
+    }
+    return device;
+}
 
 } // namespace ninfer

@@ -280,6 +280,61 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
             storage.host = WeightParent{geometry, storage.host_data.data(), divisor};
         }
     }
+    if (!plan.host_mapped_objects.empty()) {
+        // One mapped page-locked allocation for every device: the parents' bytes are read into
+        // it once and never uploaded, and each device's parent is that device's address of them.
+        if (plan.host_mapped_bytes > std::numeric_limits<std::size_t>::max()) {
+            throw ArtifactError("host-mapped backing exceeds size_t");
+        }
+        try {
+            out.host_mapped_ = std::make_unique<PinnedHostBuffer>(
+                static_cast<std::size_t>(plan.host_mapped_bytes), HostMapping::Yes);
+        } catch (const std::exception& error) {
+            throw ArtifactError("host-mapped weight buffer of " +
+                                std::to_string(plan.host_mapped_bytes) + " bytes: " + error.what());
+        }
+        auto* host = static_cast<std::byte*>(out.host_mapped_->data());
+        std::array<const std::byte*, kMaximumDevices> mapped{};
+        for (std::size_t device = 0; device < devices.size(); ++device) {
+            selection.select(device);
+            mapped[device] = static_cast<const std::byte*>(out.host_mapped_->device_data());
+        }
+        std::uint64_t end = 0;
+        for (const auto& placement : plan.host_mapped_objects) {
+            reader.validate_object(placement.object);
+            const auto& geometry   = reader.geometry(placement.object);
+            const auto& descriptor = reader.directory().tensor(placement.object);
+            auto& object           = out.objects_.at(placement.object.index);
+            if (placement.bytes != geometry.bytes || descriptor.bytes > placement.bytes ||
+                !placement.alignment || placement.offset < end ||
+                placement.offset % placement.alignment ||
+                checked_add(placement.offset, placement.bytes, "host-mapped end") >
+                    plan.host_mapped_bytes ||
+                std::any_of(object.device.begin(), object.device.end(),
+                            [](const auto& backing) { return backing.parent.has_value(); })) {
+                throw ArtifactError("invalid or duplicate host-mapped placement");
+            }
+            end                = placement.offset + placement.bytes;
+            const auto bytes   = std::span(host + placement.offset,
+                                           static_cast<std::size_t>(placement.bytes));
+            const auto payload = static_cast<std::size_t>(descriptor.bytes);
+            reader.read_into(descriptor.offset, bytes.first(payload));
+            // Padding after the stored payload reads as zero, as in a device arena.
+            std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(payload), bytes.end(),
+                      std::byte{0});
+            out.stats_.read_bytes =
+                checked_add(out.stats_.read_bytes, descriptor.bytes, "host-mapped read bytes");
+            const auto divisor =
+                read_divisor(reader, placement.object, geometry, bytes, out.stats_);
+            for (std::size_t device = 0; device < devices.size(); ++device) {
+                auto& backing  = object.device[device];
+                backing.parent = WeightParent{geometry, mapped[device] + placement.offset, divisor};
+                backing.shard  = {ShardAxis::HostMapped, {}, geometry.shape};
+                out.stats_.per_device_host_mapped_bytes[device] += placement.bytes;
+            }
+        }
+        out.stats_.host_mapped_bytes = plan.host_mapped_bytes;
+    }
     std::vector<CopyRange> ranges;
     const auto add_ranges = [&](const TensorObject& descriptor, std::uint64_t source,
                                 std::uint64_t bytes, std::byte* destination, std::size_t device) {

@@ -215,6 +215,9 @@ bool split_proposal_head(const artifact::Shape& shape, const Config& config,
 LogicalShard shard_rule(std::string_view name, const artifact::Shape& shape, const Config& config,
                         const LoadOptions& options) {
     const int tp = options.tp;
+    if (options.embedding_host && name == "text/token_embedding") {
+        return whole(ShardAxis::HostMapped);
+    }
     if (tp == 1) { return {}; }
     if (in_component(name, "vision")) {
         return whole(ShardAxis::SingleDevice, options.vision_rank);
@@ -348,7 +351,7 @@ parent_placements(std::span<const PendingWeight> weights, std::size_t object_cou
 
 void install_shard_resolver(artifact::Binder& binder, std::span<const PendingWeight> weights,
                             const Config& config, const LoadOptions& options) {
-    if (options.tp == 1) { return; }
+    if (options.tp == 1 && !options.embedding_host) { return; }
     if (binder.device_count() != options.tp) {
         throw std::logic_error("Binder device count differs from tensor parallelism");
     }

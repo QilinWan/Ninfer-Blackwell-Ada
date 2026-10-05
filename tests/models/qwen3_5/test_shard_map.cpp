@@ -110,6 +110,12 @@ void logical_policy_27b() {
             Ranges{{1024, 1024}, {3072, 1024}, {7168, 3072}}});
 
     expect(config, "text/token_embedding", {vocab, h}, ShardAxis::Replicated);
+    // --embedding-host: one mapped host copy that every rank reads, at tp 1 too.
+    for (const int tp : {1, 2}) {
+        const LoadOptions host{.tp = tp, .embedding_host = true};
+        expect(config, "text/token_embedding", {vocab, h}, ShardAxis::HostMapped, {}, 0, host);
+        expect(config, "text/final_norm", {h}, ShardAxis::Replicated, {}, 0, host);
+    }
     expect(config, "text/final_norm", {h}, ShardAxis::Replicated);
     expect(config, "text/output_head", {vocab, h}, ShardAxis::Rows,
            {halves(vocab, 0), halves(vocab, 1)});
@@ -551,6 +557,32 @@ void planned_fixture() {
     require(materialization.per_device_capacity_bytes[0] ==
                 materialization.per_device_capacity_bytes[1],
             "symmetric shards planned unequal device arenas");
+
+    // --embedding-host: the embedding parent leaves every device arena for one host-mapped copy.
+    const auto host_mapped = [&](const qwen::LoadPlan& base, const qwen::LoadPlan& host) {
+        const auto& moved     = host.materialization();
+        const auto& reference = base.materialization();
+        const auto embedding  = reader.find("text/token_embedding");
+        const auto bytes      = reader.geometry(embedding).bytes;
+        require(moved.host_mapped_objects.size() == 1 &&
+                    moved.host_mapped_objects[0].object == embedding &&
+                    moved.host_mapped_objects[0].offset == 0 &&
+                    moved.host_mapped_bytes == bytes,
+                "--embedding-host did not plan one host-mapped embedding copy");
+        for (const auto& item : moved.device_objects) {
+            require(item.object != embedding, "--embedding-host left an embedding device copy");
+        }
+        for (int device = 0; device < moved.device_count; ++device) {
+            const auto d = static_cast<std::size_t>(device);
+            require(moved.per_device_capacity_bytes[d] < reference.per_device_capacity_bytes[d] &&
+                        reference.per_device_capacity_bytes[d] -
+                                moved.per_device_capacity_bytes[d] >=
+                            bytes,
+                    "--embedding-host did not free the embedding bytes of a device arena");
+        }
+    };
+    host_mapped(single, qwen::plan_load(reader, {.embedding_host = true}));
+    host_mapped(plan, qwen::plan_load(reader, {.tp = 2, .embedding_host = true}));
 
     rejects<std::invalid_argument>([&] { (void)qwen::plan_load(reader, {.tp = 3}); },
                                    "tensor parallelism above two was planned");

@@ -16,6 +16,9 @@ struct LoadOptions {
     // masked draft or proposal head by rank 0 (models/qwen3_5/load/sharding.h).
     int tp          = 1;
     int vision_rank = 0;
+    // text/token_embedding stays in one mapped page-locked host copy that every rank reads in
+    // place (ShardAxis::HostMapped) instead of a device copy per rank.
+    bool embedding_host = false;
 
     bool operator==(const LoadOptions&) const = default;
 

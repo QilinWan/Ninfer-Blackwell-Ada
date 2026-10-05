@@ -37,6 +37,15 @@ struct HostPlacement {
     std::vector<std::byte> data;
 };
 
+// A complete parent placed ShardAxis::HostMapped: its encoded bytes at `offset` of the plan's one
+// mapped page-locked host allocation, which every device of the plan reads in place.
+struct HostMappedPlacement {
+    ObjectHandle object;
+    std::uint64_t offset    = 0;
+    std::uint64_t bytes     = 0;
+    std::uint64_t alignment = 256;
+};
+
 struct MaterializationPlan {
     const Reader* source                = nullptr;
     std::size_t object_count            = 0;
@@ -48,6 +57,9 @@ struct MaterializationPlan {
     // Object order, then device order within one object.
     std::vector<DevicePlacement> device_objects;
     std::vector<HostPlacement> host_objects;
+    // Object order. Not part of any device capacity: one allocation of host_mapped_bytes.
+    std::vector<HostMappedPlacement> host_mapped_objects;
+    std::uint64_t host_mapped_bytes = 0;
 };
 
 struct MaterializationStats {
@@ -69,6 +81,10 @@ struct MaterializationStats {
     std::array<std::uint64_t, kMaximumDevices> sharded_bytes{};
     std::array<std::uint64_t, kMaximumDevices> replicated_bytes{};
     std::array<std::uint64_t, kMaximumDevices> local_bytes{};
+    // The one mapped page-locked host allocation of the HostMapped parents (with alignment), and
+    // the bytes of those parents each device reads in place from it.
+    std::uint64_t host_mapped_bytes = 0;
+    std::array<std::uint64_t, kMaximumDevices> per_device_host_mapped_bytes{};
 };
 
 // How a device parent relates to its artifact parent. `ranges` is empty for a complete parent;
@@ -117,6 +133,8 @@ private:
     };
 
     std::array<std::unique_ptr<DeviceArena>, kMaximumDevices> arenas_;
+    // The HostMapped parents' bytes; every device's parent of such an object points into it.
+    std::unique_ptr<PinnedHostBuffer> host_mapped_;
     std::vector<ObjectStorage> objects_;
     MaterializationStats stats_;
 };

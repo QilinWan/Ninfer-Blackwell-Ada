@@ -8,6 +8,9 @@
 // devices, compared byte for byte with host-applied slices of the parent bytes, per-device
 // statistics and views, plus parents larger than one staging slot whose source ranges are read
 // by both devices. Skips (77) without two CUDA devices.
+//
+// Both runs also place two parents HostMapped: one mapped page-locked host copy, outside every
+// device capacity, that each device's parent addresses in place.
 
 #include "artifact/binder.h"
 #include "artifact/fixture.h"
@@ -24,6 +27,7 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -476,6 +480,119 @@ void two_device_upload(const Fixture& fixture, ExecutionContext& execution) {
 }
 
 // A parent larger than one 64 MiB staging slot, so ranges of both devices straddle chunks.
+// "fp8" and "shared" in one mapped host copy, every other parent Replicated.
+ShardPlacement host_mapped_resolver(const Reader& reader, ObjectHandle object) {
+    const auto& id = reader.directory().tensor(object).id;
+    ShardPlacement out;
+    if (id == "fp8" || id == "shared") { out.axis = ShardAxis::HostMapped; }
+    return out;
+}
+
+// Plans and materializes host_mapped_resolver() on `devices`, then checks the plan layout, the
+// bytes each device reads through its own parent, the views and the statistics.
+void host_mapped_upload(const Fixture& fixture, std::span<DeviceContext* const> devices) {
+    Reader reader(fixture.entry);
+    const int count = static_cast<int>(devices.size());
+    Binder binder(reader, count);
+    binder.set_shard_resolver([&reader](ObjectHandle object, const WeightGeometry&) {
+        return host_mapped_resolver(reader, object);
+    });
+    const auto parameters = bind_all(binder);
+    auto plan             = std::move(binder).finish();
+    const auto expected   = plan;
+    std::uint64_t mapped_end = 0;
+    std::uint64_t mapped     = 0;
+    std::uint64_t capacity   = 0;
+    for (std::size_t i = 0; i < reader.directory().objects.size(); ++i) {
+        const ObjectHandle object{i};
+        const auto& geometry = reader.geometry(object);
+        const auto alignment = std::max<std::uint64_t>(256, geometry.alignment);
+        if (host_mapped_resolver(reader, object).axis != ShardAxis::HostMapped) {
+            capacity = (capacity + alignment - 1) / alignment * alignment + geometry.bytes;
+            continue;
+        }
+        const auto offset = (mapped_end + alignment - 1) / alignment * alignment;
+        require(std::any_of(expected.host_mapped_objects.begin(),
+                            expected.host_mapped_objects.end(),
+                            [&](const HostMappedPlacement& placement) {
+                                return placement.object == object && placement.offset == offset &&
+                                       placement.bytes == geometry.bytes &&
+                                       placement.alignment == alignment;
+                            }),
+                "host-mapped parent is not planned at the next aligned host offset");
+        mapped_end = offset + geometry.bytes;
+        mapped += geometry.bytes;
+    }
+    require(expected.host_mapped_objects.size() == 2 && expected.host_mapped_bytes == mapped_end,
+            "host-mapped plan differs from its parents");
+    for (int device = 0; device < count; ++device) {
+        require(expected.per_device_capacity_bytes[static_cast<std::size_t>(device)] == capacity,
+                "a host-mapped parent took device capacity");
+    }
+    for (const auto& placement : expected.device_objects) {
+        require(host_mapped_resolver(reader, placement.object).axis != ShardAxis::HostMapped,
+                "a host-mapped parent has a device placement");
+    }
+
+    auto backing      = materialize(reader, std::move(plan), devices);
+    const auto& stats = backing.stats();
+    require(stats.host_mapped_bytes == expected.host_mapped_bytes,
+            "host-mapped statistics differ from the plan");
+    std::uint64_t all = 0;
+    for (std::size_t i = 0; i < reader.directory().objects.size(); ++i) {
+        all += reader.geometry(ObjectHandle{i}).bytes;
+    }
+    for (int device = 0; device < count; ++device) {
+        const auto d = static_cast<std::size_t>(device);
+        // Every other parent is a complete device copy; the host-mapped ones are never uploaded.
+        require(stats.per_device_host_mapped_bytes[d] == mapped &&
+                    stats.per_device_capacity_bytes[d] == capacity &&
+                    stats.per_device_h2d_bytes[d] == stats.replicated_bytes[d] &&
+                    stats.replicated_bytes[d] + mapped == all && stats.sharded_bytes[d] == 0 &&
+                    stats.local_bytes[d] == 0,
+                "per-device host-mapped statistics are wrong");
+    }
+    for (const auto& placement : expected.host_mapped_objects) {
+        const auto parent_bytes = reader.read_object(placement.object);
+        const std::byte* first  = nullptr;
+        for (int device = 0; device < count; ++device) {
+            require(backing.has_device(placement.object, device),
+                    "a device does not hold its host-mapped parent");
+            const auto& parent = backing.device_parent(placement.object, device);
+            const auto& shard  = backing.device_shard(placement.object, device);
+            require(shard.axis == ShardAxis::HostMapped && !shard.sharded() &&
+                        parent.geometry.shape == reader.geometry(placement.object).shape,
+                    "host-mapped parent is not complete");
+            cudaPointerAttributes attributes{};
+            CUDA_CHECK(cudaPointerGetAttributes(&attributes, parent.data));
+            require(attributes.type == cudaMemoryTypeHost,
+                    "host-mapped parent does not address page-locked host memory");
+            if (first == nullptr) { first = parent.data; }
+            require(parent.data == first, "devices address different host-mapped copies");
+            CUDA_CHECK(cudaSetDevice(devices[static_cast<std::size_t>(device)]->device));
+            void* scratch = nullptr;
+            CUDA_CHECK(cudaMalloc(&scratch, parent.geometry.bytes));
+            std::vector<std::byte> read(parent.geometry.bytes);
+            // Through the device: the mapped bytes as this device sees them.
+            CUDA_CHECK(cudaMemcpy(scratch, parent.data, read.size(), cudaMemcpyDefault));
+            CUDA_CHECK(cudaMemcpy(read.data(), scratch, read.size(), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaFree(scratch));
+            CUDA_CHECK(cudaSetDevice(devices[0]->device));
+            require(read == parent_bytes, "host-mapped parent bytes differ from the artifact");
+        }
+    }
+    for (const auto& [name, parameter] : parameters) {
+        for (int device = 0; device < count; ++device) {
+            const auto view = bind_view(parameter, backing, device);
+            require(view.shape == parameter.shape && !view.parts.empty(),
+                    "a parameter view over a host-mapped plan is incomplete");
+        }
+    }
+    const auto view = bind_view(parameters.at("fp8_rows"), backing, count - 1);
+    expect_view(view, {5, 40}, backing.device_parent(reader.find("fp8"), count - 1), 40, 240,
+                "partial view of a host-mapped parent");
+}
+
 void large_upload(ExecutionContext& execution) {
     constexpr std::uint64_t rows  = 8200;
     constexpr std::uint64_t width = 4096;
@@ -554,6 +671,8 @@ int main(int argc, char** argv) {
         if (!two_devices) {
             DeviceContext device;
             single_device_upload(fixture, device);
+            DeviceContext* const one[] = {&device};
+            host_mapped_upload(fixture, one);
             std::cout << "one-device artifact placement checks passed\n";
             return 0;
         }
@@ -564,6 +683,8 @@ int main(int argc, char** argv) {
         ExecutionContext execution({0, 1});
         two_device_upload(fixture, execution);
         large_upload(execution);
+        DeviceContext* const pair[] = {&*execution.dev[0], &*execution.dev[1]};
+        host_mapped_upload(fixture, pair);
         std::cout << "two-device artifact placement checks passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -96,9 +96,15 @@ private:
     bool owns_        = true;
 };
 
+// Whether a PinnedHostBuffer is also mapped into the address space of every device
+// (cudaHostAllocMapped | cudaHostAllocPortable), so kernels on any device read it in place over
+// PCIe. A kernel that reads it inside a CUDA Graph bakes in its address: allocate it before the
+// capture and keep it alive as long as the graph executables.
+enum class HostMapping : std::uint8_t { No, Yes };
+
 class PinnedHostBuffer {
 public:
-    explicit PinnedHostBuffer(std::size_t size_bytes);
+    explicit PinnedHostBuffer(std::size_t size_bytes, HostMapping mapping = HostMapping::No);
     ~PinnedHostBuffer();
 
     PinnedHostBuffer(const PinnedHostBuffer&)            = delete;
@@ -108,10 +114,14 @@ public:
 
     void* data() const noexcept;
     std::size_t size() const noexcept;
+    // The current device's address of a HostMapping::Yes buffer (cudaHostGetDevicePointer); with
+    // unified addressing it equals data(). Throws for an unmapped buffer.
+    [[nodiscard]] void* device_data() const;
 
 private:
     void* data_       = nullptr;
     std::size_t size_ = 0;
+    bool mapped_      = false;
 };
 
 using WorkspaceArena = DeviceArena;

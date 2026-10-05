@@ -27,6 +27,8 @@ namespace ninfer::models::qwen3_5::loading {
 //            (rank 0 contracts the normalized embedding half of mtp/input_projection, rank 1 the
 //            hidden half); gdn/convolution over its Q|K|V channel sections, one range each.
 //   Replicated  norms, text/token_embedding.
+//   HostMapped  text/token_embedding with options.embedding_host, at tp 1 too: one copy in mapped
+//            page-locked host memory that every rank's gather reads in place over PCIe.
 //   SingleDevice(vision_rank)  vision/*.
 //   PrimaryOnly  dflash/*, dflash2/* and proposal/*: the drafter and the optimized proposal head
 //            run on rank 0 only, so rank 1 holds none of them. Under MTP, proposal/head instead
@@ -66,7 +68,8 @@ using GeometryLookup = std::function<const WeightGeometry&(artifact::ObjectHandl
 parent_placements(std::span<const PendingWeight> weights, std::size_t object_count,
                   const GeometryLookup& geometry, const Config& config, const LoadOptions& options);
 
-// Installs the combined placements on a Binder planned for options.tp devices. No-op at tp 1.
+// Installs the combined placements on a Binder planned for options.tp devices. No-op at tp 1
+// unless options.embedding_host, whose one HostMapped parent needs the resolver there too.
 void install_shard_resolver(artifact::Binder& binder, std::span<const PendingWeight> weights,
                             const Config& config, const LoadOptions& options);
 

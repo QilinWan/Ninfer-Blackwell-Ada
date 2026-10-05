@@ -53,13 +53,15 @@ struct TensorSlice {
 
 // Placement of one device-resident parent. Rows and Columns give each device its own ranges of
 // that axis; the remaining kinds place the complete parent. PrimaryOnly holds it on device 0 and
-// SingleDevice on `device`.
+// SingleDevice on `device`. HostMapped holds it once, in mapped page-locked host memory that
+// every device reads in place over PCIe, and takes no device memory.
 enum class ShardAxis : std::uint8_t {
     Replicated,
     Rows,
     Columns,
     PrimaryOnly,
     SingleDevice,
+    HostMapped,
 };
 
 struct ShardPlacement {

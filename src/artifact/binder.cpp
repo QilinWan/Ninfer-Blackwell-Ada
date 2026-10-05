@@ -185,6 +185,14 @@ void Binder::place_device(MaterializationPlan& plan, ObjectHandle object,
         (placement.device < 0 || placement.device >= device_count_)) {
         throw ArtifactError(id + ": single-device placement names a device outside the plan");
     }
+    if (placement.axis == ShardAxis::HostMapped) {
+        // One copy for every device, outside every device capacity.
+        HostMappedPlacement out{.object = object, .bytes = geometry.bytes, .alignment = alignment};
+        out.offset             = align_up(plan.host_mapped_bytes, alignment, "host-mapped offset");
+        plan.host_mapped_bytes = checked_add(out.offset, out.bytes, "host-mapped bytes");
+        plan.host_mapped_objects.push_back(out);
+        return;
+    }
     for (int device = 0; device < device_count_; ++device) {
         if ((placement.axis == ShardAxis::PrimaryOnly && device != 0) ||
             (placement.axis == ShardAxis::SingleDevice && device != placement.device)) {
