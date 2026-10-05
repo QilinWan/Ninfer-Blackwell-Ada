@@ -61,10 +61,17 @@ private:
 };
 
 // A slot is refilled only after every device that read it has finished its copies. Each
-// device's completion event is created on that device.
+// device's completion event is created on that device. Direct reads need a kPayloadAlignment
+// destination, which a small page-locked allocation does not always get (the CUDA runtime may
+// place it inside an earlier small pinned allocation's pages), so the slot aligns its own start.
 class Slot {
 public:
-    Slot(std::size_t bytes, const DeviceSelection& selection) : buffer(bytes) {
+    Slot(std::size_t bytes, const DeviceSelection& selection)
+        : buffer(bytes + kPayloadAlignment),
+          data(static_cast<std::byte*>(buffer.data()) +
+               (kPayloadAlignment - reinterpret_cast<std::uintptr_t>(buffer.data()) %
+                                        kPayloadAlignment) %
+                   kPayloadAlignment) {
         try {
             for (std::size_t i = 0; i < selection.size(); ++i) {
                 selection.select(i);
@@ -92,6 +99,7 @@ public:
     }
 
     PinnedHostBuffer buffer;
+    std::byte* data = nullptr; // kPayloadAlignment-aligned start inside `buffer`.
     std::array<cudaEvent_t, kMaximumDevices> events{};
     std::array<bool, kMaximumDevices> pending{};
 
@@ -470,7 +478,7 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
             const auto request   = static_cast<std::size_t>(std::min<std::uint64_t>(
                 slot_bytes, align_up(remaining, kPayloadAlignment, "direct block bytes")));
             const auto received  = reader.read_direct(
-                span.file, source, {static_cast<std::byte*>(slot.buffer.data()), request});
+                span.file, source, {slot.data, request});
             if (received < std::min<std::uint64_t>(request, remaining)) {
                 throw ArtifactError("direct read ended before the required payload");
             }
@@ -492,7 +500,7 @@ MaterializedArtifact materialize(const Reader& reader, MaterializationPlan&& pla
                     if (range.device != device || begin >= end) { continue; }
                     if (!fed) { selection.select(device); }
                     check_cuda(cudaMemcpyAsync(range.destination + (begin - range.begin),
-                                               static_cast<const std::byte*>(slot.buffer.data()) +
+                                               static_cast<const std::byte*>(slot.data) +
                                                    (begin - source),
                                                static_cast<std::size_t>(end - begin),
                                                cudaMemcpyHostToDevice,
