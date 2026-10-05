@@ -55,6 +55,10 @@ struct ServeOptions {
     bool use_cuda_graph     = true;
     bool tp_mailbox         = true;
     bool allow_prefix_reuse = true;
+    // Private long-anchor opportunities at the message boundaries before the final message: the
+    // last N of them (0 disables). They keep a checkpoint at the point where a cancelled or edited
+    // turn branches from the conversation; see to_prompt_input.
+    std::uint32_t turn_anchors = 1;
     std::optional<bool> enable_thinking;
     std::optional<bool> preserve_thinking;
     std::optional<std::uint32_t> default_thinking_budget;

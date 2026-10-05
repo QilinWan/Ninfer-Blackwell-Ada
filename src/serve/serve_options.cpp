@@ -127,7 +127,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
-           "[--device-state-slots N] [--host-context-mib N] "
+           "[--device-state-slots N] [--host-context-mib N] [--turn-anchors N] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8] "
@@ -295,6 +295,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 parse_host_context_mib(require_value("--host-context-mib"));
             options.context_cache.host_capacity_bytes = bytes;
             host_capacity_explicit                    = bytes != 0;
+        } else if (arg == "--turn-anchors") {
+            options.turn_anchors = static_cast<std::uint32_t>(
+                parse_nonnegative_int(require_value("--turn-anchors"), "turn-anchors"));
         } else if (arg == "--request-log-jsonl") {
             options.request_log_jsonl = require_value("--request-log-jsonl");
             if (options.request_log_jsonl.empty()) {

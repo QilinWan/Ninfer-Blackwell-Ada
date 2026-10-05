@@ -923,6 +923,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
 | `--device-state-slots N` | extra Device StateImages beyond `max-concurrency` | `max-concurrency`; `max(2 * max-concurrency, 8)` at `--tp 2` |
 | `--host-context-mib N` | shared pinned Host budget for StateImages, KV and pause snapshots, including in-flight destinations | `8192 MiB + 8 native StateImages`; `0` at `--tp 2` |
+| `--turn-anchors N` | keep a long-anchor checkpoint at the N message boundaries before the final message, so a cancelled or edited turn's follow-up resumes from the branch point instead of re-prefilling the conversation (`0` disables) | `1` |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--cors` | permissive browser CORS headers | off |
