@@ -236,7 +236,7 @@ __global__ void fp8_a8_tma_split_k_reduce(Fp8A8Operands p, const float* partials
         const int output_row  = index % stored_rows;
         const int row         = row_begin + output_row;
         if (token < token_offset + count) {
-            const auto sum_pair = [&](int local_row) {
+            const auto raw_sum = [&](int local_row) {
                 float2 sum{};
                 for (int part = 0; part < parts; ++part) {
                     const auto value = *reinterpret_cast<const float2*>(
@@ -245,10 +245,19 @@ __global__ void fp8_a8_tma_split_k_reduce(Fp8A8Operands p, const float* partials
                     sum.x += value.x;
                     sum.y += value.y;
                 }
-                const int parent  = row_policy.weight_row(row_begin, local_row, p.rows);
-                const float scale = p.x_scales[token];
-                sum.x             = sum.x * scale * __bfloat162float(p.scales[parent]);
-                sum.y             = sum.y * scale * __bfloat162float(p.scales[parent + 1]);
+                return sum;
+            };
+            const float scale     = p.x_scales[token];
+            const auto row_scales = [&](int local_row) {
+                const int parent = row_policy.weight_row(row_begin, local_row, p.rows);
+                return make_float2(__bfloat162float(p.scales[parent]),
+                                   __bfloat162float(p.scales[parent + 1]));
+            };
+            const auto sum_pair = [&](int local_row) {
+                float2 sum           = raw_sum(local_row);
+                const float2 weights = row_scales(local_row);
+                sum.x                = sum.x * scale * weights.x;
+                sum.y                = sum.y * scale * weights.y;
                 return sum;
             };
             float2 value;
@@ -261,7 +270,13 @@ __global__ void fp8_a8_tma_split_k_reduce(Fp8A8Operands p, const float* partials
                 value             = make_float2(epilogue.apply_pair(row, token, gate.x, up.x),
                                                 epilogue.apply_pair(row + 1, token, gate.y, up.y));
             } else {
-                value = fp8_apply_row_pair(epilogue, row, row + 1, token, sum_pair(output_row));
+                // A split tile rounds the scaled update as fp8_finish_mma_tile does for an unsplit
+                // one, so a column's result does not depend on which tiles of its launch split K.
+                const float2 sum = raw_sum(output_row);
+                value            = fp8_apply_row_pair_scaled(
+                    epilogue, row, row + 1, token,
+                    make_float2(__fmul_rn(sum.x, scale), __fmul_rn(sum.y, scale)),
+                    row_scales(output_row));
             }
             if constexpr (std::is_same_v<Output, LinearBf16Output>) {
                 *reinterpret_cast<__nv_bfloat162*>(tile_output.at(row, token)) =
@@ -312,7 +327,7 @@ void launch_fp8_a8_tma_mma(const Fp8A8Operands& p, Output output, Epilogue epilo
         };
         if constexpr (Schedule::kSplitWaveCtas > 0) {
             static_assert(
-                (!RowPolicy::kPaired && requires { epilogue.apply(0, 0, 0.0f); }) ||
+                (!RowPolicy::kPaired && requires { epilogue.apply_scaled(0, 0, 0.0f, 0.0f); }) ||
                     (RowPolicy::kPaired && requires { epilogue.apply_pair(0, 0, 0.0f, 0.0f); }),
                 "FP8 TMA split-K requires a scalar or paired epilogue after reduction");
             if (plan.split_ctas) {

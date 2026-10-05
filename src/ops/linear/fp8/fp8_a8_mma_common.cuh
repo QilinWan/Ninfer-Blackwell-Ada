@@ -8,15 +8,18 @@
 
 namespace ninfer::ops::detail {
 
-// Epilogues may consume adjacent aligned rows together; the scalar contract remains valid.
+// Epilogues may consume adjacent aligned rows together; the scalar contract remains valid. The row
+// scales go to the epilogue, which owns the one rounding of a scaled residual update
+// (LinearResidualAddEpilogue::apply_scaled).
 template <class Epilogue>
-__device__ __forceinline__ float2 fp8_apply_row_pair(Epilogue epilogue, int row, int next_row,
-                                                     int token, float2 value) {
-    if constexpr (requires { epilogue.apply_row_pair(row, token, value); }) {
-        if (next_row == row + 1) return epilogue.apply_row_pair(row, token, value);
+__device__ __forceinline__ float2 fp8_apply_row_pair_scaled(Epilogue epilogue, int row,
+                                                            int next_row, int token, float2 value,
+                                                            float2 scale) {
+    if constexpr (requires { epilogue.apply_row_pair_scaled(row, token, value, scale); }) {
+        if (next_row == row + 1) return epilogue.apply_row_pair_scaled(row, token, value, scale);
     }
-    return make_float2(epilogue.apply(row, token, value.x),
-                       epilogue.apply(next_row, token, value.y));
+    return make_float2(epilogue.apply_scaled(row, token, value.x, scale.x),
+                       epilogue.apply_scaled(next_row, token, value.y, scale.y));
 }
 
 template <class Schedule>
@@ -185,38 +188,40 @@ fp8_finish_mma_tile(Output output, Epilogue epilogue, RowPolicy row_policy,
                 return make_float2(__bfloat162float(weight_scales[parent_row0]),
                                    __bfloat162float(weight_scales[parent_row1]));
             }();
-            float value00 =
-                accumulators[mma_token][mma_row][0] * activation_scale0 * weight_scale.x;
-            float value01 =
-                accumulators[mma_token][mma_row][1] * activation_scale0 * weight_scale.y;
-            float value10 =
-                accumulators[mma_token][mma_row][2] * activation_scale1 * weight_scale.x;
-            float value11 =
-                accumulators[mma_token][mma_row][3] * activation_scale1 * weight_scale.y;
             if constexpr (collective) {
-                accumulators[mma_token][mma_row][0] = value00;
-                accumulators[mma_token][mma_row][1] = value01;
-                accumulators[mma_token][mma_row][2] = value10;
-                accumulators[mma_token][mma_row][3] = value11;
+                accumulators[mma_token][mma_row][0] =
+                    accumulators[mma_token][mma_row][0] * activation_scale0 * weight_scale.x;
+                accumulators[mma_token][mma_row][1] =
+                    accumulators[mma_token][mma_row][1] * activation_scale0 * weight_scale.y;
+                accumulators[mma_token][mma_row][2] =
+                    accumulators[mma_token][mma_row][2] * activation_scale1 * weight_scale.x;
+                accumulators[mma_token][mma_row][3] =
+                    accumulators[mma_token][mma_row][3] * activation_scale1 * weight_scale.y;
             } else {
+                // Full and tail tiles must round the residual update alike. The activation scale
+                // stays one explicit product and the row scale enters the epilogue's own update,
+                // so the live-column predicate does not decide whether MUL+ADD contracts.
+                const float2 scaled0 =
+                    make_float2(__fmul_rn(accumulators[mma_token][mma_row][0], activation_scale0),
+                                __fmul_rn(accumulators[mma_token][mma_row][1], activation_scale0));
+                const float2 scaled1 =
+                    make_float2(__fmul_rn(accumulators[mma_token][mma_row][2], activation_scale1),
+                                __fmul_rn(accumulators[mma_token][mma_row][3], activation_scale1));
+                float2 value0 = make_float2(0.0F, 0.0F), value1 = make_float2(0.0F, 0.0F);
                 if (FullTokens || token0 < tokens) {
-                    const float2 value = fp8_apply_row_pair(epilogue, parent_row0, parent_row1,
-                                                            token0, make_float2(value00, value01));
-                    value00            = value.x;
-                    value01            = value.y;
+                    value0 = fp8_apply_row_pair_scaled(epilogue, parent_row0, parent_row1, token0,
+                                                       scaled0, weight_scale);
                 }
                 if (FullTokens || token1 < tokens) {
-                    const float2 value = fp8_apply_row_pair(epilogue, parent_row0, parent_row1,
-                                                            token1, make_float2(value10, value11));
-                    value10            = value.x;
-                    value11            = value.y;
+                    value1 = fp8_apply_row_pair_scaled(epilogue, parent_row0, parent_row1, token1,
+                                                       scaled1, weight_scale);
                 }
                 auto* destination0 = reinterpret_cast<__nv_bfloat162*>(
                     shared_output + (token0 - token_begin) * output_stride + local_row0);
                 auto* destination1 = reinterpret_cast<__nv_bfloat162*>(
                     shared_output + (token1 - token_begin) * output_stride + local_row0);
-                *destination0 = __floats2bfloat162_rn(value00, value01);
-                *destination1 = __floats2bfloat162_rn(value10, value11);
+                *destination0 = __floats2bfloat162_rn(value0.x, value0.y);
+                *destination1 = __floats2bfloat162_rn(value1.x, value1.y);
             }
         }
     }

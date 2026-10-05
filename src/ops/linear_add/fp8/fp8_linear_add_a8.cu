@@ -7,11 +7,12 @@ namespace ninfer::ops::detail {
 namespace {
 // This Op admits dense, even-width BF16 residuals. Adjacent MMA rows share one load.
 struct Fp8ResidualAddEpilogue : LinearResidualAddEpilogue {
-    __device__ __forceinline__ float2 apply_row_pair(int row, int token, float2 value) const {
+    __device__ __forceinline__ float2 apply_row_pair_scaled(int row, int token, float2 value,
+                                                            float2 scale) const {
         const auto* pointer =
             residual.data + static_cast<std::int64_t>(token) * residual.leading_dim + row;
         const float2 add = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(pointer));
-        return make_float2(value.x + add.x, value.y + add.y);
+        return make_float2(__fmaf_rn(value.x, scale.x, add.x), __fmaf_rn(value.y, scale.y, add.y));
     }
 };
 
