@@ -3,8 +3,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(__linux__)
@@ -108,6 +111,46 @@ int test_sse_response_headers() {
     return check(response.get_header_value("Cache-Control") == "no-cache" &&
                      response.get_header_value("X-Accel-Buffering") == "no",
                  "SSE response lost its no-cache or anti-buffering header");
+}
+
+int test_client_label() {
+    using ninfer::serve::parse_client_label;
+    const auto with = [](std::initializer_list<std::pair<const char*, std::string>> headers) {
+        httplib::Request request;
+        for (const auto& [name, value] : headers) { request.headers.emplace(name, value); }
+        return request;
+    };
+    const auto rejected = [](const httplib::Request& request) {
+        try {
+            (void)parse_client_label(request);
+        } catch (const ninfer::serve::ApiException& exception) {
+            return exception.error().status == 400 &&
+                   exception.error().code == "invalid_client_label" &&
+                   exception.error().param == "X-Ninfer-Client";
+        }
+        return false;
+    };
+    int failures = check(!parse_client_label(httplib::Request{}),
+                         "a request without X-Ninfer-Client produced a client label");
+    failures += check(parse_client_label(with({{"X-Ninfer-Client", "bench/serve-corpus"}})) ==
+                          std::optional<std::string>("bench/serve-corpus"),
+                      "a valid X-Ninfer-Client label was not returned verbatim");
+    failures += check(parse_client_label(with({{"x-ninfer-client", "gate/tp2"}})) ==
+                          std::optional<std::string>("gate/tp2"),
+                      "the X-Ninfer-Client header name is not case-insensitive");
+    const std::string longest(64, 'a');
+    failures += check(parse_client_label(with({{"X-Ninfer-Client", longest}})) ==
+                          std::optional<std::string>(longest),
+                      "a 64-character client label was rejected");
+    failures += check(rejected(with({{"X-Ninfer-Client", std::string(65, 'a')}})),
+                      "an over-long client label was accepted");
+    failures +=
+        check(rejected(with({{"X-Ninfer-Client", ""}})), "an empty client label was accepted");
+    failures += check(rejected(with({{"X-Ninfer-Client", "gate v045"}})),
+                      "a client label with a space was accepted");
+    failures += check(rejected(with({{"X-Ninfer-Client", "a"}, {"X-Ninfer-Client", "b"}})),
+                      "a repeated X-Ninfer-Client header was accepted");
+    return failures;
 }
 
 int test_prompt_json_member_order() {

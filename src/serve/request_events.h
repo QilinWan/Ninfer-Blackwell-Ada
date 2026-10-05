@@ -16,6 +16,8 @@ struct RequestLogContext {
     std::string response_id;
     std::string protocol;
     std::string model;
+    // Caller label from the X-Ninfer-Client header; empty when the request carried none.
+    std::optional<std::string> client;
     bool stream                             = false;
     std::size_t message_count               = 0;
     std::size_t media_item_count            = 0;
@@ -38,6 +40,7 @@ struct RequestLogMetadata {
     std::string http_request_id;
     std::string response_id;
     std::string model;
+    std::optional<std::string> client;
     bool stream                            = false;
     bool output_tokens_explicit            = false;
     bool preserve_thinking_semantic_change = false;
@@ -51,6 +54,7 @@ struct RequestRejectionLogContext {
     std::string response_id;
     std::string protocol;
     std::string model;
+    std::optional<std::string> client;
     bool stream                             = false;
     std::size_t message_count               = 0;
     std::size_t media_item_count            = 0;

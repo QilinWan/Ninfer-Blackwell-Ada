@@ -385,7 +385,8 @@ class ArmClient:
         try:
             r.t_send = time.time()
             conn.request("POST", "/v1/chat/completions", body=data,
-                         headers={"Content-Type": "application/json"})
+                         headers={"Content-Type": "application/json",
+                                  "X-Ninfer-Client": "bench/agentic-ab"})
             if abort_after:
                 def cut():
                     try:

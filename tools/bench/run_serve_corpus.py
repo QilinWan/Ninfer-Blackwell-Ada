@@ -86,10 +86,18 @@ WARMUP_FIXTURE = "text_smoke_zh"
 RUN_ARTIFACT_TYPE = "ninfer_serve_corpus_result"
 RUN_SCHEMA_VERSION = 8
 SERVER_LOG_ARTIFACT_TYPE = "ninfer_serve_request_log"
+<<<<<<< HEAD
 SERVER_LOG_SCHEMA_VERSION = 24
+||||||| parent of 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
+SERVER_LOG_SCHEMA_VERSION = 21
+=======
+SERVER_LOG_SCHEMA_VERSION = 22
+>>>>>>> 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
 STARTUP_TIMEOUT_SECONDS = 1800.0
 REQUEST_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
 LOG_EVENT_TIMEOUT_SECONDS = 10.0
+# X-Ninfer-Client label: the server records it as request.client in its JSONL log.
+CLIENT_LABEL = "bench/serve-corpus"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -421,7 +429,11 @@ def request_payload(model_id: str, fixture: Fixture, seed: int) -> dict[str, Any
     }
 
 
-def send_json(connection: http.client.HTTPConnection, payload: dict[str, Any]) -> None:
+def send_json(
+    connection: http.client.HTTPConnection,
+    payload: dict[str, Any],
+    client_label: str = CLIENT_LABEL,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     try:
         connection.request(
@@ -433,6 +445,7 @@ def send_json(connection: http.client.HTTPConnection, payload: dict[str, Any]) -
                 "Content-Type": "application/json",
                 "Content-Length": str(len(body)),
                 "Connection": "keep-alive",
+                "X-Ninfer-Client": client_label,
             },
         )
     except (OSError, http.client.HTTPException) as exc:
@@ -457,8 +470,12 @@ def receive_json(connection: http.client.HTTPConnection) -> dict[str, Any]:
     return parsed
 
 
-def post_json(connection: http.client.HTTPConnection, payload: dict[str, Any]) -> dict[str, Any]:
-    send_json(connection, payload)
+def post_json(
+    connection: http.client.HTTPConnection,
+    payload: dict[str, Any],
+    client_label: str = CLIENT_LABEL,
+) -> dict[str, Any]:
+    send_json(connection, payload, client_label)
     return receive_json(connection)
 
 

@@ -27,7 +27,7 @@ def run(host, prompts_path, limit, out_path):
             body = {"model": "gate", "messages": [{"role": "user", "content": p["text"]}],
                     "max_tokens": 128, "temperature": 0, "reasoning_effort": "none"}
             req = urllib.request.Request("http://%s/v1/chat/completions" % host, data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"})
+                                         headers={"Content-Type": "application/json", "X-Ninfer-Client": "gate/tp2"})
             try:
                 with urllib.request.urlopen(req, timeout=600) as r:
                     j = json.loads(r.read())

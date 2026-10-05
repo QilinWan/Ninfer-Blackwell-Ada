@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,11 +25,13 @@ std::string sse_error_event(const ApiError& error) {
 
 void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::Response& res) {
     OpenAIChatRequest request;
+    std::optional<std::string> client;
     try {
         RequestLimits limits;
         limits.default_max_tokens = options_.default_max_tokens;
         request                   = parse_chat_completion_request(parse_json_body(req), limits);
         validate_openai_model(request.model, public_model_id_);
+        client = parse_client_label(req);
     } catch (const ApiException& exception) {
         write_openai_error(res, exception.error());
         return;
@@ -37,6 +40,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
     const std::uint64_t req_id = ++request_seq_;
     RequestLogMetadata metadata{.http_request_id        = res.get_header_value("x-request-id"),
                                 .model                  = request.model,
+                                .client                 = std::move(client),
                                 .stream                 = request.stream,
                                 .output_tokens_explicit = request.output_tokens_explicit};
     PreparedRequest prepared;

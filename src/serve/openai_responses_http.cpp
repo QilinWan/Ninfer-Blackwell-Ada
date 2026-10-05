@@ -241,12 +241,14 @@ Json paginated_input_items(const httplib::Request& request, const std::vector<Js
 void HttpServer::handle_responses(const httplib::Request& req, httplib::Response& res) {
     OpenAIResponsesCreateRequest request;
     OpenAIResponsesResolvedPrompt resolved;
+    std::optional<std::string> client;
     const std::string id = new_openai_response_id();
     try {
         RequestLimits limits;
         limits.default_max_tokens = options_.default_max_tokens;
         request = parse_openai_responses_create_request(parse_json_body(req), limits);
         validate_openai_model(request.prompt.model, public_model_id_);
+        client   = parse_client_label(req);
         resolved = resolve_openai_responses_prompt(request.prompt, openai_responses_store_, id,
                                                    request.store);
     } catch (const ApiException& exception) {
@@ -265,6 +267,7 @@ void HttpServer::handle_responses(const httplib::Request& req, httplib::Response
         .http_request_id                   = res.get_header_value("x-request-id"),
         .response_id                       = id,
         .model                             = request.prompt.model,
+        .client                            = std::move(client),
         .stream                            = request.stream,
         .output_tokens_explicit            = request.requested_max_output_tokens.has_value(),
         .preserve_thinking_semantic_change = resolved.preserve_thinking_semantic_change,

@@ -226,6 +226,10 @@ Json overrides_json(const ninfer::SamplingOverrides& overrides) {
     return result;
 }
 
+Json client_json(const std::optional<std::string>& client) {
+    return client ? Json(*client) : Json(nullptr);
+}
+
 Json request_json(const RequestLogContext& context) {
     Json thinking_budget = nullptr;
     if (context.thinking_budget) { thinking_budget = *context.thinking_budget; }
@@ -234,6 +238,7 @@ Json request_json(const RequestLogContext& context) {
                 {"response_id", context.response_id},
                 {"protocol", context.protocol},
                 {"model", context.model},
+                {"client", client_json(context.client)},
                 {"stream", context.stream},
                 {"message_count", context.message_count},
                 {"media_item_count", context.media_item_count},
@@ -278,6 +283,7 @@ Json rejected_request_json(const RequestRejectionLogContext& context) {
                 {"response_id", context.response_id},
                 {"protocol", context.protocol},
                 {"model", context.model},
+                {"client", client_json(context.client)},
                 {"stream", context.stream},
                 {"message_count", context.message_count},
                 {"media_item_count", context.media_item_count},

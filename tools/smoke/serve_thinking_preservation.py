@@ -26,7 +26,7 @@ def free_port() -> int:
 
 def request_json(base_url: str, method: str, path: str, payload: Any | None = None) -> dict[str, Any]:
     body = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "X-Ninfer-Client": "smoke/thinking-preservation"}
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

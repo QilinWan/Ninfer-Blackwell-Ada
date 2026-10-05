@@ -33,7 +33,7 @@ def request(
     base_url: str, method: str, path: str, payload: Any | None = None
 ) -> Response:
     body = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "X-Ninfer-Client": "smoke/serve-contract"}
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

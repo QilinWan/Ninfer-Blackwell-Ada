@@ -221,9 +221,17 @@ class PreparedServeExchange:
 
 
 class NInferServeClient:
-    def __init__(self, base_url: str, timeout_seconds: float, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float,
+        api_key: str | None = None,
+        client_label: str | None = None,
+    ) -> None:
         self._http = StreamingHttpClient(base_url, timeout_seconds)
         self._api_key = api_key
+        # Sent as X-Ninfer-Client; the server records it as request.client in its JSONL log.
+        self._client_label = client_label
 
     def prepare(self, request: ProtocolRequest) -> PreparedServeExchange:
         body = json.dumps(
@@ -237,6 +245,8 @@ class NInferServeClient:
         }
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        if self._client_label:
+            headers["X-Ninfer-Client"] = self._client_label
         exchange = self._http.prepare("POST", request.path, body, headers)
         return PreparedServeExchange(request, body, exchange)
 

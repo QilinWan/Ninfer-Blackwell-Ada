@@ -9,6 +9,7 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -69,6 +70,15 @@ void render_and_write(SseTransport& transport, Render&& render) {
 }
 
 RequestJson parse_json_body(const httplib::Request& request);
+
+// NInfer extension. An optional `X-Ninfer-Client` request header labels the caller (a benchmark,
+// smoke test or gate run) for the request JSONL, so measurement can tell it apart from ordinary
+// traffic. It carries one value of 1..kClientLabelMaxLength characters from `A-Z a-z 0-9 . _ : /
+// @ + -`; absent returns nullopt, and a repeated or malformed header is a 400 so a mislabeled
+// benchmark cannot pass for unlabeled traffic. The label never affects generation.
+inline constexpr const char* kClientLabelHeader    = "X-Ninfer-Client";
+inline constexpr std::size_t kClientLabelMaxLength = 64;
+[[nodiscard]] std::optional<std::string> parse_client_label(const httplib::Request& request);
 [[nodiscard]] bool client_disconnected(const httplib::Request& request);
 
 void prepare_sse_response(httplib::Response& response);

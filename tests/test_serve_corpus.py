@@ -95,7 +95,13 @@ def test_result_record_parses_request_host_exposure() -> None:
     response = {"usage": {"prompt_tokens": 10, "completion_tokens": 5}}
     event = {
         "artifact_type": "ninfer_serve_request_log",
+<<<<<<< HEAD
         "schema_version": corpus.SERVER_LOG_SCHEMA_VERSION,
+||||||| parent of 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
+        "schema_version": 21,
+=======
+        "schema_version": 22,
+>>>>>>> 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
         "event": "request_done",
         "request": {
             "model": spec.model_id,

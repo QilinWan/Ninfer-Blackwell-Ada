@@ -176,7 +176,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     definition = get_case(args.case)
     api_key = os.environ.get(args.api_key_env) if args.api_key_env else None
-    client = NInferServeClient(args.base_url.rstrip("/"), args.timeout_seconds, api_key)
+    client = NInferServeClient(
+        args.base_url.rstrip("/"), args.timeout_seconds, api_key, client_label="bench/serve-ttft"
+    )
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     progress = StderrProgress()
     progress.event(

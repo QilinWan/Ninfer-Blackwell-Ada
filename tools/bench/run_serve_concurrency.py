@@ -46,6 +46,8 @@ CORPUS_ORDER_SEED = 20260811
 POINT_ARTIFACT_TYPE = "ninfer_serve_concurrency_bench_point"
 SUMMARY_ARTIFACT_TYPE = "ninfer_serve_concurrency_bench_summary"
 SCHEMA_VERSION = 4
+# X-Ninfer-Client label: the server records it as request.client in its JSONL log.
+CLIENT_LABEL = "bench/serve-concurrency"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -478,13 +480,13 @@ def run_clients(
                             if failed.is_set():
                                 return
                             started_at = time.monotonic()
-                            corpus.send_json(connection, payload)
+                            corpus.send_json(connection, payload, CLIENT_LABEL)
                             next_dispatch_index += 1
                             dispatch_condition.notify_all()
                         response = corpus.receive_json(connection)
                     else:
                         started_at = time.monotonic()
-                        response = corpus.post_json(connection, payload)
+                        response = corpus.post_json(connection, payload, CLIENT_LABEL)
                     finished_at = time.monotonic()
                     result = parse_client_response(job, response, started_at, finished_at)
                     if on_result is not None:

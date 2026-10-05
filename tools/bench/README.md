@@ -158,7 +158,13 @@ The serial runner writes `run.jsonl`, `summary.csv`, `summary.md`, and per-serve
 category summaries. The output directory is supplied explicitly with `--output`.
 
 Its schema-v8 result and flattened summaries retain the KV dtype, actual `prefill_signature`, request Host
+<<<<<<< HEAD
 exposure, and decode Host/Device-wait time per round received from the schema-v24 serving records.
+||||||| parent of 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
+exposure, and decode Host/Device-wait time per round received from the schema-v21 serving records.
+=======
+exposure, and decode Host/Device-wait time per round received from the schema-v22 serving records.
+>>>>>>> 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
 Request exposure is a latency distribution value and is never summed across concurrent requests;
 worker aggregation uses the serving `throughput.host_work` interval deltas. The stochastic route pins its complete
 temperature/top-p/top-k/min-p/presence/frequency profile explicitly, so model-default changes do

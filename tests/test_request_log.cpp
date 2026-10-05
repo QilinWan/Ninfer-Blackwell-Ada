@@ -279,6 +279,7 @@ int main() {
         .http_request_id                   = "req_wire_923",
         .response_id                       = "chatcmpl_wire_471",
         .model                             = "qwen3.6-27b",
+        .client                            = "bench/serve-corpus",
         .stream                            = false,
         .output_tokens_explicit            = true,
         .preserve_thinking_semantic_change = true,
@@ -344,6 +345,8 @@ int main() {
     failures +=
         check(rejected.at("event") == "request_rejected" && rejected.at("phase") == "prepare",
               "preparation rejection event or phase mismatch");
+    failures += check(rejected.at("request").at("client") == "bench/serve-corpus",
+                      "X-Ninfer-Client label missing from the rejection record");
     failures += check(rejected.at("request").at("request_id") == 8 &&
                           rejected.at("request").at("http_request_id") == "req_rejected_812" &&
                           rejected.at("request").at("response_id") == "" &&

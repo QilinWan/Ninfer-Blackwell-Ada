@@ -1138,6 +1138,17 @@ they do not infer request behavior from process-global counter deltas.
 `requested_reasoning_effort` and `preserve_thinking` record the explicit options, or `null` when
 unspecified. `enable_thinking` records whether the response starts in thinking mode.
 
+`request.client` (in `request_start`, `request_rejected`, `request_done` and `request_error`) is the
+value of the optional NInfer request header `X-Ninfer-Client`, or `null` when the request did not
+carry it. It lets a measurement separate benchmark, smoke and gate traffic from ordinary clients
+sharing one log; the label never affects generation. The header carries one value of 1 to 64
+characters from `A-Z a-z 0-9 . _ : / @ + -`; a repeated or malformed header is rejected before
+preparation with HTTP 400 `invalid_client_label` (param `X-Ninfer-Client`). The repository's own
+clients send `<kind>/<tool>` labels: `gate/tp2` (`tools/tp2/gate_client.py`),
+`bench/serve-corpus`, `bench/serve-concurrency`, `bench/serve-ttft`, `bench/agentic-ab`,
+`smoke/serve-contract` and `smoke/thinking-preservation`. With `--cors` the header is listed in
+`Access-Control-Allow-Headers`.
+
 `request_done.result.tool_call_parse` records whether a complete marker was seen, the structured
 call count, empty non-string arguments omitted during normalization, schema-mismatched arguments
 preserved for consumer validation, and a stable text-fallback reason. Fallback reasons are `none`,
