@@ -24,7 +24,7 @@ tools/tp2/gate.sh [--record] [--stages LIST] [--attention] [--out DIR] <build-di
 | `ctest` | every CTest except the tp1 27B tests that do not fit one 16 GB board and, without `--attention`, `ninfer_softmax_attention_test` (~12 min); `NINFER_TEST_ARTIFACT` is the `_df2nv` artifact | all pass (skips allowed) |
 | `golden` | `tools/golden/record.sh` on the synthetic tp1 model | ids equal the reference's |
 | `ppl` | `ninfer-perplexity --tp 2 --quick` on the QUASAR artifact, INT8 KV, 65536/32768 and 4096/2048 | the per-source table equals the reference's to every printed digit; with `GATE_PPL_PAIRED=1` a table that differs is judged window by window ([below](#paired-perplexity-for-commits-that-change-bits)) |
-| `greedy` | `ninfer-serve` with the production flags (MTP3, `--lm-head-draft`, C=1), the reference's 60 prompts, T=0, 128 tokens | texts identical; ms/round (median of decode seconds per MTP round) PASS within ±1 % of the reference, WARN beyond |
+| `greedy` | `ninfer-serve` with the production flags (MTP3, `--lm-head-draft`, C=1) on the `_mtpnv` artifact (production since v0.4.7: the MTP layer's MLP and attention output are NVFP4, `configure_mtp_nvfp4`), the reference's 60 prompts, T=0, 128 tokens | texts identical; ms/round (median of decode seconds per MTP round) PASS within ±1 % of the reference, WARN beyond |
 | `dflash2` | `ninfer-serve` DFlash2 K=7 `--lm-head-draft` on the `_df2nv` artifact (production since v0.4.5: the drafter MLP gate/up is NVFP4), first 10 prompts | as `greedy` |
 
 `--record` writes the reference directory from the given build (it needs `GATE_PROMPTS`, a JSONL

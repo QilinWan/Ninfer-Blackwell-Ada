@@ -30,7 +30,7 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 src=${GATE_SRC:-$(cd "$here/../.." && pwd)}   # source tree: golden record.sh, perplexity corpus
 
-ARTIFACT=${GATE_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4.ninfer}
+ARTIFACT=${GATE_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4_mtpnv.ninfer}
 # The production DFlash2 artifact (drafter MLP gate/up NVFP4, v0.4.5); the older _df2 (Q8) stays for comparisons.
 DF2_ARTIFACT=${GATE_DF2_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4_df2nv.ninfer}
 TEST_ARTIFACT=${GATE_TEST_ARTIFACT:-$DF2_ARTIFACT}

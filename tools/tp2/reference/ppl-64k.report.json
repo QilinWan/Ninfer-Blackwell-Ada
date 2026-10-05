@@ -8,13 +8,13 @@
       "nvfp4"
     ],
     "name": "qwen3.8-27b-quasar",
-    "path": "/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4.ninfer",
+    "path": "/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4_mtpnv.ninfer",
     "prefill_signature": "51c149290905848a1544b62cc234c88a38909a8f5f30355a5fa06dd1447e303d"
   },
   "corpus": {
     "id": "ninfer-ppl-1m-v1",
     "mode": "quick",
-    "source": "/home/feyd/ninfer-round-var/eval/corpora/perplexity-1m/manifest.json",
+    "source": "/home/feyd/ninfer-v046/eval/corpora/perplexity-1m/manifest.json",
     "stream_count": 4
   },
   "domains": [
@@ -81,7 +81,7 @@
       "path": "data/wikitext/00.txt",
       "perplexity": 5.955125712226911,
       "scored_tokens": 65304,
-      "seconds": 21.421655775,
+      "seconds": 21.389078527,
       "total_nll": 116518.81304488699,
       "unscored_tokens": 1,
       "windows": [
@@ -93,7 +93,7 @@
           "mean_nll": 1.784252312950003,
           "perplexity": 5.955125712226911,
           "scored_tokens": 65304,
-          "seconds": 21.421619695,
+          "seconds": 21.389035548,
           "target_begin": 1,
           "target_end": 65305,
           "total_nll": 116518.81304488699
@@ -108,7 +108,7 @@
       "path": "data/pg19/00.txt",
       "perplexity": 6.589795751262955,
       "scored_tokens": 65455,
-      "seconds": 20.825838231,
+      "seconds": 20.777929278,
       "total_nll": 123416.86570041522,
       "unscored_tokens": 1,
       "windows": [
@@ -120,7 +120,7 @@
           "mean_nll": 1.88552235429555,
           "perplexity": 6.589795751262955,
           "scored_tokens": 65455,
-          "seconds": 20.825791452,
+          "seconds": 20.777880718,
           "target_begin": 1,
           "target_end": 65456,
           "total_nll": 123416.86570041522
@@ -135,7 +135,7 @@
       "path": "data/zhwiki/00.txt",
       "perplexity": 4.831313511402487,
       "scored_tokens": 65510,
-      "seconds": 20.836865746,
+      "seconds": 20.791909863,
       "total_nll": 103186.00502294577,
       "unscored_tokens": 1,
       "windows": [
@@ -147,7 +147,7 @@
           "mean_nll": 1.575118379223718,
           "perplexity": 4.831313511402487,
           "scored_tokens": 65510,
-          "seconds": 20.836819426,
+          "seconds": 20.791861113,
           "target_begin": 1,
           "target_end": 65511,
           "total_nll": 103186.00502294577
@@ -162,7 +162,7 @@
       "path": "data/ninfer/00.txt",
       "perplexity": 1.5277993683248117,
       "scored_tokens": 64898,
-      "seconds": 20.650780187,
+      "seconds": 20.603693087,
       "total_nll": 27505.614118985846,
       "unscored_tokens": 1,
       "windows": [
@@ -174,7 +174,7 @@
           "mean_nll": 0.4238283786709274,
           "perplexity": 1.5277993683248117,
           "scored_tokens": 64898,
-          "seconds": 20.650720797,
+          "seconds": 20.603636207,
           "target_begin": 1,
           "target_end": 64899,
           "total_nll": 27505.614118985846
@@ -183,10 +183,10 @@
     }
   ],
   "timing": {
-    "load_seconds": 4.189725381,
-    "read_and_tokenize_seconds": 0.053597166,
-    "score_seconds": 83.735193799,
-    "scored_tokens_per_second": 3118.9633432617547,
-    "total_seconds": 88.225328844
+    "load_seconds": 4.182588472,
+    "read_and_tokenize_seconds": 0.05388223,
+    "score_seconds": 83.56585887,
+    "scored_tokens_per_second": 3125.2835013194426,
+    "total_seconds": 88.048605668
   }
 }
