@@ -5,8 +5,21 @@
 
 namespace ninfer::ops::detail {
 namespace {
-// This Op admits dense, even-width BF16 residuals. Adjacent MMA rows share one load.
+// The attention output family: [5120,6144] and its two-device input-column half [5120,3072]. The
+// other family is the MLP down projection [5120,17408] and its half [5120,8704]. Each half runs
+// the schedules and partial reservation of the problem it halves (not re-measured at the half K);
+// every row and K tile below divides 5120, 3072 and 8704.
+constexpr bool output_family(int k) { return k == 6144 || k == 3072; }
+
+// This Op admits dense, even-width BF16 residuals. Adjacent MMA rows share one load. The scaled
+// update is one FMA in every tile: the full 1024-token prefill chunks already contracted it (the
+// FullTokens instance and the split-K reduce), only tail tiles rounded the sum separately.
 struct Fp8ResidualAddEpilogue : LinearResidualAddEpilogue {
+    __device__ __forceinline__ float apply_scaled(int row, int token, float value,
+                                                  float scale) const {
+        return __fmaf_rn(value, scale, residual.load(row, token));
+    }
+
     __device__ __forceinline__ float2 apply_row_pair_scaled(int row, int token, float2 value,
                                                             float2 scale) const {
         const auto* pointer =
@@ -43,8 +56,7 @@ void launch_problem(const Tensor& x, const Weight& weight, Tensor& residual,
         if constexpr (S::kTmaSwizzle)
             launch_fp8_a8_tma_mma<S>(operands, output, epilogue, stream, workspace.partials);
         else
-            launch_fp8_a8_mma<S>(operands, output, LinearResidualAddEpilogue{{data, weight.n}},
-                                   stream);
+            launch_fp8_a8_mma<S>(operands, output, epilogue, stream);
     };
     // K is the contraction width; the two-device input-column halves [5120,3072] and [5120,8704]
     // run their parent's ladder (N and the row-tile count are unchanged, and every tile divides the

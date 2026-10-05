@@ -9,8 +9,7 @@
 namespace ninfer::ops::detail {
 
 // Epilogues may consume adjacent aligned rows together; the scalar contract remains valid. The row
-// scales go to the epilogue, which owns the one rounding of a scaled residual update
-// (LinearResidualAddEpilogue::apply_scaled).
+// scales go to the epilogue, which owns the rounding of a scaled residual update.
 template <class Epilogue>
 __device__ __forceinline__ float2 fp8_apply_row_pair_scaled(Epilogue epilogue, int row,
                                                             int next_row, int token, float2 value,

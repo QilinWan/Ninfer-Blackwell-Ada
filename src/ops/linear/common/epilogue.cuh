@@ -21,11 +21,13 @@ struct LinearResidualAddEpilogue {
         return value + residual.load(row, token);
     }
 
-    // Scaling belongs to the fused residual update. Make its single rounding explicit: a
-    // caller's live-column predicate must not decide whether the compiler contracts MUL+ADD.
+    // Scaling belongs to the fused residual update, rounded as a product and then a sum in every
+    // tile. A caller's live-column predicate must not decide whether the compiler contracts the
+    // two into one FMA: it used to do so only in launches whose width filled every token tile,
+    // so those widths rounded differently from all the others.
     __device__ __forceinline__ float apply_scaled(int row, int token, float value,
                                                   float scale) const {
-        return __fmaf_rn(value, scale, residual.load(row, token));
+        return __fadd_rn(__fmul_rn(value, scale), residual.load(row, token));
     }
 };
 
