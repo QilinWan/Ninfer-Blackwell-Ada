@@ -135,7 +135,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--default-max-tokens N] [--default-thinking-budget N] "
            "[--rope-yarn-factor F] [--rope-original-max-position N] "
            "[--vision] [--vision-device N] [--max-vision-tokens N] [--no-cuda-graph] "
-           "[--no-tp-mailbox] [--no-prefix-reuse] "
+           "[--no-tp-mailbox] [--embedding-host] [--no-prefix-reuse] "
            "[--chat-template FILE] [--lm-head-draft] [--no-thinking] [--preserve-thinking] "
            "[--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
@@ -168,6 +168,9 @@ std::string serve_usage_text(const char* argv0) {
            "resources remain available\n"
            "       context defaults: device-state=max-concurrency; Host budget is resolved from "
            "8192 MiB plus eight native StateImages\n"
+           "       --embedding-host keeps the token embedding table in one copy in pinned host "
+           "memory that every GPU reads in place over PCIe, instead of one copy per GPU: it frees "
+           "the table's VRAM (1.18 GiB per GPU on Qwen3.8-27B) for the KV pool, identical results\n"
            "       --device-state-slots is extra capacity beyond active lanes; "
            "--host-context-mib bounds shared Host State/KV and in-flight storage in MiB\n"
            "       --tp 2 --devices A,B splits the dense model across two GPUs (rank 0 on A) for "
@@ -360,6 +363,8 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.use_cuda_graph = false;
         } else if (arg == "--no-tp-mailbox") {
             options.tp_mailbox = false;
+        } else if (arg == "--embedding-host") {
+            options.embedding_host = true;
         } else if (arg == "--no-prefix-reuse") {
             options.allow_prefix_reuse = false;
         } else if (arg == "--lm-head-draft") {

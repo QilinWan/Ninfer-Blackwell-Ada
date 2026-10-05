@@ -56,6 +56,9 @@ of the KV cache and recurrent state. For each tile of up to 1,024 scored positio
 a copy of the final hidden columns, each rank projects its half of the vocabulary, and rank 0
 gathers the complete logits and computes the target log-probabilities as on one GPU. Windows,
 metric and report are unchanged; the report's `execution` block adds `tp` and `devices`.
+`--embedding-host` reads the token embedding table in place from one pinned host copy instead of a
+copy on each GPU, with identical scores ([serving guide](serving.md#two-gpus)); the report's
+`execution` block then adds `"embedding_host": true`.
 
 As for every `--tp 2` run, the Main KV types are `bf16` and `int8` only, so the default `fp8` is
 rejected at startup. The split projections sum their halves in a different order and round each

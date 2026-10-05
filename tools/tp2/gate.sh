@@ -20,6 +20,8 @@
 #
 # The gate does not take a GPU lease; wrap it (e.g. gpu-lease run ricerca -- tools/tp2/gate.sh ...).
 # Paths default to the development workstation; override them with the GATE_* variables below.
+# GATE_EXTRA_FLAGS (e.g. --embedding-host) is appended to the runner of golden, ppl, greedy and
+# dflash2, so an option that must not change any result is checked against the same reference.
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -37,6 +39,7 @@ CORPUS=${GATE_CORPUS:-$src/eval/corpora/perplexity-1m/manifest.json}
 SERVE_FLAGS=${GATE_SERVE_FLAGS:---tp 2 --devices $DEVICES --kv-dtype int8 --max-context 196608 --kv-capacity 196608 --device-state-slots 4 --max-concurrency 1 --spec mtp --draft-tokens 3 --lm-head-draft --vision --vision-device 0 --max-vision-tokens 4096}
 DF2_FLAGS=${GATE_DF2_FLAGS:---tp 2 --devices $DEVICES --kv-dtype int8 --max-context 32768 --kv-capacity 32768 --max-concurrency 1 --spec dflash2 --draft-tokens 7 --lm-head-draft}
 DF2_PROMPTS=${GATE_DF2_PROMPTS:-10}
+EXTRA_FLAGS=${GATE_EXTRA_FLAGS:-}
 # Tests that cannot run on one 16 GB board (tp1 27B artifacts) or need a different artifact.
 CTEST_EXCLUDE=${GATE_CTEST_EXCLUDE:-ninfer_qwen3_5_(prefix|score|moe|dflash|dflash2|dflash_prefill)_real_test|ninfer_qwen3_5_vision_workspace_test}
 
@@ -72,6 +75,7 @@ gpu_busy() { nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/nu
 
 say "gate $([ $record = 1 ] && echo RECORD || echo CHECK) | build $build | ref $ref | out $out | src $(git -C "$src" rev-parse --short=8 HEAD 2>/dev/null) dirty=$(git -C "$src" status --porcelain 2>/dev/null | wc -l) | stages $stages"
 say "clocks $(nvidia-smi --query-gpu=clocks.sm --format=csv,noheader 2>/dev/null | tr '\n' ' ')"
+[ -n "$EXTRA_FLAGS" ] && say "extra flags: $EXTRA_FLAGS"
 
 # ---------------------------------------------------------------- build
 if has build; then
@@ -107,7 +111,7 @@ fi
 # ---------------------------------------------------------------- golden
 if has golden; then
     g=$out/golden; rm -rf "$g"
-    if CUDA_VISIBLE_DEVICES=${DEVICES%%,*} "$src/tools/golden/record.sh" "$build/apps/ninfer-tp1-golden" "$GOLDEN_MODEL" "$g" > "$out/golden.log" 2>&1; then
+    if CUDA_VISIBLE_DEVICES=${DEVICES%%,*} GOLDEN_FLAGS=$EXTRA_FLAGS "$src/tools/golden/record.sh" "$build/apps/ninfer-tp1-golden" "$GOLDEN_MODEL" "$g" > "$out/golden.log" 2>&1; then
         if [ $record = 1 ]; then verdict golden REC "$(tr '\n' ' ' < "$out/golden.log")"
         elif diff -r "$ref/golden" "$g" > "$out/golden.diff" 2>&1; then
             verdict golden PASS "3/3 identical ($(cat "$g"/*.ids | md5sum | cut -c1-8))"
@@ -121,8 +125,9 @@ if has ppl; then
         read -r tag ctx stride <<< "$p"
         d=$out/ppl-$tag; rm -rf "$d"; mkdir -p "$d"
         t0=$(date +%s)
+        # shellcheck disable=SC2086
         "$build/apps/ninfer-perplexity" "$ARTIFACT" --corpus "$CORPUS" --quick --context "$ctx" --stride "$stride" \
-            --tp 2 --devices "$DEVICES" --kv-dtype int8 --output "$d" > "$d.log" 2>&1
+            --tp 2 --devices "$DEVICES" --kv-dtype int8 $EXTRA_FLAGS --output "$d" > "$d.log" 2>&1
         rc=$?
         # The per-source table and the overall line, without the rate and paths.
         awk 'f{print} /^domain/{f=1} /^overall/{exit}' "$d.log" > "$d.table"
@@ -181,9 +186,9 @@ if [ $record = 1 ] && { has greedy || has dflash2; }; then
     cp "$PROMPTS" "$ref/prompts.jsonl"
 fi
 # shellcheck disable=SC2086
-has greedy && serve_stage greedy "$ARTIFACT" 0 $SERVE_FLAGS
+has greedy && serve_stage greedy "$ARTIFACT" 0 $SERVE_FLAGS $EXTRA_FLAGS
 # shellcheck disable=SC2086
-has dflash2 && serve_stage dflash2 "$DF2_ARTIFACT" "$DF2_PROMPTS" $DF2_FLAGS
+has dflash2 && serve_stage dflash2 "$DF2_ARTIFACT" "$DF2_PROMPTS" $DF2_FLAGS $EXTRA_FLAGS
 
 if [ $record = 1 ]; then say "RESULT RECORDED"; exit $failed; fi
 [ $failed = 0 ] && say "RESULT PASS" || say "RESULT FAIL"

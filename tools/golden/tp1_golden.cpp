@@ -26,7 +26,7 @@ std::uint64_t splitmix(std::uint64_t& state) {
 [[noreturn]] void usage(const char* argv0) {
     std::cerr << "usage: " << argv0
               << " ARTIFACT --prompt-tokens N [--seed S] [--max-new N] [--max-context N]"
-                 " [--kv-dtype bf16|int8] [--prefill-chunk N]\n";
+                 " [--kv-dtype bf16|int8] [--prefill-chunk N] [--embedding-host]\n";
     std::exit(2);
 }
 
@@ -57,6 +57,10 @@ int main(int argc, char** argv) {
             max_context = static_cast<std::uint32_t>(std::stoul(value()));
         } else if (arg == "--prefill-chunk") {
             options.prefill_chunk = static_cast<std::uint32_t>(std::stoul(value()));
+#ifdef NINFER_HAS_EMBEDDING_HOST
+        } else if (arg == "--embedding-host") {
+            options.embedding_host = true;
+#endif
         } else if (arg == "--kv-dtype") {
             const std::string dtype = value();
             if (dtype == "bf16") {

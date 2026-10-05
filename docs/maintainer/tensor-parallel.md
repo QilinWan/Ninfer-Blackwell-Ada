@@ -80,7 +80,7 @@ hidden/residual axis is never split.
 | `text/output_head` | Rows, by vocabulary | `[248320,5120]` → `[124160,5120]` |
 | `mtp/input_projection` | Columns: rank 0 the embedding half, rank 1 the hidden half | `[5120,10240]` → `[5120,5120]` |
 | `mtp/layers/*` | as the Text block rules | packed `[7168,5120]`, `[5120,3072]`, `[17408,5120]`, `[5120,8704]` |
-| norms, `text/token_embedding` | Replicated | whole on both ranks |
+| norms, `text/token_embedding` | Replicated; `text/token_embedding` HostMapped with `--embedding-host` | whole on both ranks; HostMapped: one copy in mapped pinned host memory that both ranks read ([Embedding in host memory](embedding-host.md)) |
 | `vision/*` | SingleDevice(`vision_rank`) | whole on the Vision rank (§8) |
 | `proposal/head` under MTP | Rows, by proposal vocabulary (indexed head, at most 65536 rows per rank) | Q4 `[131072,5120]` → `[65536,5120]` |
 | `dflash/*`, `dflash2/*`, `proposal/*` otherwise | PrimaryOnly | whole on rank 0 |
@@ -120,8 +120,10 @@ in multiples of 64, `RowSplit` columns in multiples of 128, several column range
 ([`materializer.cpp`](../../src/artifact/materializer.cpp)) reads each file chunk once through the
 pinned staging slots and cuts every device's copies from it. A shard-holding arena is created
 zero-filled, since no copy writes the shard's plane-alignment gaps; other arenas, including every
-arena at tp 1, are not zeroed, as upstream. Rank `r` then builds `execution::Parameters(model, r)`,
-and `LoadSummary::devices` reports its sharded, replicated and rank-local bytes.
+arena at tp 1, are not zeroed, as upstream. A HostMapped parent (`--embedding-host`) is not in any
+arena: it is read once into one mapped page-locked host allocation, and each rank's parent is that
+rank's address of it. Rank `r` then builds `execution::Parameters(model, r)`, and
+`LoadSummary::devices` reports its sharded, replicated, rank-local and host-mapped bytes.
 
 ## 3. The forward pass at tp 2
 

@@ -516,6 +516,7 @@ std::string format_server_start_json(
                                                           {"peak_staging_bytes", load.peak_staging_bytes},
                                                           {"device_object_count", load.device_object_count},
                                                           {"host_object_count", load.host_object_count},
+                                                          {"host_mapped_bytes", load.host_mapped_bytes},
                                                           {"load_seconds", load.load_seconds},
                                                           {"upload_seconds", load.upload_seconds}};
     const ninfer::ContextCacheOptions& cache       = engine_options.context_cache;
@@ -538,6 +539,7 @@ std::string format_server_start_json(
              {"kv_cache", kv_cache_name(engine_options.kv_cache)},
              {"vision", engine_options.enable_vision},
              {"cuda_graph", engine_options.use_cuda_graph},
+             {"embedding_host", engine_options.embedding_host},
              {"prefix_reuse", options.allow_prefix_reuse},
              {"speculative_backend",
               product::speculative_backend_name(engine_options.speculative.backend)},

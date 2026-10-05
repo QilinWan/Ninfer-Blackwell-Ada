@@ -19,6 +19,9 @@ commit the fork is rebuilt on, must generate identical token ids from identical 
   | 3 long | 6,144 | 6 | `--max-context 8192 --kv-dtype int8` |
 
   Common set: `--seed 7 --max-new 128`. `diff -r` between two recorded directories is the gate.
+  `GOLDEN_FLAGS` is appended to every case (the tp 2 gate passes `--embedding-host` this way, see
+  `GATE_EXTRA_FLAGS` in `tools/tp2/gate.sh`); the runner accepts it only where the public header
+  defines `NINFER_HAS_EMBEDDING_HOST`.
 
 ## The artifact
 

@@ -91,6 +91,7 @@ int main() {
     load.peak_staging_bytes   = 128;
     load.device_object_count  = 42;
     load.host_object_count    = 6;
+    load.host_mapped_bytes    = 1271895040;
     load.context_cost         = {
                 .transfer_source   = ninfer::ContextCostPresetSource::External,
                 .prefill_source    = ninfer::ContextCostPresetSource::CompiledDefault,
@@ -190,6 +191,9 @@ int main() {
     failures +=
         check(k8v4_server.at("engine").at("kv_cache") == "k8v4", "K8V4 KV report name missing");
     failures += check(server.at("engine").at("vision") == false, "Vision state missing");
+    failures += check(server.at("engine").at("embedding_host") == true &&
+                          server.at("artifact").at("host_mapped_bytes") == 1271895040,
+                      "embedding host state missing");
     failures += check(server.at("engine").at("speculative_backend") == "mtp",
                       "speculative backend missing");
     failures +=

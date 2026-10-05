@@ -30,7 +30,8 @@ std::string usage_text() {
     return "usage: ninfer-perplexity <model.ninfer> "
            "(--corpus <manifest.json> [--quick] | --text <utf8-file>)\n"
            "       [--context N] [--stride N] [--device N] [--tp 1|2 --devices A,B]\n"
-           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--output <directory>]\n"
+           "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--embedding-host]\n"
+           "       [--output <directory>]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
            "--tp 2 --devices A,B scores on two GPUs (rank 0 on A); it needs --kv-dtype bf16|int8.\n";
 }
@@ -83,6 +84,8 @@ Options parse_options(int argc, char** argv) {
             } else {
                 usage_error("--kv-dtype must be bf16, int8, fp8, nvfp4, or k8v4");
             }
+        } else if (option == "--embedding-host") {
+            out.embedding_host = true;
         } else if (option == "--output") {
             out.output = std::filesystem::path(value("--output"));
         } else if (option == "--log-level") {

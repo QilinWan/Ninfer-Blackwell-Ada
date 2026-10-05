@@ -41,6 +41,7 @@ struct Options {
     std::optional<std::uint32_t> max_vision_tokens;
     bool use_cuda_graph = true;
     bool tp_mailbox     = true;
+    bool embedding_host = false;
 
     bool raw_output      = false;
     bool print_token_ids = false;

@@ -2,13 +2,15 @@
 # Records the tp 1 golden cases of one build: record.sh <ninfer-tp1-golden> <artifact> <out-dir>.
 # Three greedy cases over three prefill regimes (one chunk, two chunks, six chunks with INT8 KV),
 # 128 new tokens each, prompt seed 7. Compare two builds with `diff -r <out-a> <out-b>`.
+# GOLDEN_FLAGS (e.g. --embedding-host) is appended to every case's command line.
 set -euo pipefail
 [ $# -eq 3 ] || { echo "usage: $0 <ninfer-tp1-golden> <artifact> <out-dir>" >&2; exit 2; }
 runner=$1; artifact=$2; out=$3
 mkdir -p "$out"
 run() { # name, args...
   local name=$1; shift
-  if ! "$runner" "$artifact" --seed 7 --max-new 128 "$@" > "$out/$name.out" 2> "$out/$name.log"; then
+  # shellcheck disable=SC2086
+  if ! "$runner" "$artifact" --seed 7 --max-new 128 "$@" ${GOLDEN_FLAGS:-} > "$out/$name.out" 2> "$out/$name.log"; then
     echo "$name: runner failed, see $out/$name.log" >&2; tail -3 "$out/$name.log" >&2; exit 1
   fi
   grep -E '^(prompt_tokens|generated_tokens|finish_reason|ids) ' "$out/$name.out" > "$out/$name.ids"

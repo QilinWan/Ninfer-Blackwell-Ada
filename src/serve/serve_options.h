@@ -54,6 +54,7 @@ struct ServeOptions {
     std::optional<std::uint32_t> max_vision_tokens; // merged-token ceiling of one media item
     bool use_cuda_graph     = true;
     bool tp_mailbox         = true;
+    bool embedding_host     = false; // token embedding table in mapped pinned host memory
     bool allow_prefix_reuse = true;
     // Private long-anchor opportunities at the message boundaries before the final message: the
     // last N of them (0 disables). They keep a checkpoint at the point where a cancelled or edited

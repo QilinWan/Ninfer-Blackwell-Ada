@@ -124,6 +124,7 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
     engine_options.devices          = options.devices;
     engine_options.max_context      = options.context;
     engine_options.kv_cache         = options.kv;
+    engine_options.embedding_host   = options.embedding_host;
     engine_options.startup_observer = startup_log.observer();
     ninfer::Engine engine(std::move(engine_options));
     const ninfer::LoadSummary load = engine.load_summary();
@@ -285,6 +286,7 @@ int run(const Options& options, const std::shared_ptr<spdlog::logger>& logger,
         execution["tp"]      = options.tp;
         execution["devices"] = options.devices;
     }
+    if (options.embedding_host) { execution["embedding_host"] = true; }
     json report{
         {"schema_version", 2},
         {"metric",

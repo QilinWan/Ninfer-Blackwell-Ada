@@ -496,6 +496,16 @@ int main() {
                                                   "--devices", "0,1", "--no-tp-mailbox"})
                                                .tp_mailbox,
                       "--no-tp-mailbox did not disable the captured mailbox transport");
+    failures += check(!defaults.embedding_host && !split.embedding_host &&
+                          parse({"ninfer-serve", "model.ninfer", "--embedding-host"})
+                              .embedding_host &&
+                          parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1",
+                                 "--embedding-host"})
+                              .embedding_host,
+                      "--embedding-host was not parsed or is on by default");
+    failures += check(serve_usage_text("ninfer-serve").find("--embedding-host") !=
+                          std::string::npos,
+                      "serve help omits --embedding-host");
     const ServeOptions vision =
         parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1", "--vision",
                "--vision-device", "1", "--max-vision-tokens", "4096"});

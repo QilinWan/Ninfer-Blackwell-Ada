@@ -308,6 +308,7 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
     summary.peak_staging_bytes   = stats.peak_staging_bytes;
     summary.device_object_count  = stats.device_object_count;
     summary.host_object_count    = stats.host_object_count;
+    summary.host_mapped_bytes    = stats.host_mapped_bytes;
     for (int i = 0; i < stats.device_count; ++i) {
         const auto rank = static_cast<std::size_t>(i);
         summary.devices.push_back(
@@ -316,7 +317,8 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
              .host_to_device_bytes = stats.per_device_h2d_bytes[rank],
              .sharded_bytes        = stats.sharded_bytes[rank],
              .replicated_bytes     = stats.replicated_bytes[rank],
-             .local_bytes          = stats.local_bytes[rank]});
+             .local_bytes          = stats.local_bytes[rank],
+             .host_mapped_bytes    = stats.per_device_host_mapped_bytes[rank]});
     }
     summary.context_cost         = std::move(context_cost.summary);
     summary.tp_transport         = instance->program->tp_transport().transport;

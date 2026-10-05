@@ -24,6 +24,7 @@ struct Options {
     std::vector<int> devices; // One id per tensor-parallel rank; {device} at tp 1.
     ninfer::KvCacheStorage kv           = ninfer::KvCacheStorage::Fp8E4M3Row256;
     bool quick                          = false;
+    bool embedding_host                 = false;
     ninfer::product::LogLevel log_level = ninfer::product::LogLevel::Info;
 };
 

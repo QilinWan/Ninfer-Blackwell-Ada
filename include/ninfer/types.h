@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+// EngineOptions::embedding_host exists. Sources that also build against upstream ninfer test it
+// (tools/golden/tp1_golden.cpp).
+#define NINFER_HAS_EMBEDDING_HOST 1
+
 namespace ninfer {
 
 using TokenId = std::int32_t;
@@ -209,6 +213,11 @@ struct EngineOptions {
     // cross-device copies; false keeps the copies, and so does direct P2P. Both transports
     // produce identical results. Unused at tp 1.
     bool tp_mailbox = true;
+    // Keep the text token embedding table in one copy in mapped page-locked host memory that the
+    // gather kernels of every rank read in place over PCIe, instead of one copy in each rank's
+    // device memory: frees the table's bytes (1.18 GiB for Qwen3.8-27B) on every device for the
+    // KV pool, costs as much pinned host RAM once. Same bytes, identical results. tp 1 and 2.
+    bool embedding_host = false;
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
     StartupObserver startup_observer;
@@ -1152,7 +1161,7 @@ struct ContextCostSummary {
 
 // Resident weight bytes of one tensor-parallel rank. The sharded, replicated and local counts are
 // the placed parents' and slices' own bytes, and capacity_bytes adds the alignment between them.
-// At tp 1 every parent counts as replicated.
+// At tp 1 every device-resident parent counts as replicated.
 struct LoadDeviceSummary {
     int device                         = 0; // CUDA device id of this rank.
     std::uint64_t capacity_bytes       = 0; // Weight arena, including alignment.
@@ -1160,6 +1169,9 @@ struct LoadDeviceSummary {
     std::uint64_t sharded_bytes        = 0; // This rank's slices of row- or column-split parents.
     std::uint64_t replicated_bytes     = 0; // Complete parents every rank holds.
     std::uint64_t local_bytes          = 0; // Complete parents only this rank holds.
+    // Complete parents this rank reads in place from the shared mapped host copy
+    // (EngineOptions::embedding_host); not part of capacity_bytes.
+    std::uint64_t host_mapped_bytes = 0;
 };
 
 struct LoadSummary {
@@ -1175,6 +1187,9 @@ struct LoadSummary {
     std::uint64_t peak_staging_bytes   = 0;
     std::size_t device_object_count    = 0;
     std::size_t host_object_count      = 0;
+    // The one mapped page-locked host allocation that every rank's weights read in place
+    // (EngineOptions::embedding_host); 0 without it.
+    std::uint64_t host_mapped_bytes = 0;
     std::vector<LoadDeviceSummary> devices; // One entry per tensor-parallel rank.
     // tp 2: the driver granted direct peer access between the two devices. When false every
     // cross-device transfer is staged through Host memory by CUDA. Always false at tp 1.
