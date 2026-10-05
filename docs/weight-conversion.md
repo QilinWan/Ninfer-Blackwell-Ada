@@ -77,6 +77,12 @@ python3 -m tools.convert \
   --out models/qwen3_8_27b_nvfp4.ninfer
 ```
 
+The DFlash2 drafter's MLP gate/up is stored as Q8 by the official recipes. A recipe that calls
+`_dflash2_nvfp4_gate_up` stores it as NVFP4 instead (`nvfp4_mse` from the BF16 DFlash2 source, A16
+activations, the rest of the drafter still Q8): the artifact is 425 MiB smaller and the split drafter
+runs the fused NVFP4 SwiGLU; on two RTX 5070 Ti the C=1 decode is 1.5…2.4 % faster with the
+acceptance within ±1.2 points. Artifacts converted without it run exactly as before.
+
 MTP and Vision use the main source. DFlash and DFlash2 use the corresponding named source, supplied
 as `--source dflash=PATH` or `--source dflash2=PATH`. An artifact may contain several optional
 components; the Engine loads only the ones selected at startup, including at most one speculative

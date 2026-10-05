@@ -76,6 +76,16 @@
 >   - the DFlash2 drafter lives whole on the first GPU, so with the official NVFP4 artifact DFlash2
 >     stops at about 150,000 tokens; at 131,072 it starts with 2 device state slots. The
 >     all-NVFP4 QUASAR-QAT artifact has no DFlash2 component.
+> - **Since v0.4.4 (2026-10-05), landed in this tree:** `--turn-anchors` keeps a checkpoint at
+>   the branch point of a cancelled or edited turn, so a same-session follow-up resumes from it
+>   (upstream measured a 34k-token follow-up at 0.1 s instead of 6.8 s); `--embedding-host`
+>   keeps the token embedding table in mapped pinned host memory that every rank reads in place,
+>   freeing 1.18 GiB per board with bit-identical results (upstream: prefill -0.5..0.9 %, decode
+>   unchanged). `--log-speculation-detail` adds the per-step accepted draft lengths and the
+>   output/prompt 4-gram overlap to the request log, and each throughput record now carries
+>   per-GPU clocks, power, energy, temperature and clock-event reasons. The upstream claims for
+>   `nvfp4` KV, a split DFlash2 drafter and Vision at `--tp 2` do not apply to this tree: those
+>   sit on the layout batch (ledger P1) or on its measurements, and this tree rejects them.
 > - **No host tier.** `--host-state-slots` and `--host-kv-mib` must be 0 at `--tp 2`: retained
 >   conversations live only in the device state slots. With many conversations in parallel the
 >   oldest idle ones are evicted, and their next turn is prefilled again.
