@@ -87,12 +87,18 @@ RUN_ARTIFACT_TYPE = "ninfer_serve_corpus_result"
 RUN_SCHEMA_VERSION = 8
 SERVER_LOG_ARTIFACT_TYPE = "ninfer_serve_request_log"
 <<<<<<< HEAD
+<<<<<<< HEAD
 SERVER_LOG_SCHEMA_VERSION = 24
 ||||||| parent of 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
 SERVER_LOG_SCHEMA_VERSION = 21
 =======
 SERVER_LOG_SCHEMA_VERSION = 22
 >>>>>>> 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
+||||||| parent of a42509b9 (serve: log the per-request histogram of accepted draft lengths)
+SERVER_LOG_SCHEMA_VERSION = 22
+=======
+SERVER_LOG_SCHEMA_VERSION = 23
+>>>>>>> a42509b9 (serve: log the per-request histogram of accepted draft lengths)
 STARTUP_TIMEOUT_SECONDS = 1800.0
 REQUEST_TIMEOUT_SECONDS = 24.0 * 60.0 * 60.0
 LOG_EVENT_TIMEOUT_SECONDS = 10.0

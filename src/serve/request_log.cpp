@@ -18,6 +18,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -325,6 +326,24 @@ Json vision_workspace_json(const std::optional<ninfer::VisionWorkspaceMemorySumm
                 {"handoff_peak_bytes", vision->handoff_peak_bytes}};
 }
 
+// Entry i counts the verification rounds that accepted exactly i draft tokens, i = 0..window. It
+// is the exact difference form of accepted_per_position (entry i: rounds with at least i + 1
+// accepted) and the round count; null when those counters are not a non-increasing sequence
+// bounded by the rounds, which no backend produces.
+Json accepted_length_histogram_json(std::uint64_t rounds,
+                                    const std::vector<std::uint64_t>& at_least) {
+    Json histogram = Json::array();
+    if (at_least.empty()) { return histogram; }
+    std::uint64_t previous = rounds;
+    for (const std::uint64_t value : at_least) {
+        if (value > previous) { return nullptr; }
+        histogram.push_back(previous - value);
+        previous = value;
+    }
+    histogram.push_back(previous);
+    return histogram;
+}
+
 Json speculative_json(const GenerationMetrics& metrics) {
     return Json{{"backend", product::speculative_backend_name(metrics.speculative_backend)},
                 {"draft_window", metrics.speculative_draft_window},
@@ -332,7 +351,10 @@ Json speculative_json(const GenerationMetrics& metrics) {
                 {"drafted_tokens", metrics.speculative_draft_tokens},
                 {"accepted_tokens", metrics.speculative_accepted_tokens},
                 {"fallback_steps", metrics.speculative_fallback_steps},
-                {"accepted_per_position", metrics.speculative_accepted_per_position}};
+                {"accepted_per_position", metrics.speculative_accepted_per_position},
+                {"accepted_length_histogram",
+                 accepted_length_histogram_json(metrics.speculative_rounds,
+                                                metrics.speculative_accepted_per_position)}};
 }
 
 Json scheduling_json(const ninfer::GenerationSchedulingStats& stats) {
