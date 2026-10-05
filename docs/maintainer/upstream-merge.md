@@ -142,7 +142,9 @@ tools/tp2/gate.sh [--attention] [--stages ...] <build> <ref-dir>
 Stages: the unit/Op/split ctest set with the tp2 real tests (`--attention` adds the 12-minute
 softmax attention suite, needed when `softmax_attention/` changes); the tp1 golden on the
 synthetic model; `ninfer-perplexity --tp 2` at 65536/32768 and 4096/2048 with INT8 KV (every
-printed digit must equal the reference); the 60 greedy prompts through `ninfer-serve` with the
+printed digit must equal the reference; for a commit that changes bits on purpose,
+`GATE_PPL_PAIRED=1` judges a changed table by a paired per-window test instead, PASS when not
+significantly worse and within 0.5 %); the 60 greedy prompts through `ninfer-serve` with the
 production flags (texts must be identical; ms/round is reported against the reference, ±1 % is
 noise on the workstation, beyond that rerun alternated A/B before deciding); a short DFlash2 K=7 run.
 About 13 minutes. `tools/tp2/README.md` has the paths and options.

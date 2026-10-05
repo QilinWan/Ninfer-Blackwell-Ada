@@ -12,7 +12,10 @@
 #            (NINFER_TEST_ARTIFACT); --attention adds ninfer_softmax_attention_test (~12 min)
 #   golden   tools/golden/record.sh on the synthetic tp1 model; ids must equal the reference's
 #   ppl      ninfer-perplexity --tp 2 --quick on the QUASAR artifact, 65536/32768 and 4096/2048,
-#            INT8 KV; every printed digit of the per-source table must equal the reference's
+#            INT8 KV; every printed digit of the per-source table must equal the reference's.
+#            GATE_PPL_PAIRED=1 (for commits meant to change bits): a table that differs is compared
+#            window by window with the reference's report (tools/tp2/ppl_paired.py): PASS if not
+#            worse at p 0.05 and |change| < 0.5 %, WARN otherwise
 #   greedy   ninfer-serve with the production flags (MTP3, --lm-head-draft, C=1), the reference's
 #            60 prompts at T=0 / 128 tokens; texts must equal the reference's; ms/round (median of
 #            decode seconds / MTP rounds) is reported against it (PASS within +-1 %, else WARN)
@@ -41,6 +44,8 @@ SERVE_FLAGS=${GATE_SERVE_FLAGS:---tp 2 --devices $DEVICES --kv-dtype int8 --max-
 DF2_FLAGS=${GATE_DF2_FLAGS:---tp 2 --devices $DEVICES --kv-dtype int8 --max-context 32768 --kv-capacity 32768 --max-concurrency 1 --spec dflash2 --draft-tokens 7 --lm-head-draft}
 DF2_PROMPTS=${GATE_DF2_PROMPTS:-10}
 EXTRA_FLAGS=${GATE_EXTRA_FLAGS:-}
+PPL_PAIRED=${GATE_PPL_PAIRED:-0}    # 1: a perplexity table that differs is judged by ppl_paired.py, not FAIL
+PPL_ALPHA=${GATE_PPL_ALPHA:-0.05}; PPL_MAX_DELTA=${GATE_PPL_MAX_DELTA:-0.5}
 # Tests that cannot run on one 16 GB board (tp1 27B artifacts) or need a different artifact.
 CTEST_EXCLUDE=${GATE_CTEST_EXCLUDE:-ninfer_qwen3_5_(prefix|score|moe|dflash|dflash2|dflash_prefill)_real_test|ninfer_qwen3_5_vision_workspace_test}
 
@@ -51,7 +56,7 @@ while [ $# -gt 0 ]; do
         --stages) stages=$2; shift 2 ;;
         --attention) attention=1; shift ;;
         --out) out=$2; shift 2 ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
         *) break ;;
     esac
@@ -77,6 +82,7 @@ gpu_busy() { nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/nu
 say "gate $([ $record = 1 ] && echo RECORD || echo CHECK) | build $build | ref $ref | out $out | src $(git -C "$src" rev-parse --short=8 HEAD 2>/dev/null) dirty=$(git -C "$src" status --porcelain 2>/dev/null | wc -l) | stages $stages"
 say "clocks $(nvidia-smi --query-gpu=clocks.sm --format=csv,noheader 2>/dev/null | tr '\n' ' ')"
 [ -n "$EXTRA_FLAGS" ] && say "extra flags: $EXTRA_FLAGS"
+[ "$PPL_PAIRED" = 1 ] && say "ppl: paired mode (alpha $PPL_ALPHA, max |change| $PPL_MAX_DELTA %)"
 
 # ---------------------------------------------------------------- build
 if has build; then
@@ -134,9 +140,24 @@ if has ppl; then
         awk 'f{print} /^domain/{f=1} /^overall/{exit}' "$d.log" > "$d.table"
         ov=$(grep -E '^overall' "$d.log" | awk '{print $NF}')
         if [ $rc != 0 ] || [ -z "$ov" ]; then verdict "ppl-$tag" FAIL "rc=$rc, see $d.log"
-        elif [ $record = 1 ]; then verdict "ppl-$tag" REC "$ov ($(( $(date +%s) - t0 )) s)"
+        elif [ $record = 1 ]; then
+            # The per-window report is what the paired mode compares against.
+            cp "$d/report.json" "$ref/ppl-$tag.report.json" 2>/dev/null
+            verdict "ppl-$tag" REC "$ov ($(( $(date +%s) - t0 )) s)"
         elif diff "$ref/ppl-$tag.table" "$d.table" > /dev/null; then
             verdict "ppl-$tag" PASS "$ov, $(wc -l < "$d.table") lines identical ($(( $(date +%s) - t0 )) s)"
+        elif [ "$PPL_PAIRED" = 1 ]; then
+            if [ ! -f "$ref/ppl-$tag.report.json" ] || [ ! -f "$d/report.json" ]; then
+                verdict "ppl-$tag" FAIL "paired mode needs $ref/ppl-$tag.report.json and $d/report.json"
+            else
+                python3 "$here/ppl_paired.py" --alpha "$PPL_ALPHA" --max-delta-pct "$PPL_MAX_DELTA" \
+                    "$ref/ppl-$tag.report.json" "$d/report.json" > "$d.paired" 2>&1
+                res=$(head -1 "$d.paired")
+                case ${res%% *} in
+                    PASS|WARN) verdict "ppl-$tag" "${res%% *}" "${res#* } ($(( $(date +%s) - t0 )) s)" ;;
+                    *) verdict "ppl-$tag" FAIL "paired comparison: ${res:-no output}, see $d.paired" ;;
+                esac
+            fi
         else verdict "ppl-$tag" FAIL "$ov vs $(grep -E '^overall' "$ref/ppl-$tag.table" | awk '{print $NF}')"; fi
     done
 fi
