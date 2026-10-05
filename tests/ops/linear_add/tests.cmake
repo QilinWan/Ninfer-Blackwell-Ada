@@ -27,3 +27,7 @@ ninfer_add_op_test(ninfer_linear_add_nvfp4_test
 ninfer_add_op_test(ninfer_linear_add_fp8_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_fp8.cpp"
   LIBRARIES ninfer_ops)
+
+ninfer_add_op_test(ninfer_linear_add_residual_rounding_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_residual_rounding.cpp"
+  LIBRARIES ninfer_ops)
