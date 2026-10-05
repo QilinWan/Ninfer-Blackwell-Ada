@@ -18,8 +18,14 @@ on, so a drift over the session (clocks, temperature) does not favour one arm. A
 analyze.py writes report.md / summary.json into <out>/seed-<n>; with several seeds it adds a
 combined report in <out>.
 
+More than two arms, or arms that differ in their flags or in the client's max_tokens, come from
+--arms-file: a JSON list of {"name", "exe", "label", "flags" (full flag string; default the
+profile plus --extra-flags), "agent_max_tokens" (default --agent-max-tokens)}, baseline first.
+The order then alternates forward / reversed over the seeds, or follows --arm-order.
+
 Usage: python3 linux.py --arm-a BIN --arm-b BIN --model ARTIFACT [--profile NAME | --flags STR]
                         [--seeds 42,43,44] [--scale 1.0] [--out DIR] [--dry-run] [...]
+       python3 linux.py --arms-file ARMS.json --model ARTIFACT [--arm-order x,y] [...]
 run_linux.sh is a thin wrapper that checks the corpus and calls this file.
 
 Written for ValerioDolci/ninfer-tp2 around the suite from Wallawalla47/ninfer-custom (commit
@@ -55,7 +61,6 @@ PROFILES = {
 # Always added unless the profile sets it: the default 30 s admission timeout would reject the
 # requests that queue behind a long decode, and the workload keeps up to eight in flight.
 HARNESS_FLAGS = [("--pending-timeout-ms", "3600000")]
-ARMS = ("a", "b")
 
 
 def parse_flags(text):
@@ -300,7 +305,7 @@ def arm_complete(arm_dir):
     return meta if meta.get("complete") else None
 
 
-def run_arm(arm, a, plan, run_dir, ctx, opts):
+def run_arm(arm, a, plan, run_dir, opts):
     arm_dir = os.path.join(run_dir, arm)
     os.makedirs(arm_dir, exist_ok=True)
     if opts.resume:
@@ -314,17 +319,22 @@ def run_arm(arm, a, plan, run_dir, ctx, opts):
             os.remove(p)
     if not opts.skip_gpu_check:
         wait_gpu_free(opts.wait_units, opts.gpu_wait_s)
-    runner.log("=== arm %s (%s): %s" % (arm, a["label"], a["exe"]))
+    runner.log("=== arm %s (%s): %s, max-context %d, agent max_tokens %d"
+               % (arm, a["label"], a["exe"], a["ctx"], a["agent_max_tokens"]))
+    # The client reads the module-level cap on every agent turn; arms run one at a time.
+    runner.AGENT_MAX_TOKENS = a["agent_max_tokens"]
     serve = SystemdServe("%s-%s" % (opts.unit_prefix, arm), a["exe"], opts.model, a["flags"],
                          arm_dir, opts.host, opts.port, opts.model_id, opts.env)
     meta = {"arm": arm, "label": a["label"], "exe": a["exe"], "build": a["build"],
-            "flags": a["flags"], "unit": serve.unit, "gpu_before": gpu_state(),
+            "flags": a["flags"], "max_context": a["ctx"],
+            "agent_max_tokens": a["agent_max_tokens"], "unit": serve.unit,
+            "gpu_before": gpu_state(),
             "started": time.time(), "complete": False}
     wall, client, foreign = None, None, []
     serve.start(opts.load_timeout)
     monitor = ForeignGpuMonitor(serve.pid).start()
     try:
-        client = runner.ArmClient(arm, plan, serve.model_id, arm_dir, ctx)
+        client = runner.ArmClient(arm, plan, serve.model_id, arm_dir, a["ctx"])
         # One trivial request primes the arm (CUDA graphs, allocator); it carries no workload
         # seed, so the analysis never joins it.
         client.post([{"role": "user", "content": "Reply with the single word: ok"}], [], 8, 1)
@@ -350,8 +360,20 @@ def run_arm(arm, a, plan, run_dir, ctx, opts):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--arm-a", required=True, help="ninfer-serve of arm A (the baseline)")
-    ap.add_argument("--arm-b", required=True, help="ninfer-serve of arm B (compared with A)")
+    ap.add_argument("--arm-a", help="ninfer-serve of arm A (the baseline)")
+    ap.add_argument("--arm-b", help="ninfer-serve of arm B (compared with A)")
+    ap.add_argument("--arms-file",
+                    help="JSON list of arms, baseline first: {name, exe, label, flags, "
+                         "agent_max_tokens}; replaces --arm-a/--arm-b")
+    ap.add_argument("--arm-order",
+                    help="comma-separated arm names to run, in this order, on every seed "
+                         "(default: all arms, order per --order)")
+    ap.add_argument("--agent-max-tokens", type=int, default=runner.AGENT_MAX_TOKENS,
+                    help="max_tokens the client sends on agent turns (default %d, or "
+                         "AB_AGENT_MAX_TOKENS)" % runner.AGENT_MAX_TOKENS)
+    ap.add_argument("--keep-going", action="store_true",
+                    help="an arm that fails to start or run is recorded in its arm.json and the "
+                         "run goes on with the next arm")
     ap.add_argument("--label-a", help="arm A's name in the report (default: git describe)")
     ap.add_argument("--label-b", help="arm B's name in the report (default: git describe)")
     ap.add_argument("--model", required=True, help=".ninfer artifact served by both arms")
@@ -361,13 +383,14 @@ def main(argv=None):
     ap.add_argument("--extra-flags", default="", help="flags appended to the profile")
     ap.add_argument("--seeds", default="42,43,44", help="comma-separated workload seeds")
     ap.add_argument("--order", default="abba", choices=("abba", "ab"),
-                    help="abba: A,B on even seed positions, B,A on odd (default); ab: always A,B")
+                    help="abba: arms forward on even seed positions, reversed on odd (default); "
+                         "ab: always forward")
     ap.add_argument("--scale", type=float, default=1.0, help="stretch the session loop lengths")
     ap.add_argument("--out", help="output directory (default: ./agab-<timestamp>)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8091)
     ap.add_argument("--model-id", default="qwen27b")
-    ap.add_argument("--unit-prefix", default="agab", help="units are <prefix>-a and <prefix>-b")
+    ap.add_argument("--unit-prefix", default="agab", help="units are <prefix>-<arm name>")
     ap.add_argument("--wait-units", default="tune-",
                     help="comma-separated user-unit name fragments that mean the GPU is taken")
     ap.add_argument("--gpu-wait-s", type=int, default=3 * 3600,
@@ -386,9 +409,20 @@ def main(argv=None):
     seeds = [int(s) for s in opts.seeds.split(",") if s.strip()]
     if not seeds or len(set(seeds)) != len(seeds):
         raise SystemExit("--seeds needs distinct integers")
-    for exe in (opts.arm_a, opts.arm_b):
-        if not os.access(exe, os.X_OK):
-            raise SystemExit("not an executable: %s" % exe)
+    if opts.arms_file:
+        with open(opts.arms_file, encoding="utf-8") as f:
+            specs = json.load(f)
+    elif opts.arm_a and opts.arm_b:
+        specs = [{"name": "a", "exe": opts.arm_a, "label": opts.label_a},
+                 {"name": "b", "exe": opts.arm_b, "label": opts.label_b}]
+    else:
+        raise SystemExit("give --arm-a and --arm-b, or --arms-file")
+    names = [sp["name"] for sp in specs]
+    if len(names) < 2 or len(set(names)) != len(names):
+        raise SystemExit("need at least two arms with distinct names")
+    for sp in specs:
+        if not os.access(sp["exe"], os.X_OK):
+            raise SystemExit("not an executable: %s" % sp["exe"])
     if not os.path.exists(opts.model):
         raise SystemExit("missing artifact: %s" % opts.model)
     opts.wait_units = [p for p in opts.wait_units.split(",") if p]
@@ -396,17 +430,19 @@ def main(argv=None):
                                                 if os.path.isdir("/usr/local/cuda-13.1") else None)
     opts.env = [("CUDA_HOME", cuda_home)] if cuda_home else []
 
-    flags = parse_flags(opts.flags if opts.flags else PROFILES[opts.profile])
-    flags += parse_flags(opts.extra_flags)
-    for n, v in HARNESS_FLAGS:
-        if n not in dict(flags):
-            flags.append((n, v))
-    for n in ("--host", "--port", "--model-id", "--request-log-jsonl"):
-        if n in dict(flags):
-            raise SystemExit("%s is set by the launcher; remove it from the profile" % n)
-    ctx = int(dict(flags).get("--max-context") or 0)
-    if not ctx:
-        raise SystemExit("the flag profile needs an explicit --max-context")
+    def arm_flags(text):
+        flags = parse_flags(text)
+        for n, v in HARNESS_FLAGS:
+            if n not in dict(flags):
+                flags.append((n, v))
+        for n in ("--host", "--port", "--model-id", "--request-log-jsonl"):
+            if n in dict(flags):
+                raise SystemExit("%s is set by the launcher; remove it from the flags" % n)
+        if not int(dict(flags).get("--max-context") or 0):
+            raise SystemExit("every arm's flags need an explicit --max-context")
+        return flags
+
+    default_flags = (opts.flags if opts.flags else PROFILES[opts.profile]) + " " + opts.extra_flags
 
     out_dir = os.path.abspath(opts.out or "agab-%s" % time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(out_dir, exist_ok=True)
@@ -417,45 +453,69 @@ def main(argv=None):
     runner.REQUEST_TIMEOUT_S = opts.request_timeout
 
     arms = {}
-    for arm, exe, label in (("a", opts.arm_a, opts.label_a), ("b", opts.arm_b, opts.label_b)):
+    for sp in specs:
+        exe = sp["exe"]
         build = build_identity(exe)
-        arms[arm] = {"exe": exe, "build": build, "flags": list(flags),
-                     "label": label or build.get("describe") or os.path.basename(
-                         os.path.dirname(os.path.dirname(os.path.dirname(exe))))}
-    orders = [["a", "b"] if (opts.order == "ab" or i % 2 == 0) else ["b", "a"]
-              for i in range(len(seeds))]
+        flags = arm_flags(sp.get("flags") or default_flags)
+        arms[sp["name"]] = {
+            "exe": exe, "build": build, "flags": flags,
+            "ctx": int(dict(flags)["--max-context"]),
+            "agent_max_tokens": int(sp.get("agent_max_tokens") or opts.agent_max_tokens),
+            "label": sp.get("label") or build.get("describe") or os.path.basename(
+                os.path.dirname(os.path.dirname(os.path.dirname(exe))))}
+    if opts.arm_order:
+        fixed = [n for n in opts.arm_order.split(",") if n]
+        unknown = [n for n in fixed if n not in arms]
+        if unknown or len(set(fixed)) != len(fixed):
+            raise SystemExit("--arm-order: unknown or repeated arms %s" % (unknown or fixed))
+        orders = [list(fixed) for _ in seeds]
+    else:
+        orders = [list(names) if (opts.order == "ab" or i % 2 == 0) else list(reversed(names))
+                  for i in range(len(seeds))]
+    base = names[0]
 
     plans = {seed: workload.build_plan(seed=seed, scale=opts.scale) for seed in seeds}
     runner.log("model: %s" % opts.model)
-    for arm in ARMS:
-        runner.log("arm %s = %s: %s (sha256 %s)" % (arm.upper(), arms[arm]["label"],
-                                                   arms[arm]["exe"],
-                                                   arms[arm]["build"]["sha256"][:12]))
-    runner.log("flags (both arms): %s" % runner.flag_str(flags))
-    runner.log("seeds %s, order %s, scale %.2f, max-context %d, port %d"
-               % (seeds, " / ".join("".join(o).upper() for o in orders), opts.scale, ctx,
-                  opts.port))
+    for arm in names:
+        a = arms[arm]
+        runner.log("arm %s = %s: %s (sha256 %s), max-context %d, agent max_tokens %d"
+                   % (arm, a["label"], a["exe"], a["build"]["sha256"][:12], a["ctx"],
+                      a["agent_max_tokens"]))
+        runner.log("flags (%s): %s" % (arm, runner.flag_str(a["flags"])))
+    runner.log("seeds %s, order %s, scale %.2f, port %d"
+               % (seeds, " / ".join(",".join(o) for o in orders), opts.scale, opts.port))
     if opts.dry_run:
         for seed in seeds:
             print("seed %d:\n%s" % (seed, workload.summarize(plans[seed])))
-        s = SystemdServe("%s-a" % opts.unit_prefix, opts.arm_a, opts.model, flags,
-                         os.path.join(out_dir, "seed-%d" % seeds[0], "a"), opts.host, opts.port,
-                         opts.model_id, opts.env)
-        print("command (arm A, seed %d): %s" % (seeds[0], " ".join(map(shlex.quote,
-                                                                      s.command()))))
+        for arm in names:
+            s = SystemdServe("%s-%s" % (opts.unit_prefix, arm), arms[arm]["exe"], opts.model,
+                             arms[arm]["flags"], os.path.join(out_dir, "seed-%d" % seeds[0], arm),
+                             opts.host, opts.port, opts.model_id, opts.env)
+            print("command (arm %s, seed %d, agent max_tokens %d): %s"
+                  % (arm, seeds[0], arms[arm]["agent_max_tokens"],
+                     " ".join(map(shlex.quote, s.command()))))
         print("GPU now: apps %s, busy units %s" % (gpu_apps(), busy_units(opts.wait_units)))
         return 0
 
-    config = {"harness": "linux", "arms": list(ARMS),
-              "labels": {k: "%s: %s" % (k.upper(), v["label"]) for k, v in arms.items()},
-              "short": {k: k.upper() for k in arms},
+    two = not opts.arms_file
+    config = {"harness": "linux", "arms": list(names),
+              "labels": {k: ("%s: %s" % (k.upper(), v["label"]) if two else v["label"])
+                         for k, v in arms.items()},
+              "short": {k: (k.upper() if two else k) for k in arms},
               "exes": {k: v["exe"] for k, v in arms.items()},
               "builds": {k: v["build"] for k, v in arms.items()},
-              "model": opts.model, "profile": None if opts.flags else opts.profile,
-              "flags": flags, "a_flags": flags, "b_flags": flags,
-              "scale": opts.scale, "agent_max_tokens": runner.AGENT_MAX_TOKENS,
-              "sampling": runner.SAMPLING, "max_context": ctx, "port": opts.port,
-              "seeds": seeds, "order": opts.order}
+              "model": opts.model,
+              "profile": None if (opts.flags or opts.arms_file) else opts.profile,
+              # flags / max_context / agent_max_tokens: the baseline's, as the analyzer's
+              # header reads them; the *_by_arm and <arm>_flags keys hold every arm's.
+              "flags": arms[base]["flags"], "max_context": arms[base]["ctx"],
+              "agent_max_tokens": arms[base]["agent_max_tokens"],
+              "max_context_by_arm": {k: v["ctx"] for k, v in arms.items()},
+              "agent_max_tokens_by_arm": {k: v["agent_max_tokens"] for k, v in arms.items()},
+              "scale": opts.scale, "sampling": runner.SAMPLING, "port": opts.port,
+              "seeds": seeds, "order": opts.arm_order or opts.order}
+    for k, v in arms.items():
+        config[k + "_flags"] = v["flags"]
     t0 = time.time()
     failures, run_dirs = [], []
     for seed, order in zip(seeds, orders):
@@ -464,21 +524,58 @@ def main(argv=None):
         plan = plans[seed]
         with open(os.path.join(run_dir, "plan.json"), "w", encoding="utf-8") as f:
             json.dump(plan, f)
-        runner.log("=== seed %d (%s): %s" % (seed, "".join(order).upper(),
+        runner.log("=== seed %d (%s): %s" % (seed, ",".join(order),
                                               workload.summarize(plan).splitlines()[-1]))
         cfg = dict(config, seed=seed, corpus_commit=plan["corpus_commit"], arm_order=order)
         ts = time.time()
         for arm in order:
-            failures += run_arm(arm, arms[arm], plan, run_dir, ctx, opts)
+            if not opts.keep_going:
+                failures += run_arm(arm, arms[arm], plan, run_dir, opts)
+                continue
+            try:
+                failures += run_arm(arm, arms[arm], plan, run_dir, opts)
+            except (Exception, SystemExit) as e:
+                runner.log("=== arm %s FAILED: %s: %s" % (arm, type(e).__name__, e))
+                failures.append((arm, "arm failed: %s" % e))
+                p = os.path.join(run_dir, arm, "arm.json")
+                if not os.path.exists(p):
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump({"arm": arm, "label": arms[arm]["label"], "complete": False,
+                                   "error": "%s: %s" % (type(e).__name__, e),
+                                   "flags": arms[arm]["flags"], "finished": time.time()},
+                                  f, indent=1)
         cfg["total_seconds"] = time.time() - ts
-        with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
+        # A seed run in several invocations (--arm-order, --resume) keeps the arms and times of
+        # the earlier ones.
+        cfg_path = os.path.join(run_dir, "config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, encoding="utf-8") as f:
+                old = json.load(f)
+            if old.get("arms") == cfg["arms"]:
+                cfg["arm_order"] = ([a for a in old.get("arm_order") or [] if a not in order]
+                                    + order)
+                cfg["total_seconds"] += old.get("total_seconds") or 0
+        with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=1)
-        runner.log("=== seed %d: both arms finished in %.1f min" % (seed, cfg["total_seconds"] / 60))
-        analyze.main([run_dir])
+        runner.log("=== seed %d: arms %s finished in %.1f min"
+                   % (seed, ",".join(order), (time.time() - ts) / 60))
+        done = [a for a in names if arm_complete(os.path.join(run_dir, a))]
+        if len(done) >= 2 and done[0] == base:
+            try:
+                analyze.main([run_dir])
+            except Exception as e:
+                runner.log("analysis of %s failed: %s: %s" % (run_dir, type(e).__name__, e))
+        else:
+            runner.log("seed %d: analysis waits for the baseline and one more arm (have %s)"
+                       % (seed, done))
         run_dirs.append(run_dir)
     runner.log("all seeds finished in %.1f min" % ((time.time() - t0) / 60))
     if len(run_dirs) > 1:
-        analyze.aggregate(out_dir, run_dirs)
+        try:
+            analyze.aggregate(out_dir, run_dirs)
+        except (Exception, SystemExit) as e:
+            runner.log("aggregate report failed: %s: %s" % (type(e).__name__, e))
     if failures:
         runner.log("RUN INVALID: %d client request failure(s): %s" % (len(failures), failures[:5]))
         return 1

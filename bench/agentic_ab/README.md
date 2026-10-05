@@ -74,8 +74,27 @@ command and the GPU state, and starts nothing.
 | `--order` | `abba` | `ab` runs A first on every seed |
 | `--scale` | `1.0` | stretches the session loops (0.3 is a smoke run) |
 | `--port`, `--host`, `--model-id` | `8091`, `127.0.0.1`, `qwen27b` | serve endpoint |
-| `--unit-prefix` | `agab` | units `<prefix>-a`, `<prefix>-b` |
+| `--unit-prefix` | `agab` | units `<prefix>-<arm>` (`<prefix>-a`, `<prefix>-b` with `--arm-a/--arm-b`) |
 | `--load-timeout`, `--request-timeout` | 900 s, 3600 s | `/health` wait; client socket timeout per request |
+| `--agent-max-tokens` | 64000 (or `AB_AGENT_MAX_TOKENS`) | `max_tokens` the client sends on every agent turn; written to `config.json` and `arm.json`, and per request to `client.jsonl` |
+| `--arms-file` | | JSON list of arms, baseline first, replacing `--arm-a`/`--arm-b` (below) |
+| `--arm-order` | | comma-separated arm names to run on every seed, in that order (default: all arms, forward on even seed positions and reversed on odd ones) |
+| `--keep-going` | off | an arm that fails to start or run is recorded in its `arm.json` and the next arm runs |
+
+**More than two arms, or arms that differ.** `--arms-file` takes a list such as
+
+```json
+[{"name": "prod", "label": "v0.4.6", "exe": "/path/ninfer-serve", "flags": "--tp 2 ... --max-context 262144 --kv-capacity 327680"},
+ {"name": "kv360", "exe": "/path/ninfer-serve", "flags": "... --kv-capacity 360448"},
+ {"name": "mt16k", "exe": "/path/ninfer-serve", "flags": "...", "agent_max_tokens": 16000}]
+```
+
+`flags` is the full flag string of that arm (default: the profile plus `--extra-flags`), so arms may
+differ in context, KV capacity or any other flag; the client's context guard follows each arm's own
+`--max-context`. `agent_max_tokens` overrides `--agent-max-tokens` for that arm. Units are
+`<prefix>-<name>`. Every arm is compared with the first one. A seed may be run arm by arm
+(`--seeds 42 --arm-order kv360 --resume`): `config.json` keeps the arms and times of the earlier
+invocations, and the seed's report is written as soon as the baseline and one more arm are complete.
 
 Profiles (both arms always get the same flags):
 

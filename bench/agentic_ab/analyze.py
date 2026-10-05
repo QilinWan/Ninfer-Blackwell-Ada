@@ -883,19 +883,34 @@ def main(argv):
     L = []
     L.append("# Agentic A/B: %s\n" % " vs ".join(LABEL[a] for a in arms))
     L.append("Run directory: `%s`\n" % run_dir)
-    if linux:
+    same_flags = all(cfg.get(a + "_flags", cfg.get("flags")) == cfg.get("flags") for a in arms)
+    mt = cfg.get("agent_max_tokens_by_arm") or {}
+    if linux and same_flags:
         tp = dict(cfg.get("flags") or []).get("--tp") or "1"
         L.append("- Model: `%s` on %s x %s, `--max-context %s`, identical flags in every arm "
                  "(profile `%s`, below); arms ran in the order %s."
                  % (os.path.basename(cfg["model"]), tp, gpu, ntok(ctx), cfg.get("profile"),
                     " then ".join(SHORT[a] for a in cfg.get("arm_order") or arms)))
+    elif linux:
+        tp = dict(cfg.get("flags") or []).get("--tp") or "1"
+        mc = cfg.get("max_context_by_arm") or {}
+        L.append("- Model: `%s` on %s x %s; **flags differ between arms** (below), "
+                 "`--max-context` %s; arms ran in the order %s."
+                 % (os.path.basename(cfg["model"]), tp, gpu,
+                    ", ".join("%s %s" % (SHORT[a], ntok(mc.get(a, ctx))) for a in arms),
+                    " then ".join(SHORT[a] for a in cfg.get("arm_order") or arms)))
     else:
         L.append("- Model: `%s` on an %s, `--max-context %s` for every arm (launch bat: %s)."
                  % (os.path.basename(cfg["model"]), gpu, ntok(ctx),
                     ntok(cfg.get("bat_max_context"))))
+    if len(set(mt.get(a, cfg["agent_max_tokens"]) for a in arms)) > 1:
+        mt_text = "`max_tokens` on agent turns %s" % ", ".join(
+            "%s %d" % (SHORT[a], mt.get(a, cfg["agent_max_tokens"])) for a in arms)
+    else:
+        mt_text = "`max_tokens: %d` on agent turns" % mt.get(arms[0], cfg["agent_max_tokens"])
     L.append("- Workload: %d requests per arm (seed %d, scale %.2f, corpus commit `%s`), "
-             "`max_tokens: %d` on agent turns, thinking on."
-             % (c["n"], cfg["seed"], cfg["scale"], cfg["corpus_commit"], cfg["agent_max_tokens"]))
+             "%s, thinking on."
+             % (c["n"], cfg["seed"], cfg["scale"], cfg["corpus_commit"], mt_text))
     exes = cfg.get("exes") or {"control": cfg["control_exe"], "treatment": cfg["treatment_exe"],
                                "alt": cfg["treatment_exe"]}
     for a in arms:

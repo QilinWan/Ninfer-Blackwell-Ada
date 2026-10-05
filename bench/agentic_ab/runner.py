@@ -79,7 +79,9 @@ PORT = int(os.environ.get("AB_PORT", "8080"))
 OUT_ROOT = os.environ.get("AB_OUT", os.path.join(REPO, "profiles", "bench", "agentic_ab"))
 # Context candidates below the bat's own value, tried in order when the control cannot start.
 CTX_FALLBACKS = [200000, 180000, 170000, 160000]
-AGENT_MAX_TOKENS = 64000   # what the production clients request on every agent turn
+# What the production clients request on every agent turn; AB_AGENT_MAX_TOKENS (or linux.py
+# --agent-max-tokens) sets a client-side cap instead, e.g. 16000.
+AGENT_MAX_TOKENS = int(os.environ.get("AB_AGENT_MAX_TOKENS") or 64000)
 REQUEST_TIMEOUT_S = 1200
 CONTEXT_GUARD_TOKENS = 24000  # keep prompts this far below --max-context
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -440,7 +442,8 @@ class ArmClient:
     def request(self, actor, step, messages, tools, max_tokens, seed, cls, abort_after=None):
         res = self.post(messages, tools, max_tokens, seed, abort_after)
         row = {"arm": self.arm, "actor": actor["name"], "tag": step.get("tag"), "cls": cls,
-               "copy": bool(step.get("copy")), "seed": seed, "status": res.status,
+               "copy": bool(step.get("copy")), "seed": seed, "max_tokens": max_tokens,
+               "status": res.status,
                "error": res.error, "finish": res.finish, "usage": res.usage,
                "t_send": res.t_send, "t_first": res.t_first, "t_done": res.t_done,
                "messages": len(messages), "tool_calls": len(res.tool_calls),
