@@ -919,6 +919,8 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--media-live-mib N` | all live prepared BF16 media payloads | `2048` |
 | `--media-preprocess-threads N` | bounded media preprocessing workers; `0` selects at most 16 from host concurrency | `0` |
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
+| `--log-speculation-detail` | add the per-step accepted draft lengths to every `request_done` record (test measurement; requires `--request-log-jsonl`); see [Structured request log](#structured-request-log) | off |
+| `--log-speculation-detail-max-steps N` | decode steps recorded per request by `--log-speculation-detail` (`1..1048576`); a longer request is marked truncated | `4096` |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
 | `--kv-dtype bf16\|int8\|fp8\|nvfp4\|k8v4\|rk4v4-e8` | KV-cache storage (`k8v4`/`nvfp4` need Blackwell; `rk4v4-e8` is the Ada 4-bit route) | `bf16` |
@@ -1119,7 +1121,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v25 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v26 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -1187,6 +1189,23 @@ counters. Between two boundaries, subtract the request delta from the global del
 other requests' completed work. In particular, `restored` to `replay_complete` establishes whether
 other work advanced during Replay without relying on periodic scheduler gauges. Events are enabled
 only with request logging and add no per-token records.
+
+`speculative.accepted_lengths` is the order behind that histogram, recorded only with
+`--log-speculation-detail` (otherwise it and `accepted_lengths_truncated` are `null`). It is a
+string with one character per decode step in execution order: the hexadecimal digit of the draft
+tokens that round accepted (`0` to the draft window, at most `f` = 15), or `-` for a step without a
+draft (a `fallback_steps` step). Decode it with
+`[None if c == "-" else int(c, 16) for c in s]`. Each round commits its accepted drafts plus one
+token, and the first output token comes from prefill, so the step at index `t` starts at output
+token `1 + sum(L + 1 for earlier rounds) + (earlier "-" steps)`, plus any thinking-control tokens
+inserted before it; this places a collapse of acceptance in the response (opening, code, after
+tool output, prose). Recording stops after
+`--log-speculation-detail-max-steps` steps (default 4096, one byte each in the record);
+`accepted_lengths_truncated` is then `true` and the string is the first steps of the request, while
+the counters above still cover all of it. Without a speculative backend the string is empty. The
+`server_start` record reports the cap as `server.speculation_detail_max_steps` (`null` when the
+detail is off). Recording is a request observation: it never changes generation, and with the
+option off the Engine records nothing and allocates nothing.
 
 For `server_start.memory`, `workspace.capacity_bytes` is the only physical workspace allocation.
 When Vision is enabled, `vision_workspace` reports the aggregate prompt and maximum-item token

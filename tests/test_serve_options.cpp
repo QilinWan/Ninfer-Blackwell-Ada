@@ -463,6 +463,41 @@ int main() {
     failures += check(!secret_present, "startup argv retained the API key");
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
 
+    failures += check(!defaults.log_speculation_detail && !logged.log_speculation_detail,
+                      "speculation detail is not off by default");
+    const ServeOptions detail = parse({"ninfer-serve", "model.ninfer", "--request-log-jsonl",
+                                       "requests.jsonl", "--log-speculation-detail"});
+    failures += check(detail.log_speculation_detail &&
+                          detail.speculation_detail_max_steps == kDefaultSpeculationDetailMaxSteps,
+                      "--log-speculation-detail did not enable the detail with the default cap");
+    const ServeOptions capped =
+        parse({"ninfer-serve", "model.ninfer", "--request-log-jsonl", "requests.jsonl",
+               "--log-speculation-detail", "--log-speculation-detail-max-steps", "100"});
+    failures += check(capped.speculation_detail_max_steps == 100,
+                      "--log-speculation-detail-max-steps did not set the per-request cap");
+    const auto rejected = [&](std::vector<std::string> arguments) {
+        try {
+            (void)parse(std::move(arguments));
+        } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--log-speculation-detail"}),
+                      "--log-speculation-detail without the JSONL log was accepted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--request-log-jsonl", "r.jsonl",
+                                "--log-speculation-detail-max-steps", "100"}),
+                      "a speculation-detail cap without the detail was accepted");
+    failures +=
+        check(rejected({"ninfer-serve", "model.ninfer", "--request-log-jsonl", "r.jsonl",
+                        "--log-speculation-detail", "--log-speculation-detail-max-steps", "0"}),
+              "a zero speculation-detail cap was accepted");
+    failures += check(rejected({"ninfer-serve", "model.ninfer", "--request-log-jsonl", "r.jsonl",
+                                "--log-speculation-detail", "--log-speculation-detail-max-steps",
+                                std::to_string(kMaximumSpeculationDetailMaxSteps + 1ULL)}),
+                      "a speculation-detail cap above the maximum was accepted");
+    failures += check(serve_usage_text("ninfer-serve").find("--log-speculation-detail-max-steps") !=
+                          std::string::npos,
+                      "serve help omits --log-speculation-detail-max-steps");
+
     const ServeOptions split =
         parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1"});
     failures += check(split.tp == 2 && split.devices == std::vector<int>{0, 1} &&

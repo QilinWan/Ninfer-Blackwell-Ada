@@ -46,6 +46,8 @@ struct GenerationMetrics {
     std::uint64_t speculative_accepted_tokens = 0;
     std::uint64_t speculative_fallback_steps  = 0;
     std::vector<std::uint64_t> speculative_accepted_per_position;
+    // Present only with --log-speculation-detail (SpeculativeStats::accepted_lengths).
+    std::optional<std::vector<std::uint8_t>> speculative_accepted_lengths;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::Root;
 };
@@ -110,6 +112,8 @@ struct PreparedRequest {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
+    // --log-speculation-detail requested the per-step accepted lengths for this request.
+    bool speculation_detail = false;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 

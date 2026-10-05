@@ -769,6 +769,9 @@ struct GenerationObservationOptions {
     // Optional for either consumer mode. No scheduling events are retained when unset.
     GenerationSchedulingObserver scheduling;
     GenerationFirstTokenObserver first_token;
+    // Record SpeculativeStats::accepted_lengths for at most this many decode steps; 0 records
+    // nothing. Ignored without a speculative backend.
+    std::uint32_t accepted_length_steps = 0;
 };
 
 class CancellationView {
@@ -874,6 +877,9 @@ struct GenerationFirstOutputTiming {
     std::array<std::array<GenerationTransferTiming, 3>, 3> context_transfers{};
 };
 
+// accepted_lengths entry of a decode step that verified no draft (counted in fallback_steps).
+inline constexpr std::uint8_t kSpeculativeFallbackStep = 0xFF;
+
 struct SpeculativeStats {
     SpeculativeBackend backend    = SpeculativeBackend::None;
     bool enabled                  = false;
@@ -883,6 +889,11 @@ struct SpeculativeStats {
     std::uint64_t accepted_tokens = 0;
     std::uint64_t fallback_steps  = 0;
     std::vector<std::uint64_t> accepted_per_position;
+    // Only with GenerationObservationOptions::accepted_length_steps: one entry per decode step in
+    // execution order, the draft tokens accepted by a round (0..draft_window) or
+    // kSpeculativeFallbackStep, for the first accepted_length_steps steps. Fewer entries than
+    // rounds + fallback_steps means the sequence was cut at that limit.
+    std::vector<std::uint8_t> accepted_lengths;
 };
 
 struct ThinkingBudgetStats {

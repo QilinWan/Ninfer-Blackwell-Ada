@@ -96,10 +96,20 @@ void ordinary_decode_batch(OrdinaryBatchContext& state, std::int32_t batch_size,
 
 namespace ninfer::models::qwen3_5::detail {
 
-namespace {} // namespace
+namespace {
+
+// Observation only: the entry is appended within the capacity reserved by install_sampling.
+void record_accepted_length(RequestControl& request, std::uint8_t length) noexcept {
+    std::vector<std::uint8_t>& lengths = request.speculative_stats.accepted_lengths;
+    if (lengths.size() < request.accepted_length_steps) { lengths.push_back(length); }
+}
+
+} // namespace
 
 void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& request,
-                                   const ops::SamplingConfig& config) {
+                                   const ops::SamplingConfig& config,
+                                   std::uint32_t accepted_length_steps,
+                                   std::uint32_t output_tokens) {
     Tensor counts = token_counts.slice(1, static_cast<std::int32_t>(sequence.lane), 1)
                         .view({dimension(parameters.model.resources().public_token_count)});
     request.sampling_host     = config;
@@ -109,6 +119,14 @@ void ProgramImpl::install_sampling(SequenceState& sequence, RequestControl& requ
         .draft_window          = draft_window,
         .accepted_per_position = std::vector<std::uint64_t>(draft_window, 0),
     };
+    // Every decode step commits at least one of the output tokens, so the bound below is never
+    // exceeded and recording never reallocates inside a round.
+    request.accepted_length_steps = speculative_backend == SpeculativeBackend::None
+                                        ? 0U
+                                        : std::min(accepted_length_steps, output_tokens);
+    if (request.accepted_length_steps != 0) {
+        request.speculative_stats.accepted_lengths.reserve(request.accepted_length_steps);
+    }
     const bool penalties = request.sampling_host.presence_penalty != 0.0F ||
                            request.sampling_host.frequency_penalty != 0.0F;
     if (penalties) { CUDA_CHECK(cudaMemsetAsync(counts.data, 0, counts.bytes(), device.stream)); }
@@ -536,6 +554,10 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
                         1;
                 }
             }
+            if (request.accepted_length_steps != 0) {
+                record_accepted_length(request, pcur == 0 ? kSpeculativeFallbackStep
+                                                          : static_cast<std::uint8_t>(accepted_i));
+            }
             request.pending = PendingCandidate{
                 .kind          = PendingKind::Speculative,
                 .base_E        = base_E,
@@ -756,6 +778,11 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
                     request.speculative_stats.accepted_per_position[static_cast<std::size_t>(i)] +=
                         1;
                 }
+            }
+            if (request.accepted_length_steps != 0) {
+                record_accepted_length(request, extent == 0
+                                                    ? kSpeculativeFallbackStep
+                                                    : static_cast<std::uint8_t>(accepted_i));
             }
             sequence.dflash_context_frontier = base_E;
             request.pending                  = PendingCandidate{

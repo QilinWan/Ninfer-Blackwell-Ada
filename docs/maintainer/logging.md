@@ -158,6 +158,14 @@ machine terminal: `request_done` immediately after `GenerationService::run()` re
 transport happen after that transaction; their failures are operational `response` records and do
 not create a second request JSONL terminal.
 
+`--log-speculation-detail` is a test measurement option, off by default. It asks the Engine, through
+the per-request `GenerationObservationOptions::accepted_length_steps`, to record the accepted draft
+length of each decode step into `SpeculativeStats::accepted_lengths`, bounded by the server cap and
+reserved once when the request is installed; the decode loop appends within that reservation and
+never allocates inside a round. With the option off the bound is zero and the loop only tests it.
+The JSONL writer renders the sequence as one hexadecimal digit per step; the pretty record does not
+show it. The values are per-step counts, never token ids or text.
+
 Tool-call parameter normalization remains a successful request outcome. Empty-argument omissions
 and schema mismatches are machine-only counters. If a complete tool marker must be returned to text
 because its structure or declared identity cannot be represented, Serve emits one warning carrying
@@ -170,7 +178,9 @@ explicit emergency cases above remain direct outputs because they are different 
 
 Logging tests protect NInfer-owned observable semantics, not private object shape. The request-log
 test covers the consumed JSONL schema, representative request/throughput pretty records, Serve
-failure severity, and exclusion of arbitrary client error text; `ninfer_gpu_telemetry_real_test`
+failure severity, and exclusion of arbitrary client error text; the two-GPU MTP Engine test
+(`ninfer_qwen3_5_engine_mtp_tp2_real_test`) checks that a recorded per-step sequence reproduces the
+speculative counters exactly and leaves the greedy run unchanged; `ninfer_gpu_telemetry_real_test`
 reads NVML on the local GPUs and skips without them. The pretty-logging test covers the
 observable Service and Tool prefixes. The corpus consumer test protects its exact schema-version
 agreement with Serve. Startup progress coordination is verified through terminal and redirected

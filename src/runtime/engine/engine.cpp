@@ -309,6 +309,7 @@ GenerationHandle Engine::submit(PreparedPrompt prompt, RequestOptions options,
 
     runtime::ResolvedRequestOptions resolved_options = resolve_request_options(
         impl_->sampling_defaults, prompt.impl_->sampling_mode, std::move(options));
+    resolved_options.execution.accepted_length_steps   = observation.accepted_length_steps;
     const ResolvedSamplingParameters resolved_sampling = resolved_options.execution.sampling;
 
     const PromptSummary prompt_summary = prompt.impl_->summary;

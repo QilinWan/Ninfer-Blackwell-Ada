@@ -153,6 +153,18 @@ int main() {
     failures += check(server.at("schema_version") == kRequestLogSchemaVersion,
                       "server record schema mismatch");
     failures += check(server.at("event") == "server_start", "server event mismatch");
+    failures += check(server.at("server").at("speculation_detail_max_steps").is_null(),
+                      "speculation detail is recorded as configured while disabled");
+    ServeOptions detail_options                 = options;
+    detail_options.log_speculation_detail       = true;
+    detail_options.speculation_detail_max_steps = 512;
+    failures +=
+        check(Json::parse(format_server_start_json(
+                              "serve-test", 1001, detail_options, engine_options, sampling_defaults,
+                              "deployment-alias", load, memory, environment, std::uint64_t{123456}))
+                      .at("server")
+                      .at("speculation_detail_max_steps") == 512,
+              "speculation detail cap missing from the server record");
     failures += check(server.at("server").at("public_model_id") == "deployment-alias",
                       "resolved public model id missing");
     failures += check(server.at("artifact").at("architecture") == "Qwen3_5ForCausalLM",

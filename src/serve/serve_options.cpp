@@ -128,6 +128,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
            "[--device-state-slots N] [--host-context-mib N] [--turn-anchors N] "
+           "[--log-speculation-detail [--log-speculation-detail-max-steps N]] "
            "[--request-log-jsonl FILE] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8] "
@@ -150,6 +151,12 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
+           "       --log-speculation-detail adds the per-step accepted draft lengths to every "
+           "request_done record (requires --request-log-jsonl; off by default);\n"
+           "       --log-speculation-detail-max-steps caps them per request (default " +
+           std::to_string(kDefaultSpeculationDetailMaxSteps) + ", at most " +
+           std::to_string(kMaximumSpeculationDetailMaxSteps) +
+           "; longer requests are marked truncated)\n"
            "       --model-id overrides the artifact metadata.name reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
@@ -204,6 +211,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
 
     bool device_explicit             = false;
     bool host_capacity_explicit      = false;
+    bool detail_steps_explicit           = false;
     std::optional<std::size_t> vram_headroom_mib;
 
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
@@ -298,6 +306,16 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 parse_host_context_mib(require_value("--host-context-mib"));
             options.context_cache.host_capacity_bytes = bytes;
             host_capacity_explicit                    = bytes != 0;
+        } else if (arg == "--log-speculation-detail") {
+            options.log_speculation_detail = true;
+        } else if (arg == "--log-speculation-detail-max-steps") {
+            const std::uint64_t steps = parse_u64(
+                require_value("--log-speculation-detail-max-steps"),
+                "log-speculation-detail-max-steps");
+            if (steps > (1ULL << 20)) {
+                throw std::invalid_argument("--log-speculation-detail-max-steps exceeds 2^20");
+            }
+            options.speculation_detail_max_steps = static_cast<std::uint32_t>(steps);
         } else if (arg == "--turn-anchors") {
             options.turn_anchors = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--turn-anchors"), "turn-anchors"));
@@ -306,6 +324,19 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (options.request_log_jsonl.empty()) {
                 throw std::invalid_argument("--request-log-jsonl must not be empty");
             }
+        } else if (arg == "--log-speculation-detail") {
+            options.log_speculation_detail = true;
+        } else if (arg == "--log-speculation-detail-max-steps") {
+            const std::uint64_t steps =
+                parse_u64(require_value("--log-speculation-detail-max-steps"),
+                          "log-speculation-detail-max-steps");
+            if (steps == 0 || steps > kMaximumSpeculationDetailMaxSteps) {
+                throw std::invalid_argument("--log-speculation-detail-max-steps must be in [1," +
+                                            std::to_string(kMaximumSpeculationDetailMaxSteps) +
+                                            "]");
+            }
+            options.speculation_detail_max_steps = static_cast<std::uint32_t>(steps);
+            detail_steps_explicit                = true;
         } else if (arg == "--response-store-max-records") {
             const int records = parse_nonnegative_int(require_value("--response-store-max-records"),
                                                       "response-store-max-records");
@@ -408,6 +439,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (!kv_capacity_explicit) {
         options.kv_capacity = KvCapacityPolicy::explicit_capacity(options.max_context);
+    }
+    if (options.log_speculation_detail && options.request_log_jsonl.empty()) {
+        throw std::invalid_argument("--log-speculation-detail requires --request-log-jsonl");
+    }
+    if (detail_steps_explicit && !options.log_speculation_detail) {
+        throw std::invalid_argument(
+            "--log-speculation-detail-max-steps requires --log-speculation-detail");
     }
     if (vram_headroom_mib.has_value()) {
         if (options.kv_capacity.mode != KvCapacityMode::Automatic) {

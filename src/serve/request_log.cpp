@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -344,6 +345,34 @@ Json accepted_length_histogram_json(std::uint64_t rounds,
     return histogram;
 }
 
+// One character per decode step in execution order: the hexadecimal digit of the draft tokens
+// the round accepted (the draft window is at most 15), or '-' for a step without a draft. null
+// when the sequence was not recorded or holds a length beyond the draft window, which no backend
+// produces.
+Json accepted_lengths_json(const GenerationMetrics& metrics) {
+    if (!metrics.speculative_accepted_lengths) { return nullptr; }
+    constexpr std::string_view kDigits = "0123456789abcdef";
+    std::string steps;
+    steps.reserve(metrics.speculative_accepted_lengths->size());
+    for (const std::uint8_t length : *metrics.speculative_accepted_lengths) {
+        if (length == ninfer::kSpeculativeFallbackStep) {
+            steps.push_back('-');
+        } else if (length <= metrics.speculative_draft_window && length < kDigits.size()) {
+            steps.push_back(kDigits[length]);
+        } else {
+            return nullptr;
+        }
+    }
+    return steps;
+}
+
+// The sequence stops at --log-speculation-detail-max-steps; every step before it is recorded.
+Json accepted_lengths_truncated_json(const GenerationMetrics& metrics) {
+    if (!metrics.speculative_accepted_lengths) { return nullptr; }
+    return metrics.speculative_accepted_lengths->size() <
+           metrics.speculative_rounds + metrics.speculative_fallback_steps;
+}
+
 Json speculative_json(const GenerationMetrics& metrics) {
     return Json{{"backend", product::speculative_backend_name(metrics.speculative_backend)},
                 {"draft_window", metrics.speculative_draft_window},
@@ -354,7 +383,9 @@ Json speculative_json(const GenerationMetrics& metrics) {
                 {"accepted_per_position", metrics.speculative_accepted_per_position},
                 {"accepted_length_histogram",
                  accepted_length_histogram_json(metrics.speculative_rounds,
-                                                metrics.speculative_accepted_per_position)}};
+                                                metrics.speculative_accepted_per_position)},
+                {"accepted_lengths", accepted_lengths_json(metrics)},
+                {"accepted_lengths_truncated", accepted_lengths_truncated_json(metrics)}};
 }
 
 Json scheduling_json(const ninfer::GenerationSchedulingStats& stats) {
@@ -550,6 +581,9 @@ std::string format_server_start_json(
              {"media_live_bytes", options.media_live_bytes},
              {"media_preprocess_threads", options.media_preprocess_threads},
              {"request_log_jsonl", options.request_log_jsonl},
+             {"speculation_detail_max_steps", options.log_speculation_detail
+                                                  ? Json(options.speculation_detail_max_steps)
+                                                  : Json(nullptr)},
              {"default_output_tokens", options.default_max_tokens},
              {"default_thinking",
               options.enable_thinking ? Json(*options.enable_thinking) : Json(nullptr)},

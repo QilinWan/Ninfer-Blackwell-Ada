@@ -18,6 +18,11 @@ inline constexpr int kDefaultMaxTokens                    = 8192;
 inline constexpr std::size_t kDefaultMaxRequestBytes      = 384ULL << 20;
 inline constexpr std::size_t kDefaultResponseStoreRecords = 1024;
 inline constexpr std::size_t kDefaultResponseStoreBytes   = 256ULL << 20;
+// --log-speculation-detail records the accepted draft length of at most this many decode steps
+// per request (one byte each in the JSONL record) unless --log-speculation-detail-max-steps
+// changes it.
+inline constexpr std::uint32_t kDefaultSpeculationDetailMaxSteps = 4096;
+inline constexpr std::uint32_t kMaximumSpeculationDetailMaxSteps = 1U << 20;
 
 struct ServeOptions {
     bool help_requested = false;
@@ -70,6 +75,10 @@ struct ServeOptions {
     SamplingOverrides sampling_overrides;
     bool greedy                 = false; // --greedy: force temperature 0 (exact argmax)
     product::LogLevel log_level = product::LogLevel::Info;
+
+    // Test measurement in request_done (per-step accepted draft lengths); requires the JSONL log.
+    bool log_speculation_detail                = false;
+    std::uint32_t speculation_detail_max_steps = kDefaultSpeculationDetailMaxSteps;
 
     // Exact process argv for the server-start record. Secret-bearing option values are redacted
     // while parsing; this is provenance only and never affects execution.

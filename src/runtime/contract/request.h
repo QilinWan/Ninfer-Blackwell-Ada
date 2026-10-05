@@ -14,6 +14,9 @@ struct ResolvedExecutionOptions {
     std::uint32_t requested_output_tokens = 0;
     bool allow_prefix_reuse               = true;
     ThinkingControlOptions thinking;
+    // GenerationObservationOptions::accepted_length_steps: a publication bound, never an
+    // execution input.
+    std::uint32_t accepted_length_steps = 0;
 };
 
 struct ResolvedRequestOptions {

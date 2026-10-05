@@ -22,6 +22,11 @@
 //     or the MTP KV) collapses to chance acceptance while the output stays right.
 //   * single and concurrent: "What is 17*23?" answers 391 alone and while a long answer holds
 //     the other lane, in shared two-row MTP rounds; a second pair runs together as well.
+//   * per-step accepted lengths (GenerationObservationOptions::accepted_length_steps): the
+//     recorded sequence has one entry per decode step and reproduces rounds, fallback steps,
+//     accepted tokens and accepted_per_position exactly; recording leaves the greedy tokens and
+//     counters of an unrecorded run unchanged; a cap keeps exactly the first steps; in a shared
+//     two-row round only the observed request records.
 //   * repeated requests: more than the private continuation catalog's worth of requests in series,
 //     each binding and releasing both ranks' MTP KV rows (a leaked rank 1 row fails the bind of a
 //     later request).
@@ -282,6 +287,92 @@ int exercise_concurrent(ninfer::Engine& engine) {
     return failures;
 }
 
+// Rebuilds the counters from a complete per-step sequence and compares them with the Engine's.
+int check_accepted_lengths(const ninfer::SpeculativeStats& stats, const char* label) {
+    std::uint64_t rounds = 0, fallback = 0, accepted = 0;
+    std::vector<std::uint64_t> at_least(stats.draft_window, 0);
+    for (const std::uint8_t length : stats.accepted_lengths) {
+        if (length == ninfer::kSpeculativeFallbackStep) {
+            ++fallback;
+            continue;
+        }
+        if (length > stats.draft_window) {
+            std::cerr << label << ": accepted length " << int{length} << " exceeds the window\n";
+            return 1;
+        }
+        ++rounds;
+        accepted += length;
+        for (std::uint8_t i = 0; i < length; ++i) { ++at_least[i]; }
+    }
+    if (rounds != stats.rounds || fallback != stats.fallback_steps ||
+        accepted != stats.accepted_tokens || at_least != stats.accepted_per_position) {
+        std::cerr << label << ": " << stats.accepted_lengths.size()
+                  << " recorded steps do not reproduce the counters (rounds " << rounds << "/"
+                  << stats.rounds << ", fallback " << fallback << "/" << stats.fallback_steps
+                  << ", accepted " << accepted << "/" << stats.accepted_tokens << ")\n";
+        return 1;
+    }
+    return 0;
+}
+
+int exercise_accepted_lengths(ninfer::Engine& engine) {
+    int failures               = 0;
+    const char* const prompt   = probes().back().prompt;
+    const std::uint32_t tokens = probes().back().tokens;
+    const auto run             = [&](std::uint32_t steps) {
+        return engine
+            .submit(engine.prepare(user_prompt(prompt)), greedy(tokens),
+                    ninfer::OutputConsumerMode::Aggregate,
+                    ninfer::GenerationObservationOptions{.accepted_length_steps = steps})
+            .wait();
+    };
+    const ninfer::GenerationResult plain    = run(0);
+    const ninfer::GenerationResult recorded = run(4096);
+    const ninfer::GenerationResult capped   = run(5);
+    const ninfer::SpeculativeStats& stats   = recorded.speculative;
+    std::cout << "accepted lengths: " << stats.accepted_lengths.size() << " steps, " << stats.rounds
+              << " rounds, " << stats.fallback_steps << " fallback steps\n";
+    if (!plain.speculative.accepted_lengths.empty()) {
+        std::cerr << "accepted lengths were recorded without the observation\n";
+        ++failures;
+    }
+    if (stats.rounds < 8) {
+        std::cerr << "accepted lengths: only " << stats.rounds << " rounds ran\n";
+        ++failures;
+    }
+    failures += check_accepted_lengths(stats, "accepted lengths");
+    if (recorded.generated_token_ids != plain.generated_token_ids ||
+        stats.rounds != plain.speculative.rounds ||
+        stats.accepted_tokens != plain.speculative.accepted_tokens ||
+        stats.accepted_per_position != plain.speculative.accepted_per_position) {
+        std::cerr << "recording accepted lengths changed the greedy run\n";
+        ++failures;
+    }
+    if (capped.speculative.accepted_lengths.size() != 5 ||
+        !std::equal(capped.speculative.accepted_lengths.begin(),
+                    capped.speculative.accepted_lengths.end(), stats.accepted_lengths.begin())) {
+        std::cerr << "a 5-step cap did not keep exactly the first 5 steps\n";
+        ++failures;
+    }
+
+    // Shared two-row rounds: only the observed lane records, and its sequence stays its own.
+    ninfer::GenerationHandle counting = engine.submit(
+        engine.prepare(user_prompt("Write the integers from 1 to 40, separated by a comma and a "
+                                   "space, and nothing else.")),
+        greedy(160), ninfer::OutputConsumerMode::Aggregate,
+        ninfer::GenerationObservationOptions{.accepted_length_steps = 4096});
+    ninfer::GenerationHandle product = engine.submit(
+        engine.prepare(user_prompt("What is 17*23? Answer with the number only.")), greedy(32));
+    const ninfer::GenerationResult counted    = counting.wait();
+    const ninfer::GenerationResult multiplied = product.wait();
+    failures += check_accepted_lengths(counted.speculative, "concurrent accepted lengths");
+    if (!multiplied.speculative.accepted_lengths.empty()) {
+        std::cerr << "an unobserved concurrent lane recorded accepted lengths\n";
+        ++failures;
+    }
+    return failures;
+}
+
 int exercise_repeated(ninfer::Engine& engine) {
     int failures = 0;
     for (std::uint32_t index = 0; index < kRepeatedRequests; ++index) {
@@ -456,6 +547,7 @@ int main(int argc, char** argv) {
             ninfer::Engine engine(engine_options(artifact, true, optimized));
             failures += exercise_parity(engine, reference);
             failures += exercise_concurrent(engine);
+            failures += exercise_accepted_lengths(engine);
             failures += exercise_repeated(engine);
         }
         {

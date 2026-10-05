@@ -198,6 +198,9 @@ struct CaptureReservation {
 };
 
 struct RequestControl {
+    // Per-step accepted draft lengths: the bound of SpeculativeStats::accepted_lengths,
+    // installed with the round's sampling (0 records nothing).
+    std::uint32_t accepted_length_steps = 0;
     Lifecycle lifecycle = Lifecycle::Empty;
     PendingCandidate pending;
     ops::SamplingConfig sampling_host;
@@ -657,7 +660,8 @@ public:
                                                             runtime::TokenMaskProvider*);
     void prepare_graphs();
     void install_sampling(SequenceState& sequence, RequestControl& request,
-                          const ops::SamplingConfig& config);
+                          const ops::SamplingConfig& config, std::uint32_t accepted_length_steps,
+                          std::uint32_t output_tokens);
     void set_device_i32(Tensor& tensor, std::int32_t value);
     // Rank 1's copy of an I32 control scalar, uploaded on rank 1's stream.
     void set_peer_i32(Tensor& tensor, std::int32_t value);
