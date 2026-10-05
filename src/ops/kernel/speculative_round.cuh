@@ -166,7 +166,10 @@ __device__ __forceinline__ void speculative_sparse_warp_accept(
             const float qd = speculative_sparse_probability(candidate_ids + at, proposal_q + at, d);
             const float u  = sampling_uniform(cfg.seed, old_length + lane + 1,
                                               kSamplePurposeSpeculativeAccept, 0);
-            reject         = !(pd >= qd || u * qd < pd);
+            // A proposal lookup miss (qd == 0) would otherwise accept the draft unconditionally
+            // and leave the position target-unmatched (upstream issue #349). Rejecting it keeps
+            // the residual resample on the unmodified target distribution.
+            reject         = qd <= 0.0f || !(pd >= qd || u * qd < pd);
         }
     }
     const unsigned failures = __ballot_sync(0xffffffffU, reject);
