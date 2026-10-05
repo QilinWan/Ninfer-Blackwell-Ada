@@ -1134,7 +1134,7 @@ they do not infer request behavior from process-global counter deltas.
 `request_done.speculative` also carries `accepted_length_histogram`: entry i counts the rounds that accepted exactly i drafts (i = 0..draft window, summing to `rounds`) — the per-request distribution the K-adaptive and fallback questions are asked about, derived from `accepted_per_position` in the serializer. This tree logs it under its own request-log schema version.
 | `request_scheduling` | request identity, pause/restore/recovery transitions, Snapshot revocation, Engine observation time and cumulative global/request work counters |
 | `request_error` | the resolved request configuration and the generation, cancellation, or pre-outcome transport terminal message |
-| `throughput` | interval token/decode/context-cache pressure counter deltas, authoritative worker Host-work deltas, current scheduler/resource gauges, and decode-round batch statistics |
+| `throughput` | interval token/decode/context-cache pressure counter deltas, authoritative worker Host-work deltas, current scheduler/resource gauges, decode-round batch statistics, and per-GPU clocks, power, energy, temperature and clock-event reasons |
 
 `requested_reasoning_effort` and `preserve_thinking` record the explicit options, or `null` when
 unspecified. `enable_thinking` records whether the response starts in thinking mode.
@@ -1257,7 +1257,20 @@ the current running/prefill/decode-ready composition, nonzero waiting/materializ
 states, average decode batch, and Host-active time plus its fraction of the interval. Use JSONL for
 complete measurement analysis.
 Intervals with context materialization or retention activity are retained even when they contain no
-token execution; only fully idle intervals are omitted. Downstream measurement should prefer the
+token execution; only fully idle intervals are omitted.
+
+The JSONL `throughput.gpus` array has one object per device the Engine uses (`--devices`, rank 0
+first), read through NVML at the end of the interval: `device`, `sm_clock_mhz`, `memory_clock_mhz`,
+`power_watts` (the driver's board power draw, itself a short average), `temperature_celsius`,
+`energy_joules` consumed over the interval (so `energy_joules / interval_seconds` is the interval's
+average power), and `clock_event_reasons`, the NVML clocks-event (throttle) reasons active at that
+moment (`gpu_idle`, `applications_clocks_setting` for application or locked clocks, `sw_power_cap`,
+`hw_slowdown`, `sync_boost`, `sw_thermal_slowdown`, `hw_thermal_slowdown`,
+`hw_power_brake_slowdown`, `display_clock_setting`; an undefined bit appears as its hexadecimal
+value). A value NVML cannot read is `null`. The server loads `libnvidia-ml.so.1` (installed with
+the NVIDIA driver) at run time and matches devices by UUID; without it, or with the JSONL log or the
+statistics interval disabled, `gpus` is `null`. The reads happen on the statistics thread every
+interval, written or not, never on the request path; pretty throughput does not show them. Downstream measurement should prefer the
 raw counters and seconds over rounded stderr rates.
 
 ## Execution behavior

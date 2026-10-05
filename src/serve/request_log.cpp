@@ -396,6 +396,29 @@ Json admission_json(const ninfer::GenerationAdmissionStats& stats) {
                 {"fallback_reason", reason}};
 }
 
+template <class T>
+Json optional_json(const std::optional<T>& value) {
+    return value ? Json(*value) : Json(nullptr);
+}
+
+Json gpu_samples_json(const std::optional<std::vector<GpuTelemetrySample>>& samples) {
+    if (!samples) { return nullptr; }
+    Json result = Json::array();
+    for (const GpuTelemetrySample& sample : *samples) {
+        result.push_back(Json{{"device", sample.device},
+                              {"sm_clock_mhz", optional_json(sample.sm_clock_mhz)},
+                              {"memory_clock_mhz", optional_json(sample.memory_clock_mhz)},
+                              {"power_watts", optional_json(sample.power_watts)},
+                              {"energy_joules", optional_json(sample.energy_joules)},
+                              {"temperature_celsius", optional_json(sample.temperature_celsius)},
+                              {"clock_event_reasons",
+                               sample.clock_event_reasons
+                                   ? Json(clock_event_reason_names(*sample.clock_event_reasons))
+                                   : Json(nullptr)}});
+    }
+    return result;
+}
+
 double nanoseconds_to_seconds(std::uint64_t value) noexcept {
     return static_cast<double>(value) * 1.0e-9;
 }
@@ -757,6 +780,7 @@ std::string format_throughput_json(const std::string& server_instance_id, std::u
     record["decode_batch"] = Json{{"rounds", report.decode_rounds},
                                   {"row_rounds", report.decode_row_rounds},
                                   {"average_size", std::move(average_batch)}};
+    record["gpus"]         = gpu_samples_json(report.gpus);
     record["host_work"]    = Json{
            {"elapsed_seconds",
             Json{{"engine_boundary", nanoseconds_to_seconds(host.engine_boundary_ns)},

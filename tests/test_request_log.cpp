@@ -831,6 +831,40 @@ int main() {
                      50.0) < 1.0e-12,
         "throughput Host work deltas or normalization are incorrect");
 
+    failures += check(throughput_json.at("gpus").is_null(),
+                      "throughput without GPU telemetry must record null gpus");
+    ThroughputReport sampled = throughput;
+    sampled.gpus             = std::vector<GpuTelemetrySample>{
+        GpuTelemetrySample{.device              = 0,
+                           .sm_clock_mhz        = 2100,
+                           .memory_clock_mhz    = 13801,
+                           .power_watts         = 182.25,
+                           .energy_joules       = 364.5,
+                           .temperature_celsius = 61,
+                           .clock_event_reasons = 0x4},
+        GpuTelemetrySample{.device = 1},
+    };
+    const Json gpus = Json::parse(format_throughput_json("serve-test", 5002, sampled)).at("gpus");
+    failures += check(
+        gpus.size() == 2 && gpus.at(0).at("device") == 0 && gpus.at(0).at("sm_clock_mhz") == 2100 &&
+            gpus.at(0).at("memory_clock_mhz") == 13801 && gpus.at(0).at("power_watts") == 182.25 &&
+            gpus.at(0).at("energy_joules") == 364.5 && gpus.at(0).at("temperature_celsius") == 61 &&
+            gpus.at(0).at("clock_event_reasons") == Json::array({"sw_power_cap"}),
+        "throughput GPU telemetry sample missing or renamed");
+    failures += check(gpus.at(1).at("device") == 1 && gpus.at(1).at("sm_clock_mhz").is_null() &&
+                          gpus.at(1).at("power_watts").is_null() &&
+                          gpus.at(1).at("energy_joules").is_null() &&
+                          gpus.at(1).at("clock_event_reasons").is_null(),
+                      "an unreadable GPU value must serialize as null");
+    failures += check(render_throughput(sampled).message == pretty_throughput,
+                      "GPU telemetry leaked into the pretty throughput record");
+    failures += check(clock_event_reason_names(0) == std::vector<std::string>{} &&
+                          clock_event_reason_names(0x1 | 0x2 | 0x40) ==
+                              std::vector<std::string>{"gpu_idle", "applications_clocks_setting",
+                                                       "hw_thermal_slowdown"} &&
+                          clock_event_reason_names(0x200) == std::vector<std::string>{"0x200"},
+                      "NVML clocks-event reason names are wrong");
+
     ThroughputReport zero_rounds;
     const Json zero_rounds_json =
         Json::parse(format_throughput_json("serve-test", 5001, zero_rounds));

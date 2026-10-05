@@ -97,6 +97,7 @@ def test_result_record_parses_request_host_exposure() -> None:
         "artifact_type": "ninfer_serve_request_log",
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
         "schema_version": corpus.SERVER_LOG_SCHEMA_VERSION,
 ||||||| parent of 7b75283f (serve: label requests with an X-Ninfer-Client header in the request log)
         "schema_version": 21,
@@ -108,6 +109,11 @@ def test_result_record_parses_request_host_exposure() -> None:
 =======
         "schema_version": 23,
 >>>>>>> a42509b9 (serve: log the per-request histogram of accepted draft lengths)
+||||||| parent of fb44518e (serve: record GPU clocks, power and energy in the throughput event)
+        "schema_version": 24,
+=======
+        "schema_version": 25,
+>>>>>>> fb44518e (serve: record GPU clocks, power and energy in the throughput event)
         "event": "request_done",
         "request": {
             "model": spec.model_id,

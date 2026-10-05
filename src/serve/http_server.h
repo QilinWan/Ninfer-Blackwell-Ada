@@ -115,6 +115,9 @@ private:
     Metrics metrics_;
     httplib::Server server_;
     std::atomic<std::uint64_t> request_seq_{0};
+    // Owned by the statistics thread once listen() starts; created by attach() only when the
+    // JSONL log and the statistics interval are both enabled.
+    std::unique_ptr<GpuTelemetry> gpu_telemetry_;
     std::mutex stats_mutex_;
     std::condition_variable stats_cv_;
     std::thread stats_thread_;

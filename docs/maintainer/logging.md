@@ -136,7 +136,9 @@ persistent pretty record and, when request logging is enabled, one full-precisio
 produced from the same interval at each configured deadline. Periodic scheduling uses absolute
 steady-clock deadlines so logging work does not accumulate drift. Missed periods are not replayed
 in a burst. A partial shutdown interval may be retained by JSONL, but does not create an irregular
-pretty throughput record.
+pretty throughput record. The same statistics thread reads the GPUs' clocks, power, energy and
+temperature through NVML (loaded at run time) for the JSONL record only; it never runs on the
+request path, and the pretty record does not show it.
 
 Engine startup is an inclusive typed hierarchy. `engine-startup` contains CUDA initialization,
 artifact inspection, semantic binding, weight materialization, model/frontend construction,
@@ -168,7 +170,8 @@ explicit emergency cases above remain direct outputs because they are different 
 
 Logging tests protect NInfer-owned observable semantics, not private object shape. The request-log
 test covers the consumed JSONL schema, representative request/throughput pretty records, Serve
-failure severity, and exclusion of arbitrary client error text. The pretty-logging test covers the
+failure severity, and exclusion of arbitrary client error text; `ninfer_gpu_telemetry_real_test`
+reads NVML on the local GPUs and skips without them. The pretty-logging test covers the
 observable Service and Tool prefixes. The corpus consumer test protects its exact schema-version
 agreement with Serve. Startup progress coordination is verified through terminal and redirected
 paths when that code changes; registry, mutex, getter, and constructor tests are not retained.

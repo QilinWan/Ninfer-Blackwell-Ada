@@ -9,11 +9,13 @@
 
 #include <chrono>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace ninfer::serve {
 namespace {
@@ -296,6 +298,8 @@ void HttpServer::run_stats_reporter() {
     using Clock                     = std::chrono::steady_clock;
     ninfer::RuntimeStats previous   = service_->runtime_stats();
     Clock::time_point previous_time = Clock::now();
+    // The first sample only sets the energy baseline; NVML reads stay on this thread.
+    if (gpu_telemetry_ != nullptr) { (void)gpu_telemetry_->sample(); }
     const auto interval             = std::chrono::milliseconds(options_.log_stats_interval_ms);
     Clock::time_point next_deadline = previous_time + interval;
 
@@ -309,8 +313,10 @@ void HttpServer::run_stats_reporter() {
 
         const ninfer::RuntimeStats current = service_->runtime_stats();
         const Clock::time_point now        = Clock::now();
-        const ThroughputReport report      = make_throughput_report(
+        ThroughputReport report            = make_throughput_report(
             previous, current, std::chrono::duration<double>(now - previous_time).count());
+        // Sampled every interval, written or not, so energy always covers exactly one interval.
+        if (gpu_telemetry_ != nullptr) { report.gpus = gpu_telemetry_->sample(); }
         if (report_has_activity(report)) { record_throughput(report); }
         previous      = current;
         previous_time = now;
@@ -323,6 +329,7 @@ void HttpServer::run_stats_reporter() {
     const Clock::time_point now        = Clock::now();
     ThroughputReport tail              = make_throughput_report(
         previous, current, std::chrono::duration<double>(now - previous_time).count());
+    if (gpu_telemetry_ != nullptr) { tail.gpus = gpu_telemetry_->sample(); }
     // The exact partial interval remains useful to measurement consumers. Pretty throughput is a
     // fixed-cadence operational record and deliberately has no irregular shutdown tail.
     tail.final_interval = true;
@@ -523,6 +530,17 @@ void HttpServer::attach(GenerationService& service) {
     public_model_id_                    = resolve_public_model_id(options_, load.model_name);
     service_                            = &service;
     metrics_.configure(public_model_id_, service.engine_options(), memory, baseline);
+    if (request_jsonl_.enabled() && options_.log_stats_interval_ms != 0) {
+        const ninfer::EngineOptions& engine = service.engine_options();
+        const std::vector<int> devices =
+            engine.devices.empty() ? std::vector<int>{engine.device} : engine.devices;
+        std::vector<GpuTelemetryDevice> identities;
+        for (const int device : devices) {
+            identities.push_back(GpuTelemetryDevice{
+                .device = device, .uuid = query_server_log_environment(device).gpu_uuid});
+        }
+        gpu_telemetry_ = std::make_unique<GpuTelemetry>(std::move(identities));
+    }
     request_jsonl_.write_server_start(options_, service.engine_options(),
                                       service.sampling_defaults(), public_model_id_, load, memory);
 }
