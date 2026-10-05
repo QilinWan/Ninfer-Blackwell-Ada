@@ -16,7 +16,7 @@
 #   greedy   ninfer-serve with the production flags (MTP3, --lm-head-draft, C=1), the reference's
 #            60 prompts at T=0 / 128 tokens; texts must equal the reference's; ms/round (median of
 #            decode seconds / MTP rounds) is reported against it (PASS within +-1 %, else WARN)
-#   dflash2  a short DFlash2 K=7 --lm-head-draft run on the _df2 artifact (10 prompts), same checks
+#   dflash2  a short DFlash2 K=7 --lm-head-draft run on the _df2nv artifact (10 prompts), same checks
 #
 # The gate does not take a GPU lease; wrap it (e.g. gpu-lease run ricerca -- tools/tp2/gate.sh ...).
 # Paths default to the development workstation; override them with the GATE_* variables below.
@@ -28,7 +28,8 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 src=${GATE_SRC:-$(cd "$here/../.." && pwd)}   # source tree: golden record.sh, perplexity corpus
 
 ARTIFACT=${GATE_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4.ninfer}
-DF2_ARTIFACT=${GATE_DF2_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4_df2.ninfer}
+# The production DFlash2 artifact (drafter MLP gate/up NVFP4, v0.4.5); the older _df2 (Q8) stays for comparisons.
+DF2_ARTIFACT=${GATE_DF2_ARTIFACT:-/home/feyd/ninfer-artifacts/qwen3_8_27b_quasar_nvfp4_df2nv.ninfer}
 TEST_ARTIFACT=${GATE_TEST_ARTIFACT:-$DF2_ARTIFACT}
 TEST_SCRATCH=${GATE_TEST_SCRATCH:-/home/feyd/ninfer-artifacts/tmp}
 GOLDEN_MODEL=${GATE_GOLDEN_MODEL:-/home/feyd/ninfer-artifacts/tmp/golden-sync/synthetic/model.ninfer}
