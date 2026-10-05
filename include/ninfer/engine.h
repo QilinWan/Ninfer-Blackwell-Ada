@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -22,6 +23,10 @@ public:
 
     [[nodiscard]] const PromptSummary& summary() const noexcept;
     [[nodiscard]] const PromptPreparationStats& preparation_stats() const noexcept;
+    // The model input exactly as Engine executes it: chat template, tool declarations, earlier
+    // turns and one placeholder token per Vision token included. Empty for an empty prompt; valid
+    // until the prompt is submitted or destroyed.
+    [[nodiscard]] std::span<const TokenId> token_ids() const noexcept;
     [[nodiscard]] explicit operator bool() const noexcept;
 
 private:

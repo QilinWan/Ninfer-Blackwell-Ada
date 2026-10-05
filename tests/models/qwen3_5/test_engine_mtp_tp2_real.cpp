@@ -27,6 +27,8 @@
 //     accepted tokens and accepted_per_position exactly; recording leaves the greedy tokens and
 //     counters of an unrecorded run unchanged; a cap keeps exactly the first steps; in a shared
 //     two-row round only the observed request records.
+//   * prepared prompt token ids: PreparedPrompt::token_ids() has summary().prompt_tokens ids of a
+//     chat prompt, and a raw-token prompt exposes exactly the ids it was prepared from.
 //   * repeated requests: more than the private continuation catalog's worth of requests in series,
 //     each binding and releasing both ranks' MTP KV rows (a leaked rank 1 row fails the bind of a
 //     later request).
@@ -59,6 +61,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -373,6 +376,28 @@ int exercise_accepted_lengths(ninfer::Engine& engine) {
     return failures;
 }
 
+int exercise_prompt_token_ids(const ninfer::Engine& engine) {
+    int failures                      = 0;
+    const ninfer::PreparedPrompt chat = engine.prepare(user_prompt(probes().front().prompt));
+    const std::span<const ninfer::TokenId> chat_ids = chat.token_ids();
+    if (chat_ids.size() != chat.summary().prompt_tokens || chat_ids.empty()) {
+        std::cerr << "prepared prompt exposes " << chat_ids.size() << " token ids for "
+                  << chat.summary().prompt_tokens << " prompt tokens\n";
+        ++failures;
+    }
+    const std::vector<ninfer::TokenId> ids(chat_ids.begin(), chat_ids.end());
+    const ninfer::PreparedPrompt raw = engine.prepare_tokens(ids);
+    if (!std::equal(ids.begin(), ids.end(), raw.token_ids().begin(), raw.token_ids().end())) {
+        std::cerr << "a raw-token prompt does not expose the ids it was prepared from\n";
+        ++failures;
+    }
+    if (!ninfer::PreparedPrompt{}.token_ids().empty()) {
+        std::cerr << "an empty prepared prompt exposes token ids\n";
+        ++failures;
+    }
+    return failures;
+}
+
 int exercise_repeated(ninfer::Engine& engine) {
     int failures = 0;
     for (std::uint32_t index = 0; index < kRepeatedRequests; ++index) {
@@ -548,6 +573,7 @@ int main(int argc, char** argv) {
             failures += exercise_parity(engine, reference);
             failures += exercise_concurrent(engine);
             failures += exercise_accepted_lengths(engine);
+            failures += exercise_prompt_token_ids(engine);
             failures += exercise_repeated(engine);
         }
         {

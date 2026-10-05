@@ -76,7 +76,8 @@ struct ServeOptions {
     bool greedy                 = false; // --greedy: force temperature 0 (exact argmax)
     product::LogLevel log_level = product::LogLevel::Info;
 
-    // Test measurement in request_done (per-step accepted draft lengths); requires the JSONL log.
+    // Test measurement in request_done (per-step accepted draft lengths, prompt n-gram overlap);
+    // requires the JSONL log.
     bool log_speculation_detail                = false;
     std::uint32_t speculation_detail_max_steps = kDefaultSpeculationDetailMaxSteps;
 

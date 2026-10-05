@@ -151,8 +151,9 @@ std::string serve_usage_text(const char* argv0) {
            "       --media-live-mib defaults to 2048 and bounds all live BF16 patch payloads\n"
            "       --media-preprocess-threads defaults to 0 (auto, at most 16 workers)\n"
            "       --request-log-jsonl appends full-precision server/request records\n"
-           "       --log-speculation-detail adds the per-step accepted draft lengths to every "
-           "request_done record (requires --request-log-jsonl; off by default);\n"
+           "       --log-speculation-detail adds the per-step accepted draft lengths and the "
+           "output/prompt 4-gram overlap to every request_done record (requires "
+           "--request-log-jsonl; off by default);\n"
            "       --log-speculation-detail-max-steps caps them per request (default " +
            std::to_string(kDefaultSpeculationDetailMaxSteps) + ", at most " +
            std::to_string(kMaximumSpeculationDetailMaxSteps) +

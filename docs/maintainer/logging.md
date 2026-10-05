@@ -164,7 +164,10 @@ length of each decode step into `SpeculativeStats::accepted_lengths`, bounded by
 reserved once when the request is installed; the decode loop appends within that reservation and
 never allocates inside a round. With the option off the bound is zero and the loop only tests it.
 The JSONL writer renders the sequence as one hexadecimal digit per step; the pretty record does not
-show it. The values are per-step counts, never token ids or text.
+show it. The same option makes Serve copy the request's prompt token ids
+(`PreparedPrompt::token_ids()`) before submission and reduce them, with the generated ids, to
+`prompt_ngram_overlap` after generation; the copy is released there and the ids are never
+written. The values are per-step counts and one fraction, never token ids or text.
 
 Tool-call parameter normalization remains a successful request outcome. Empty-argument omissions
 and schema mismatches are machine-only counters. If a complete tool marker must be returned to text

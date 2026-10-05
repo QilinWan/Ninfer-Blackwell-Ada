@@ -1,14 +1,18 @@
 #include "serve/operational_log.h"
+#include "serve/prompt_overlap.h"
 #include "serve/request_log.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,6 +28,68 @@ int check(bool condition, const char* message) {
     if (condition) { return 0; }
     std::cerr << message << '\n';
     return 1;
+}
+
+// Exact oracle: every output window against every prompt window, no hashing.
+std::optional<double> naive_overlap(const std::vector<ninfer::TokenId>& prompt,
+                                    const std::vector<ninfer::TokenId>& output) {
+    constexpr std::size_t n = kPromptOverlapNgram;
+    if (output.size() < n) { return std::nullopt; }
+    std::size_t matched = 0;
+    for (std::size_t i = 0; i + n <= output.size(); ++i) {
+        for (std::size_t j = 0; j + n <= prompt.size(); ++j) {
+            if (std::equal(output.begin() + i, output.begin() + i + n, prompt.begin() + j)) {
+                ++matched;
+                break;
+            }
+        }
+    }
+    return static_cast<double>(matched) / static_cast<double>(output.size() - n + 1);
+}
+
+int check_overlap(const std::vector<ninfer::TokenId>& prompt,
+                  const std::vector<ninfer::TokenId>& output, std::optional<double> expected,
+                  const char* message) {
+    const std::optional<double> actual = prompt_ngram_overlap(prompt, output);
+    return check(actual == expected && naive_overlap(prompt, output) == expected, message);
+}
+
+int overlap_tests() {
+    int failures = 0;
+    failures += check_overlap({1, 2, 3, 4, 5}, {1, 2, 3}, std::nullopt,
+                              "an output shorter than one n-gram must have no overlap");
+    failures += check_overlap({1, 2, 3}, {1, 2, 3, 4}, 0.0,
+                              "a prompt shorter than one n-gram must overlap nothing");
+    failures += check_overlap({7, 1, 2, 3, 4, 5, 6, 8}, {1, 2, 3, 4, 5, 6}, 1.0,
+                              "a verbatim copy of a prompt span must overlap entirely");
+    failures += check_overlap({1, 2, 3, 4, 5, 6}, {9, 1, 2, 3, 4, 5, 7}, 0.5,
+                              "two of four output windows occur in the prompt");
+    // Windows 1234 and 1234 match, 2341, 3412 and 4123 do not: repeats count per position.
+    failures += check_overlap({1, 2, 3, 4}, {1, 2, 3, 4, 1, 2, 3, 4}, 2.0 / 5.0,
+                              "a repeated output n-gram must count once per position");
+    failures += check_overlap({4, 3, 2, 1}, {1, 2, 3, 4}, 0.0,
+                              "n-grams are ordered token sequences, not token sets");
+
+    // Small alphabets give many partial and repeated matches; large ones with copied spans give
+    // long tables with few hits. Both must agree exactly with the oracle.
+    std::mt19937 random(20261005);
+    for (const int alphabet : {3, 8, 248320}) {
+        for (int trial = 0; trial < 8; ++trial) {
+            std::uniform_int_distribution<ninfer::TokenId> token(0, alphabet - 1);
+            std::vector<ninfer::TokenId> prompt(700), output(300);
+            for (ninfer::TokenId& id : prompt) { id = token(random); }
+            for (ninfer::TokenId& id : output) { id = token(random); }
+            for (std::size_t copy = 0; copy < 3; ++copy) {
+                const std::size_t from = random() % (prompt.size() - 40);
+                const std::size_t to   = random() % (output.size() - 40);
+                std::copy_n(prompt.begin() + static_cast<std::ptrdiff_t>(from), 40,
+                            output.begin() + static_cast<std::ptrdiff_t>(to));
+            }
+            failures += check(prompt_ngram_overlap(prompt, output) == naive_overlap(prompt, output),
+                              "n-gram overlap disagrees with the exact oracle");
+        }
+    }
+    return failures;
 }
 
 } // namespace
@@ -500,6 +566,91 @@ int main() {
     failures +=
         check(done.at("speculative").at("accepted_per_position") == Json::array({290, 240, 190}),
               "speculative position counts missing");
+    failures += check(done.at("speculative").at("accepted_length_histogram") ==
+                          Json::array({10, 50, 50, 190}),
+                      "per-round accepted-length histogram is not the exact difference form");
+    GenerationOutcome plain_decode                = outcome;
+    plain_decode.metrics.speculative_backend      = ninfer::SpeculativeBackend::None;
+    plain_decode.metrics.speculative_draft_window = 0;
+    plain_decode.metrics.speculative_rounds       = 0;
+    plain_decode.metrics.speculative_accepted_per_position.clear();
+    failures +=
+        check(Json::parse(format_request_done_json("serve-test", 3004, context, plain_decode))
+                      .at("speculative")
+                      .at("accepted_length_histogram") == Json::array(),
+              "a request without speculation must record an empty histogram");
+    failures += check(done.at("result").at("prompt_ngram_overlap").is_null(),
+                      "prompt n-gram overlap must be null unless it was computed");
+    GenerationOutcome overlapping            = outcome;
+    overlapping.metrics.prompt_ngram_overlap = 0.375;
+    failures +=
+        check(Json::parse(format_request_done_json("serve-test", 3011, context, overlapping))
+                      .at("result")
+                      .at("prompt_ngram_overlap") == 0.375,
+              "prompt n-gram overlap missing from the done record");
+    failures += check(done.at("speculative").at("accepted_lengths").is_null() &&
+                          done.at("speculative").at("accepted_lengths_truncated").is_null(),
+                      "per-step accepted lengths must be null unless they were recorded");
+    // Five steps of a 302-step request (300 rounds + 2 fallback steps) recorded: cut at the cap.
+    GenerationOutcome detailed = outcome;
+    detailed.metrics.speculative_accepted_lengths =
+        std::vector<std::uint8_t>{3, 0, ninfer::kSpeculativeFallbackStep, 2, 1};
+    const Json detailed_speculative =
+        Json::parse(format_request_done_json("serve-test", 3006, context, detailed))
+            .at("speculative");
+    failures += check(detailed_speculative.at("accepted_lengths") == "30-21" &&
+                          detailed_speculative.at("accepted_lengths_truncated") == true,
+                      "per-step accepted lengths are not one digit per step, cut at the cap");
+    GenerationOutcome complete                  = outcome;
+    complete.metrics.speculative_rounds         = 3;
+    complete.metrics.speculative_fallback_steps = 1;
+    complete.metrics.speculative_accepted_lengths =
+        std::vector<std::uint8_t>{ninfer::kSpeculativeFallbackStep, 3, 3, 0};
+    const Json complete_speculative =
+        Json::parse(format_request_done_json("serve-test", 3007, context, complete))
+            .at("speculative");
+    failures += check(complete_speculative.at("accepted_lengths") == "-330" &&
+                          complete_speculative.at("accepted_lengths_truncated") == false,
+                      "a complete per-step sequence is marked truncated");
+    GenerationOutcome wide_window                    = outcome;
+    wide_window.metrics.speculative_draft_window     = 15;
+    wide_window.metrics.speculative_accepted_lengths = std::vector<std::uint8_t>{15, 10, 9};
+    failures +=
+        check(Json::parse(format_request_done_json("serve-test", 3008, context, wide_window))
+                      .at("speculative")
+                      .at("accepted_lengths") == "fa9",
+              "accepted lengths above 9 are not hexadecimal digits");
+    GenerationOutcome beyond_window                    = outcome;
+    beyond_window.metrics.speculative_accepted_lengths = std::vector<std::uint8_t>{3, 4};
+    failures +=
+        check(Json::parse(format_request_done_json("serve-test", 3009, context, beyond_window))
+                  .at("speculative")
+                  .at("accepted_lengths")
+                  .is_null(),
+              "an accepted length beyond the draft window must not be serialized");
+    GenerationOutcome plain_detail                    = plain_decode;
+    plain_detail.metrics.speculative_fallback_steps   = 0;
+    plain_detail.metrics.speculative_accepted_lengths = std::vector<std::uint8_t>{};
+    const Json plain_detail_speculative =
+        Json::parse(format_request_done_json("serve-test", 3010, context, plain_detail))
+            .at("speculative");
+    failures += check(plain_detail_speculative.at("accepted_lengths") == "" &&
+                          plain_detail_speculative.at("accepted_lengths_truncated") == false,
+                      "a recorded request without speculation must have an empty sequence");
+    GenerationOutcome inconsistent                         = outcome;
+    inconsistent.metrics.speculative_accepted_per_position = {290, 295, 190};
+    failures +=
+        check(Json::parse(format_request_done_json("serve-test", 3005, context, inconsistent))
+                  .at("speculative")
+                  .at("accepted_length_histogram")
+                  .is_null(),
+              "inconsistent position counters must not produce a histogram");
+    failures += check(done.at("materialization").at("predicted_total_ns") == 250000 &&
+                          done.at("materialization").at("targets_evaluated") == 7 &&
+                          done.at("materialization").at("stop_reason") == "queue_exhausted" &&
+                          !done.at("materialization").contains("model_optimal") &&
+                          !done.at("materialization").contains("absolute_bound_gap_ns"),
+                      "request-owned materialization diagnostics missing");
     failures += check(
         done.at("engine_timing").at("queue_wait_seconds") == 0.001 &&
             std::abs(done.at("engine_timing").at("host_exposed_seconds").at("total").get<double>() -
@@ -934,5 +1085,6 @@ int main() {
     std::filesystem::remove(log_path);
 
     if (failures == 0) { std::cout << "ok\n"; }
+    failures += overlap_tests();
     return failures == 0 ? 0 : 1;
 }

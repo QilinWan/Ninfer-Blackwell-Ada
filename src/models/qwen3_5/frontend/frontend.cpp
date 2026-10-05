@@ -675,6 +675,11 @@ PromptPreparationStats PreparedPrompt::preparation_stats() const noexcept {
     };
 }
 
+std::span<const TokenId> PreparedPrompt::token_ids() const noexcept {
+    return data_ != nullptr ? std::span<const TokenId>(data_->token_ids)
+                            : std::span<const TokenId>{};
+}
+
 PreparedPrompt::operator bool() const noexcept { return data_ != nullptr; }
 
 Frontend::Frontend(std::shared_ptr<const Impl> impl) noexcept : impl_(std::move(impl)) {}

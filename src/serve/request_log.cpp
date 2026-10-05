@@ -742,7 +742,8 @@ std::string format_request_done_json(const std::string& server_instance_id, std:
              {"thinking_control_tokens", outcome.thinking.injected_tokens},
              {"thinking_control_applied", outcome.thinking.applied},
              {"tool_call_count", outcome.tool_calls.size()},
-             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)}};
+             {"tool_call_parse", tool_call_parse_json(outcome.tool_call_parse)},
+             {"prompt_ngram_overlap", optional_json(outcome.metrics.prompt_ngram_overlap)}};
     record["timings_seconds"] = Json{
         {"prepare", outcome.metrics.prepare_seconds}, {"ttft", outcome.metrics.ttft_seconds},
         {"vision", outcome.metrics.vision_seconds},   {"prefill", outcome.metrics.prefill_seconds},

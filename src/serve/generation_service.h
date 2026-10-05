@@ -48,6 +48,8 @@ struct GenerationMetrics {
     std::vector<std::uint64_t> speculative_accepted_per_position;
     // Present only with --log-speculation-detail (SpeculativeStats::accepted_lengths).
     std::optional<std::vector<std::uint8_t>> speculative_accepted_lengths;
+    // --log-speculation-detail only: prompt_ngram_overlap of the prompt and all output tokens.
+    std::optional<double> prompt_ngram_overlap;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::Root;
 };
@@ -112,8 +114,10 @@ struct PreparedRequest {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
-    // --log-speculation-detail requested the per-step accepted lengths for this request.
+    // --log-speculation-detail: the per-step accepted lengths are recorded and the prompt token
+    // ids are copied here before submission for the n-gram overlap, then released by run().
     bool speculation_detail = false;
+    std::vector<ninfer::TokenId> prompt_token_ids;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 
@@ -172,7 +176,8 @@ private:
     prepare_impl(const GenerationRequest& req, GenerationConsumerMode consumer_mode,
                  ninfer::GenerationObservationOptions observation,
                  std::function<bool()> is_cancelled, ContextCacheHints context_cache,
-                 CacheParticipation cache_participation, DeadlinePolicy deadline_policy) const;
+                 CacheParticipation cache_participation, DeadlinePolicy deadline_policy,
+                 bool speculation_detail) const;
     [[nodiscard]] std::shared_ptr<RequestLifetime>
     acquire_request_lifetime(DeadlinePolicy deadline_policy) const;
 

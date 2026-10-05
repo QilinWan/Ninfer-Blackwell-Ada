@@ -919,7 +919,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--media-live-mib N` | all live prepared BF16 media payloads | `2048` |
 | `--media-preprocess-threads N` | bounded media preprocessing workers; `0` selects at most 16 from host concurrency | `0` |
 | `--request-log-jsonl FILE` | append full-precision server/request records | disabled |
-| `--log-speculation-detail` | add the per-step accepted draft lengths to every `request_done` record (test measurement; requires `--request-log-jsonl`); see [Structured request log](#structured-request-log) | off |
+| `--log-speculation-detail` | add the per-step accepted draft lengths and the output/prompt 4-gram overlap to every `request_done` record (test measurement; requires `--request-log-jsonl`); see [Structured request log](#structured-request-log) | off |
 | `--log-speculation-detail-max-steps N` | decode steps recorded per request by `--log-speculation-detail` (`1..1048576`); a longer request is marked truncated | `4096` |
 | `--response-store-max-records N` | maximum locally retained Responses objects | `1024` |
 | `--response-store-max-mib N` | total local Response envelope/Item/context budget | `256` |
@@ -1121,7 +1121,7 @@ in append mode and flushes every event, so successive model or MTP blocks may sh
 file. The parent directory must already exist. Failure to open the file aborts startup; the log path
 is also rejected if it resolves to the model artifact.
 
-Every line is one `ninfer_serve_request_log` schema-v26 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v27 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;
@@ -1206,6 +1206,16 @@ the counters above still cover all of it. Without a speculative backend the stri
 `server_start` record reports the cap as `server.speculation_detail_max_steps` (`null` when the
 detail is off). Recording is a request observation: it never changes generation, and with the
 option off the Engine records nothing and allocates nothing.
+
+With the same option `request_done.result.prompt_ngram_overlap` is the share of the response that
+repeats its prompt, the part a copy-style draft (prompt lookup) could propose: the fraction of the
+output's overlapping 4-token windows (`completion_tokens - 3` of them, a repeated window counted
+once per position) whose exact token-id sequence also occurs anywhere in the prompt. The output is
+every generated token, thinking and tool-call tokens included; the prompt is the model input as
+executed, chat template, tool declarations and earlier turns included. It is `null` with the option
+off or with fewer than four output tokens. Serve copies the prompt token ids before submission and
+computes the value after generation, before `request_done`, on the request's HTTP thread, with a
+hash set of the output 4-grams scanned once over the prompt.
 
 For `server_start.memory`, `workspace.capacity_bytes` is the only physical workspace allocation.
 When Vision is enabled, `vision_workspace` reports the aggregate prompt and maximum-item token

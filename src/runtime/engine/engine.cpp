@@ -87,6 +87,10 @@ const PromptPreparationStats& PreparedPrompt::preparation_stats() const noexcept
     return impl_ != nullptr ? impl_->prepare : empty;
 }
 
+std::span<const TokenId> PreparedPrompt::token_ids() const noexcept {
+    return impl_ != nullptr ? impl_->value.token_ids() : std::span<const TokenId>{};
+}
+
 PreparedPrompt::operator bool() const noexcept { return impl_ != nullptr; }
 
 class GenerationHandle::Impl {
