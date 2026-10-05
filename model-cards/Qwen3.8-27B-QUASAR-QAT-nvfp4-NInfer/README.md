@@ -77,6 +77,24 @@ python3 -m tools.convert \
 
 With `--device cpu` the conversion takes about two minutes (0.75 GB RAM); the default is `cuda`.
 
+### Variant: MTP layer in NVFP4 (not on the Hub)
+
+`--recipe model-cards/Qwen3.8-27B-QUASAR-QAT-nvfp4-NInfer/quasar_recipe.py:configure_mtp_nvfp4`, same
+command otherwise, stores the MTP layer's MLP gate/up, MLP down and attention output as NVFP4
+(`nvfp4_mse` from QUASAR's BF16 MTP weights, 16-bit activations; `_mtp_nvfp4_layer` in
+[`official_recipes.py`](../../tools/convert/official_recipes.py)). The attention input projection and
+`mtp/input_projection` stay Q8; every other object is byte-identical to the artifact above. Result:
+17,248,277,764 bytes (−142.5 MiB), SHA-256 `3363b1ab64c5693c8dcb0cb283b01bcb1a19de946846799e53bca7ac8f2533ac`
+(2026-10-05). It runs on the same fork builds as the published artifact (the MTP halves use the NVFP4
+linear routes of the target's MLP and attention output).
+
+On 2× RTX 5070 Ti (eco clocks, MTP3, `--lm-head-draft`, 262,144 tokens, C=1, T=0) against the published
+artifact: the MTP round is 1.9 % shorter, the outputs and the target perplexity are identical, and the
+acceptance moves by −1.0…+0.7 points on short prompts and −1.7 points on agent prompts of 55–171K
+tokens; decode is 1.5–2.9 % faster on code, math and English prose, 0.6 % on Italian prose and unchanged
+on the long agent prompts. GSM8K (500 problems, 5-shot, thinking on, T=0, C=1): 483/500 on both
+artifacts, the same answers on every problem (McNemar p = 1.000), with decode 186.6 → 190.1 tok/s.
+
 ## Provenance
 
 Next to the artifact on the Hub: [`SHA256SUMS`](SHA256SUMS) (the artifact's digest — check a download with

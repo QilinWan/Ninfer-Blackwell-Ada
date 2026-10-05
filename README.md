@@ -67,9 +67,9 @@
 > - **Weights.** Verified with the Qwen3.8-27B NVFP4 artifact (`qwen3_8_27b_nvfp4.ninfer`: NVFP4
 >   MLP in layers 0-55, FP8 elsewhere) and with an all-NVFP4 conversion of the QUASAR-QAT
 >   checkpoint (every large layer projection NVFP4; GDN `a`/`b` decoded to BF16, head and embedding
->   FP8). The split projections take FP8 or NVFP4; the MTP head splits only in Q8. The MoE model
->   and the groupwise-int artifacts are rejected at startup (paired Q4/Q5 input projections have no
->   split route).
+>   FP8). The split projections take FP8 or NVFP4; the MTP head splits in Q8, with its MLP and
+>   attention output optionally NVFP4. The MoE model and the groupwise-int artifacts are rejected
+>   at startup (paired Q4/Q5 input projections have no split route).
 > - **Memory per board.** Each board holds half the weights plus its half of the KV cache, so the
 >   context and the number of retained conversations trade against each other:
 >   - MTP3 runs at 262,144 tokens with 4 device state slots (the default 8 slots do not fit);

@@ -3,9 +3,14 @@ Every large projection that QUASAR stores as NVFP4 is imported as-is (codes, blo
 no requantization). The GDN a/b projections are decoded from NVFP4 to BF16 (the runtime wants them
 unquantized). lm_head, which QUASAR keeps in BF16, and the embedding become FP8 rows (the official
 qwen3_8_27b_nvfp4 method). Vision/MTP follow the official _optional choices. Any other BF16 linear in the
-checkpoint is not handled: `import_encoded` would fail on it."""
+checkpoint is not handled: `import_encoded` would fail on it.
+
+`configure` is the recipe of the published artifact. `configure_mtp_nvfp4` (select it with
+`--recipe quasar_recipe.py:configure_mtp_nvfp4`) is the same plus the MTP layer's MLP gate/up, MLP down
+and attention output as NVFP4 quantized from QUASAR's BF16 MTP weights (`_mtp_nvfp4_layer`); every other
+object is byte-identical to `configure`'s."""
 from tools.convert.methods import fp8_row_maxabs, import_encoded
-from tools.convert.official_recipes import FP8, _optional
+from tools.convert.official_recipes import FP8, _mtp_nvfp4_layer, _optional
 
 REPORT = {"nvfp4": [], "fp8_from_bf16": [], "as_is": []}
 
@@ -32,3 +37,8 @@ def configure(model, recipe, sources):
                       source=model.source(name, quantized, "nvfp4"), activation_policy="AllowA4")
         REPORT["nvfp4"].append(name)
     print("QUASAR recipe:", {k: len(v) for k, v in REPORT.items()}, "fp8_from_bf16:", REPORT["fp8_from_bf16"][:8], flush=True)
+
+
+def configure_mtp_nvfp4(model, recipe, sources):
+    configure(model, recipe, sources)
+    _mtp_nvfp4_layer(model, recipe)

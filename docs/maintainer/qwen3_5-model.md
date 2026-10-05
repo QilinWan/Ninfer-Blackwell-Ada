@@ -317,7 +317,9 @@ query-only prompt projections compute and discard the other sections. The full p
 the vocabulary-split output head, gathered before rank 0's argmax; the optimized proposal head is
 loaded on rank 0 only and its proposal runs there, so rank 1's `MtpParameters::output_head` is empty
 and unused. The Q8 MTP weights of the official artifacts use the registered Q8 halves
-(`[5120,5120]`, `[7168,5120]`, `[5120,3072]`, `[17408,5120]`, `[5120,8704]`).
+(`[5120,5120]`, `[7168,5120]`, `[5120,3072]`, `[17408,5120]`, `[5120,8704]`); a recipe that stores
+the MLP and attention output as NVFP4 (`_mtp_nvfp4_layer`) runs `[5120,3072]`, `[17408,5120]` and
+`[5120,8704]` on the NVFP4 `linear` halves the target registers, with 16-bit activations.
 
 Verification runs the Text layers over K+1 columns with masked columns and records the ReplaySSM
 inputs of each rank's own GDN heads (the 8/24-head fold geometry); the Program folds the accepted

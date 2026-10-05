@@ -94,9 +94,12 @@ own registered problem. A format has a two-device route only where its shard sha
   `[17408,5120]` for `linear_swiglu`, and the vocabulary half `[124160,5120]`
   ([`linear.h`](../../include/ninfer/ops/linear.h), [`linear_add.h`](../../include/ninfer/ops/linear_add.h)).
 - **NVFP4**: the same projection shards (the attention and GDN input ones since `b14be3d5` and
-  `7a740326`), but no vocabulary half.
+  `7a740326`), but no vocabulary half. The MTP layer calls the plain `linear` on its halves, so
+  `[17408,5120]`, `[5120,8704]` and `[5120,3072]` also take its MLP and attention output when a
+  recipe stores them NVFP4 (`_mtp_nvfp4_layer`, A16); its packed attention input `[7168,5120]` has
+  no NVFP4 `linear` half (the target's goes through `attn_input_proj`) and stays Q8.
 - **Q8**: the MTP halves `[5120,5120]`, `[7168,5120]`, `[17408,5120]`, `[5120,3072]`, `[5120,8704]`;
-  the official recipes store the MTP head in Q8, and it splits only there.
+  the official recipes store the MTP head in Q8.
 - **BF16**: GDN gating (`gdn_gating_proj_column_parallel`, 24 heads per rank), plus `[7168,5120]`
   and `[5120,3072]` for `linear`.
 - **Q4**: the half `[65536,5120]` of the `[131072,5120]` optimized proposal head, with its
@@ -105,7 +108,7 @@ own registered problem. A format has a two-device route only where its shard sha
 The groupwise-int artifacts are rejected because their attention and GDN input projections are
 paired Q4/Q5 parents, which have no split route; any unregistered shard shape is refused like any
 unregistered problem. The user docs ([README](../../README.md), [CLI](../cli.md#two-gpus)) summarize
-this as "FP8 or NVFP4 split projections, MTP in Q8".
+this as "FP8 or NVFP4 split projections, MTP in Q8 (its MLP and attention output also NVFP4)".
 
 **Loading slices at load time.** `plan_load` ([`load.cpp`](../../src/models/qwen3_5/load.cpp))
 builds an `artifact::Binder` for `options.tp` devices and calls `loading::install_shard_resolver`.

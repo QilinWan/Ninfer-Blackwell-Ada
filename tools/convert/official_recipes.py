@@ -54,6 +54,37 @@ def _optional(model, recipe):
                 recipe.share(prefix + "context_" + role, prefix + role)
 
 
+def _dflash2_nvfp4_gate_up(model, recipe):
+    """Store each DFlash2 layer's MLP gate/up parent as NVFP4 with 16-bit activations."""
+    if "dflash2" not in model.components:
+        return
+    layers = model.components["dflash2"]["config"]["num_hidden_layers"]
+    for layer in range(layers):
+        recipe.assign(
+            [f"dflash2/layers/{layer}/mlp/gate", f"dflash2/layers/{layer}/mlp/up"],
+            format="nvfp4",
+            method=nvfp4_mse,
+            activation_policy="A16Only",
+        )
+
+
+def _mtp_nvfp4_layer(model, recipe):
+    """Store the MTP layer's MLP gate/up, MLP down and attention output as NVFP4 with 16-bit activations.
+
+    Quantized from the source's MTP weights by nvfp4_mse. At tp 2 their halves ([17408,5120],
+    [5120,8704], [5120,3072]) run the NVFP4 linear routes the target's MLP and attention output use.
+    The packed attention input projection (Q|K|Gate|V) and mtp/input_projection stay Q8: the MTP
+    layer runs its attention input as a plain linear, and NVFP4 has no [7168,5120] linear half."""
+    if "mtp" not in model.components:
+        return
+    for names in (
+        ["mtp/layers/0/mlp/gate", "mtp/layers/0/mlp/up"],
+        "mtp/layers/0/mlp/down",
+        "mtp/layers/0/attention/output",
+    ):
+        recipe.assign(names, format="nvfp4", method=nvfp4_mse, activation_policy="A16Only")
+
+
 def _dense_groupwise(model, recipe, vocabulary):
     if "num_experts" in model.config:
         raise ValueError("this official recipe requires Qwen3.5 Dense mathematics")

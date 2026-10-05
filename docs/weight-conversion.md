@@ -81,7 +81,19 @@ The DFlash2 drafter's MLP gate/up is stored as Q8 by the official recipes. A rec
 `_dflash2_nvfp4_gate_up` stores it as NVFP4 instead (`nvfp4_mse` from the BF16 DFlash2 source, A16
 activations, the rest of the drafter still Q8): the artifact is 425 MiB smaller and the split drafter
 runs the fused NVFP4 SwiGLU; on two RTX 5070 Ti the C=1 decode is 1.5…2.4 % faster with the
-acceptance within ±1.2 points. Artifacts converted without it run exactly as before.
+acceptance within ±1.2 points. Artifacts converted without it run exactly as before. The drafter's
+MLP down stays Q8: on one device (and with `NINFER_TP_DRAFTER=primary`) the drafter fuses it with
+the dynamic convolution's finish in an Op that takes Q8 weights only.
+
+The MTP layer is also stored as Q8 by the official recipes. A recipe that calls `_mtp_nvfp4_layer`
+stores its MLP gate/up, MLP down and attention output as NVFP4 instead (`nvfp4_mse` from the source's
+BF16 MTP weights, A16 activations; the attention input projection and `mtp/input_projection` stay
+Q8): the artifact is 142 MiB smaller and, on two RTX 5070 Ti with MTP3 (three MTP forwards per
+round), the round is 1.9 % shorter. Greedy output is unchanged (the target verifies every draft);
+only the acceptance moves, by -1.0…+0.7 points on short prompts and -1.7 points on long agent
+prompts, so the C=1 decode gains 0.6…2.9 % on short prompts and nothing on agent prompts of
+55-171K tokens. The QUASAR model card's recipe has it as
+`quasar_recipe.py:configure_mtp_nvfp4`.
 
 MTP and Vision use the main source. DFlash and DFlash2 use the corresponding named source, supplied
 as `--source dflash=PATH` or `--source dflash2=PATH`. An artifact may contain several optional
