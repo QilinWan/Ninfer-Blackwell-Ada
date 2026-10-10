@@ -33,6 +33,8 @@ using Q8N5120K5120  = Q8LinearGeometry<5120, 5120>;
 using Q8N5120K8704  = Q8LinearGeometry<5120, 8704>;
 using Q8N7168K5120  = Q8LinearGeometry<7168, 5120>;
 using Q8N17408K5120 = Q8LinearGeometry<17408, 5120>;
+// Two-device vocabulary-row half of a Q8 output head.
+using Q8N124160K5120 = Q8LinearGeometry<124160, 5120>;
 
 // The dispatcher admits N/K and positive T; each shape owns its complete T selection.
 [[nodiscard]] Q8Launch select_q8_n1024_k2048(std::int32_t tokens);
@@ -62,5 +64,6 @@ using Q8N17408K5120 = Q8LinearGeometry<17408, 5120>;
 [[nodiscard]] Q8Launch select_q8_n5120_k8704(std::int32_t tokens);
 [[nodiscard]] Q8Launch select_q8_n7168_k5120(std::int32_t tokens);
 [[nodiscard]] Q8Launch select_q8_n17408_k5120(std::int32_t tokens);
+[[nodiscard]] Q8Launch select_q8_n124160_k5120(std::int32_t tokens);
 
 } // namespace ninfer::ops::detail

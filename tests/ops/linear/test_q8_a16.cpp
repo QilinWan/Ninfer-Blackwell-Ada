@@ -30,7 +30,9 @@ constexpr std::array kGeometries{
     Geometry{248320, 5120, 197U},
     // Two-device halves of the MTP projections.
     Geometry{5120, 3072, 307U},  Geometry{5120, 5120, 311U},  Geometry{5120, 8704, 313U},
-    Geometry{7168, 5120, 317U},  Geometry{17408, 5120, 331U}};
+    Geometry{7168, 5120, 317U},  Geometry{17408, 5120, 331U},
+    // Two-device vocabulary-row half of a Q8 output head.
+    Geometry{124160, 5120, 337U}};
 
 int q8_workspace_domain(std::int32_t n, std::int32_t k) {
     int failures = 0;
@@ -134,7 +136,7 @@ int q8_a16_conformance(std::int32_t selected_n = 0, std::int32_t selected_k = 0)
         if (shape.n == 9216 && shape.k == 2048) {
             for (int t : {12, 13, 14}) calls.push_back({t});
         }
-        if (shape.n == 248320) calls.push_back({34});
+        if (shape.n == 248320 || shape.n == 124160) calls.push_back({34});
         if (shape.n == 2048 && shape.k == 16384) {
             for (int t : {383,  384,  385,  479,  480,  481,  639,  640,  641,  703,
                           704,  705,  959,  960,  961,  1343, 1344, 1345, 1679, 1680,

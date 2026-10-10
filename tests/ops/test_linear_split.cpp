@@ -320,6 +320,7 @@ int verify_registry() {
         {QType::FP8_E4M3FN_ROW_BF16, 124160, 5120},
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 3072},
         {QType::FP8_E4M3FN_ROW_BF16, 5120, 8704},
+        {QType::Q8_G32_FP16, 124160, 5120},
         {QType::NVFP4, 17408, 5120},
         {QType::NVFP4, 5120, 8704},
         {QType::NVFP4, 5120, 3072},

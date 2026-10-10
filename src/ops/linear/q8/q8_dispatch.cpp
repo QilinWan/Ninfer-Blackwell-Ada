@@ -35,6 +35,8 @@ constexpr std::array kShapes{
     shape<Q8N5120K3072>(select_q8_n5120_k3072),   shape<Q8N5120K5120>(select_q8_n5120_k5120),
     shape<Q8N5120K8704>(select_q8_n5120_k8704),   shape<Q8N7168K5120>(select_q8_n7168_k5120),
     shape<Q8N17408K5120>(select_q8_n17408_k5120),
+    // The two-device vocabulary-row half of the Q8 output head (issue #6).
+    shape<Q8N124160K5120>(select_q8_n124160_k5120),
 };
 } // namespace
 
