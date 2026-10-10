@@ -127,9 +127,24 @@ std::string serve_usage_text(const char* argv0) {
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
+<<<<<<< HEAD
            "[--device-state-slots N] [--host-context-mib N] [--turn-anchors N] "
            "[--log-speculation-detail [--log-speculation-detail-max-steps N]] "
            "[--request-log-jsonl FILE] "
+||||||| parent of 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
+           "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] "
+           "[--max-long-anchors-per-continuation N] [--turn-anchors N] "
+           "[--request-log-jsonl FILE] [--log-speculation-detail] "
+           "[--log-speculation-detail-max-steps N] "
+=======
+           "[--device-state-slots N] [--host-state-slots N] [--host-kv-mib N] "
+           "[--max-private-continuations N] [--max-shared-prefixes N] "
+           "[--max-long-anchors-per-continuation N] [--turn-anchors N] "
+           "[--request-log-jsonl FILE] [--log-speculation-detail] "
+           "[--log-speculation-detail-max-steps N] "
+           "[--prefill-miss-dump DIR [--prefill-miss-min-tokens N] [--prefill-miss-min-match F]] "
+>>>>>>> 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -158,6 +173,13 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultSpeculationDetailMaxSteps) + ", at most " +
            std::to_string(kMaximumSpeculationDetailMaxSteps) +
            "; longer requests are marked truncated)\n"
+           "       --prefill-miss-dump diagnoses prefix-reuse misses: when a request recomputes at "
+           "least --prefill-miss-min-tokens prompt tokens (default 10000), shares at least "
+           "--prefill-miss-min-match of its prompt (default 0.5) with one of the last 16 "
+           "contexts, and either the server recomputed that many tokens identical to it or "
+           "the client changed that many of its tokens, both texts, their token IDs and a "
+           "summary.json with the divergence point go to a new directory under DIR (at most 64 "
+           "per process; contains conversation text; off by default)\n"
            "       --model-id overrides the artifact metadata.name reported by the server\n"
            "       Responses state is process-local and bounded to 1024 records / 256 MiB by "
            "default\n"
@@ -211,8 +233,19 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool kv_capacity_explicit        = false;
 
     bool device_explicit             = false;
+<<<<<<< HEAD
     bool host_capacity_explicit      = false;
     bool detail_steps_explicit           = false;
+||||||| parent of 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
+    bool host_state_explicit         = false;
+    bool host_kv_explicit            = false;
+    bool detail_steps_explicit       = false;
+=======
+    bool host_state_explicit         = false;
+    bool host_kv_explicit            = false;
+    bool detail_steps_explicit       = false;
+    bool prefill_miss_tuned          = false;
+>>>>>>> 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
     std::optional<std::size_t> vram_headroom_mib;
 
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
@@ -325,6 +358,23 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (options.request_log_jsonl.empty()) {
                 throw std::invalid_argument("--request-log-jsonl must not be empty");
             }
+        } else if (arg == "--prefill-miss-dump") {
+            options.prefill_miss_dump_dir = require_value("--prefill-miss-dump");
+            if (options.prefill_miss_dump_dir.empty()) {
+                throw std::invalid_argument("--prefill-miss-dump must not be empty");
+            }
+        } else if (arg == "--prefill-miss-min-tokens") {
+            const int tokens = parse_nonnegative_int(require_value("--prefill-miss-min-tokens"),
+                                                     "prefill-miss-min-tokens");
+            if (tokens == 0) {
+                throw std::invalid_argument("--prefill-miss-min-tokens must be positive");
+            }
+            options.prefill_miss_min_tokens = static_cast<std::uint32_t>(tokens);
+            prefill_miss_tuned              = true;
+        } else if (arg == "--prefill-miss-min-match") {
+            options.prefill_miss_min_match = parse_float_in(
+                require_value("--prefill-miss-min-match"), "prefill-miss-min-match", 0.0f, 1.0f);
+            prefill_miss_tuned = true;
         } else if (arg == "--log-speculation-detail") {
             options.log_speculation_detail = true;
         } else if (arg == "--log-speculation-detail-max-steps") {
@@ -443,6 +493,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.log_speculation_detail && options.request_log_jsonl.empty()) {
         throw std::invalid_argument("--log-speculation-detail requires --request-log-jsonl");
+    }
+    if (prefill_miss_tuned && options.prefill_miss_dump_dir.empty()) {
+        throw std::invalid_argument(
+            "--prefill-miss-min-tokens and --prefill-miss-min-match require --prefill-miss-dump");
     }
     if (detail_steps_explicit && !options.log_speculation_detail) {
         throw std::invalid_argument(

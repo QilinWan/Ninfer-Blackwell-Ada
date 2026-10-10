@@ -290,6 +290,23 @@ OperationalRecord render_request_done(const RequestLogContext& context,
     return {.severity = OperationalSeverity::Info, .message = out.str()};
 }
 
+OperationalRecord render_prefill_miss(const RequestLogContext& context,
+                                      const PrefillMissReport& miss) {
+    std::ostringstream out;
+    out << "req#" << context.id << " prefill miss | recomputed "
+        << product::format_pretty_count(miss.prompt_tokens - miss.reused_tokens) << " of "
+        << product::format_pretty_count(miss.prompt_tokens) << " | reused "
+        << product::format_pretty_count(miss.reused_tokens) << " | common prefix "
+        << product::format_pretty_count(miss.common_prefix) << " with a recent context of "
+        << product::format_pretty_count(miss.old_context_tokens) << " | ";
+    if (miss.directory.empty()) {
+        out << "dump failed";
+    } else {
+        out << "dump " << miss.directory;
+    }
+    return {.severity = OperationalSeverity::Warning, .message = out.str()};
+}
+
 std::optional<OperationalRecord> render_tool_call_fallback(const RequestLogContext& context,
                                                            const GenerationOutcome& outcome) {
     const ninfer::ToolCallParseFallbackReason reason = outcome.tool_call_parse.fallback_reason;
@@ -414,6 +431,9 @@ void OperationalLog::request_rejected(const RequestRejectionLogContext& context)
 void OperationalLog::request_done(const RequestLogContext& context,
                                   const GenerationOutcome& outcome) const {
     write(render_request_done(context, outcome));
+    if (outcome.metrics.prefill_miss.has_value()) {
+        write(render_prefill_miss(context, *outcome.metrics.prefill_miss));
+    }
     if (std::optional<OperationalRecord> fallback = render_tool_call_fallback(context, outcome)) {
         write(std::move(*fallback));
     }

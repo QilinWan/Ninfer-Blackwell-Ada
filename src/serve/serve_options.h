@@ -81,6 +81,12 @@ struct ServeOptions {
     bool log_speculation_detail                = false;
     std::uint32_t speculation_detail_max_steps = kDefaultSpeculationDetailMaxSteps;
 
+    // --prefill-miss-dump DIR (diagnostic, empty => off): writes the new prompt and the closest
+    // recent context for a prefix-reuse miss; criteria in serve/prefill_miss_dump.h.
+    std::string prefill_miss_dump_dir;
+    std::uint32_t prefill_miss_min_tokens = 10000;
+    double prefill_miss_min_match         = 0.5;
+
     // Exact process argv for the server-start record. Secret-bearing option values are redacted
     // while parsing; this is provenance only and never affects execution.
     std::vector<std::string> startup_argv;

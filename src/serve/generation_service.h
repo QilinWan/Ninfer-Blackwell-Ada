@@ -4,6 +4,7 @@
 // adapters normalize before this layer and render IDs, usage, and response events after it.
 
 #include "ninfer/engine.h"
+#include "serve/prefill_miss_dump.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
 
@@ -52,6 +53,14 @@ struct GenerationMetrics {
     std::optional<double> prompt_ngram_overlap;
     std::uint32_t prefix_cache_hit_tokens     = 0;
     ninfer::PrefixReusePath prefix_reuse_path = ninfer::PrefixReusePath::Root;
+<<<<<<< HEAD
+||||||| parent of 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
+    ninfer::MaterializationDiagnostics materialization;
+=======
+    ninfer::MaterializationDiagnostics materialization;
+    // --prefill-miss-dump: set when this request's prefill qualified and was dumped.
+    std::optional<PrefillMissReport> prefill_miss;
+>>>>>>> 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
 };
 
 struct GenerationOutcome {
@@ -114,8 +123,9 @@ struct PreparedRequest {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
-    // --log-speculation-detail: the per-step accepted lengths are recorded and the prompt token
-    // ids are copied here before submission for the n-gram overlap, then released by run().
+    // --log-speculation-detail: the per-step accepted lengths are recorded. The prompt token ids
+    // are copied here before submission (n-gram overlap, --prefill-miss-dump), then released by
+    // run().
     bool speculation_detail = false;
     std::vector<ninfer::TokenId> prompt_token_ids;
     std::shared_ptr<RequestLifetime> lifetime;
@@ -184,6 +194,7 @@ private:
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
     std::shared_ptr<RequestCapacity> request_capacity_;
+    std::shared_ptr<PrefillMissDump> prefill_miss_dump_; // null unless --prefill-miss-dump
 };
 
 } // namespace ninfer::serve

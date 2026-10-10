@@ -15,6 +15,7 @@ add_library(ninfer_serve STATIC
   translate.cpp
   generation_service.cpp
   prompt_overlap.cpp
+  prefill_miss_dump.cpp
   request_events.cpp
   operational_log.cpp
   gpu_telemetry.cpp
