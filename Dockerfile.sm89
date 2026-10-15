@@ -9,6 +9,7 @@
 #       ninfer /workspace/models/qwen3_8_27b.ninfer --prompt "hello" --max-tokens 32
 
 ARG CUDA_IMAGE=nvidia/cuda:13.1.2-devel-ubuntu24.04
+# The sm_89 build needs CUDA >= 12.8 for <cuda_fp4.h>; 12.6 fails at configure time with that message.
 FROM ${CUDA_IMAGE} AS build
 
 ARG NINFER_CUDA_ARCHITECTURES=89

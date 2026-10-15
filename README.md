@@ -61,7 +61,7 @@ plus one of:
 | Target | GPU | CUDA toolkit | Extra dependencies | Build flag |
 |---|---|---|---|---|
 | `sm_120a` (upstream) | RTX 5090 | 13.1 validated | FFmpeg dev (`libavformat`, `libavcodec`, `libavutil`, `libswscale`), `libcurl >= 7.85` | default |
-| `sm_89` (this fork) | RTX 40 series | 13.x validated, 12.x in checking | same; FFmpeg optional with `-DNINFER_ENABLE_VISION=OFF` | `-DCMAKE_CUDA_ARCHITECTURES=89` |
+| `sm_89` (this fork) | RTX 40 series | **>= 12.8** (12.8 + 13.2 validated) | same; FFmpeg optional with `-DNINFER_ENABLE_VISION=OFF` | `-DCMAKE_CUDA_ARCHITECTURES=89` |
 
 CMake accepts exactly those two architectures and rejects anything else, so a mis-set target fails at
 configure time rather than producing a binary that cannot launch.
