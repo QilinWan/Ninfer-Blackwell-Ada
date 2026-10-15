@@ -292,7 +292,7 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
             if (key >= split_start && key < split_end) {
                 const std::int64_t off =
                     kv_cache_e8_i4_scale_index<Geometry>(physical_page, kv_head,
-                                                         (4 * q4) & kPagedKVPageMask);
+                                                         key & kPagedKVPageMask);
                 ninfer::ops::cp_async<8>(&k_scale_s[4 * q4], &cache_k_scale[off]);
                 ninfer::ops::cp_async<8>(&v_scale_s[4 * q4], &cache_v_scale[off]);
             } else {
