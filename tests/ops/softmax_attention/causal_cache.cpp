@@ -39,16 +39,16 @@ constexpr std::int32_t kNvfp4CodeBytes   = kHeadDim / 2;
 constexpr float kAttentionScale          = 0.0625f;
 constexpr std::uint16_t kOutputCanary    = 0x7fc1u;
 
-// A build only contains the KV routes its architecture implements: an Ada build has no FP4 kernel
-// route at all (cmake/Sm89Compat.cmake), so the shared entry skips the layouts it cannot execute
-// rather than asking for them. `ctest` then stays a real gate on both architectures instead of
-// turning an absent architecture feature into a failure.
+// A build only runs the KV routes its architecture implements: an Ada build contains no FP4 kernel
+// route at all (cmake/Sm89Compat.cmake), and rk4v4-e8 is an Ada-only lattice codec that a Blackwell
+// build refuses at the capability gate (cmake/Sm120Compat.cmake). The shared entry skips the
+// formats this build cannot execute, so `ctest` stays a real gate on both architectures instead of
+// asking for a route that does not exist and aborting in an exception.
 [[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
 #ifdef NINFER_SM89
     return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
 #else
-    static_cast<void>(storage);
-    return true;
+    return storage != KvCacheStorage::RK4V4E8;
 #endif
 }
 

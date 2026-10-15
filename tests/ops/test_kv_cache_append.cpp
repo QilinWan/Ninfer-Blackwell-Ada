@@ -368,15 +368,16 @@ void encode_full_group(const std::vector<float>& source, std::size_t source_base
         scale_bits;
 }
 
-// An Ada build contains no FP4 append kernel at all (cmake/Sm89Compat.cmake), so a case that asks
-// for an FP4 KV layout reports itself as not applicable instead of reaching a route that cannot
-// exist here. Every sweep in this file goes through this one entry point.
+// Each build contains only the append kernels its architecture implements: an Ada build contains no
+// FP4 append kernel at all (cmake/Sm89Compat.cmake), and a Blackwell build drops the Ada-only E8
+// append launcher and links its stub instead (cmake/Sm120Compat.cmake). A case that asks for a
+// layout this build cannot execute reports itself as not applicable instead of reaching a route that
+// cannot exist here. Every sweep in this file goes through this one entry point.
 [[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
 #ifdef NINFER_SM89
     return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
 #else
-    static_cast<void>(storage);
-    return true;
+    return storage != KvCacheStorage::RK4V4E8;
 #endif
 }
 
