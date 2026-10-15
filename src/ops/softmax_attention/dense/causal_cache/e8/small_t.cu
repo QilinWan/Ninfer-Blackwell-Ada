@@ -7,6 +7,7 @@
 #include "ops/common/math.h"
 #include "ops/softmax_attention/dense/causal_cache/e8/plan.h"
 #include "ops/softmax_attention/dense/causal_cache/e8/small_t.cuh"
+#include "ops/softmax_attention/dense/causal_cache/e8/output_rotate.cuh"
 
 #include <cstdint>
 #include <stdexcept>
@@ -212,6 +213,12 @@ void causal_attention_small_t_e8_launch_for(const Tensor& q, CacheInput input, c
         launch_e8_reduce<Geometry, true, false>(pos, invocation, splits, partial_acc, partial_m,
                                                 partial_l, out, stream);
     }
+
+    // The E8 route stores V in the rotated domain (see e8_output_rotate.cuh), so the reduce
+    // output has to be un-rotated before the caller sees it.
+    e8_inverse_rotate_output_launch<Geometry::QHeads, kCausalHeadDim>(
+        out, invocation.width, invocation.full_width, invocation.column_begin,
+        invocation.valid_columns, invocation.batch_size, stream);
 }
 
 } // namespace
