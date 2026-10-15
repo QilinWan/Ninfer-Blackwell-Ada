@@ -116,7 +116,7 @@ void run(const char* artifact, SpeculativeBackend backend) {
     selected.speculative   = backend;
     selected.proposal_head = ProposalHead::Full;
     auto model             = qwen::load_model(artifact, selected, device);
-    const execution::Parameters parameters(*model);
+    const execution::Parameters parameters(*model, ninfer::YarnOptions{});
     const auto window   = *model->config().draft->sliding_window;
     const auto capacity = ((window + 255) / 128) * 128;
     const auto pages    = capacity / kPagedKVPageSize;

@@ -44,16 +44,19 @@ int run_case(int axes, int heads, int tokens, int first_position, float factor, 
     cudaStream_t stream        = nullptr;
     cudaGraph_t captured       = nullptr;
     cudaGraphExec_t executable = nullptr;
+    DeviceContext device;
     if (graph) {
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
     }
-    ops::rope(p, rotary, 1.0e7F, x, stream, &coefficients);
+    ops::rope(p, rotary, 1.0e7F, x, device.execution_view().on_stream(stream),
+              &coefficients);
     if (graph) {
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         // Another Engine can use another transform while this graph remains alive.
         const auto other = ops::make_text_yarn_scaling(factor == 1.5F ? 4.0F : 1.5F, 262144);
-        ops::rope(p, rotary, 1.0e7F, x, stream, &other);
+        ops::rope(p, rotary, 1.0e7F, x, device.execution_view().on_stream(stream),
+              &other);
         CUDA_CHECK(cudaStreamSynchronize(stream));
         data.copy_from_host(input.data(), data.bytes());
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, 0));

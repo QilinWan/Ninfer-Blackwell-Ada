@@ -2001,7 +2001,7 @@ int main(int argc, char** argv) {
         models::LoadOptions selected;
         selected.speculative = backend;
         auto model           = qwen::load_model(artifact, selected, device);
-        qwen::execution::Parameters parameters(*model);
+        qwen::execution::Parameters parameters(*model, ninfer::YarnOptions{});
         auto frontend = qwen::make_frontend(model->resources(),
                                             {.vision_enabled = false, .max_context = kCapacity});
         EngineOptions options;
