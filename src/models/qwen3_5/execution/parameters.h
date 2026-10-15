@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/qwen3_5/model.h"
+#include "ninfer/ops/rope.h"
 #include "ninfer/ops/weight_input.h"
 
 #include <array>
@@ -132,13 +133,16 @@ struct ProposalParameters {
 // Shape-dependent kernel selection and scratch remain with the calling implementation and Op.
 class Parameters {
 public:
-    explicit Parameters(const Model& source);
+    explicit Parameters(const Model& source, const YarnOptions& yarn);
     Parameters(const Parameters&)            = delete;
     Parameters& operator=(const Parameters&) = delete;
     Parameters(Parameters&&)                 = delete;
     Parameters& operator=(Parameters&&)      = delete;
 
     const Model& model;
+    // Engine-selected static YaRN coefficients for text/MTP D256/R64 rotation. Disabled (factor 1)
+    // preserves native RoPE; Vision and the DFlash draft geometry always stay native.
+    ops::TextRopeScaling rope_scaling;
     TextParameters text;
     std::optional<MtpParameters> mtp;
     std::optional<VisionParameters> vision;

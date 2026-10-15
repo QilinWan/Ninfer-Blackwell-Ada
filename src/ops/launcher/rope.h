@@ -5,15 +5,16 @@
 
 #include "core/device.h"
 #include "core/tensor.h"
+#include "ninfer/ops/rope.h"
 
 #include <cuda_runtime.h>
 
 namespace ninfer::ops::detail {
 
 void rope_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-                 DeviceExecutionView execution);
+                 DeviceExecutionView execution, const TextRopeScaling* scaling);
 
 void rope_single_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
-                        DeviceExecutionView execution);
+                        DeviceExecutionView execution, const TextRopeScaling* scaling);
 
 } // namespace ninfer::ops::detail

@@ -257,7 +257,11 @@ private:
 
 } // namespace
 
-Parameters::Parameters(const Model& source) : model(source) {
+Parameters::Parameters(const Model& source, const YarnOptions& yarn) : model(source) {
+    if (yarn.factor > 1.0F && source.config().text.rope_parameters) {
+        rope_scaling = ops::make_text_yarn_scaling(
+            yarn.factor, yarn.original_context, source.config().text.rope_parameters->rope_theta);
+    }
     const Prepare prepare(model);
     const auto& w        = model.weights();
     text.token_embedding = native_weight(model.weight(w.text.token_embedding).view);
