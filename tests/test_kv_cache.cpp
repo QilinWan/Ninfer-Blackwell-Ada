@@ -540,6 +540,19 @@ int main() {
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{
+                .device_plane_order = ninfer::PagedKVPlaneOrder::HeadMajor,
+                .planes =
+                    {
+                        {ninfer::DType::U8, 128, 4, 256},
+                        {ninfer::DType::U8, 128, 4, 256},
+                        {ninfer::DType::FP16, 1, 4, 256},
+                        {ninfer::DType::FP16, 1, 4, 256},
+                    },
+            },
+            "RK4V4E8 symmetric HeadMajor", {4, 6, 6, 6});
+        failures += exercise_layout_and_transfer(
+            context,
+            ninfer::KVPageGeometry{
                 .device_plane_order = ninfer::PagedKVPlaneOrder::PageMajor,
                 .planes =
                     {
