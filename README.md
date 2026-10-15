@@ -2,6 +2,8 @@
 
 > Selected checkpoints. Maximum single-GPU inference performance.
 
+**Other languages: [中文](README.zh-CN.md)**
+
 NInfer is a from-scratch C++/CUDA inference engine for Qwen3.5 Dense and MoE architectures on a
 single NVIDIA GeForce GPU. It runs text, image, and video prompts through a local CLI or
 OpenAI-/Anthropic-compatible HTTP APIs. The runtime is deliberately specialized: one GPU, one
@@ -20,6 +22,40 @@ What Ada does and does not support, why, and how each claim is checked:
 
 > 中文构建指南、支持矩阵与踩坑清单见 **[docs/sm89.zh-CN.md](docs/sm89.zh-CN.md)**。
 
+**中文版首页：[README.zh-CN.md](README.zh-CN.md)**
+
+### Two headline capabilities in this build
+
+**1. 4-bit KV on Ada (`rk4v4-e8`).** Ada had no usable 4-bit KV route. This repository adds an
+E8 Conway–Sloane lattice codec that stores **both K and V as 4-bit codes** — a D256 Hadamard
+rotation (×1/16) followed by a per-8-dimension E8 lattice projection for K (`rintf`, clamped to
+[-8,7]) and `__float2int_rn` (clamped to [-7,7]) for V. **130 bytes per token per kv head**,
+about **2.5× smaller than INT8 KV**, decoded straight into the existing s8 tensor-core QK and
+FP16 PV paths with no extra dequantization step.
+
+Measured on a 32 GB Ada card with the 27B artifacts: correct text, correct image caption,
+DFlash2 acceptance **36.1% / 41.8%** at **83.4 / 91.5 tok/s**, MTP acceptance
+**63.2% / 66.7%** at 81.8 / 83.0 tok/s.
+
+**2. Context extrapolation across the whole family.** Static YaRN
+(`--rope-yarn-factor 1..4` with `--rope-original-max-position 262144`) works on **both**
+`sm_89` and `sm_120a`. The positional cap, the causal attention envelope and the draft window
+all follow the factor, and the split geometry already scales with `max_visible_keys`, so no
+kernel had to change.
+
+| Measured context ceiling (32 GB card) | Ada `sm_89` (`rk4v4-e8`) | Blackwell `sm_120a` (`nvfp4`) |
+|---|---|---|
+| bare | **~820,000 tokens** | **~790,000 tokens** |
+| with vision | ~720,000 tokens | ~730,000 tokens |
+| vision + speculation + 2 lanes + tuning | **512,000 verified** (ceiling ~544K) | **580,000 verified** |
+| 1,048,576 | does not fit (~34.7 GiB needed) | does not fit |
+
+The 1M rejection is the VRAM budget check, not a software limit; it needs a 48 GB class GPU.
+
+Full detail, including the r2 fix list (r1's E8 emitted garbage for want of an output
+un-rotation) and the `nf4`/DFlash2 selector-format limitation:
+**[docs/FEATURES-4bit-kv-and-yarn.md](docs/FEATURES-4bit-kv-and-yarn.md)**.
+
 | | Ada (`-DCMAKE_CUDA_ARCHITECTURES=89`) | Blackwell (`120a`, upstream default) |
 |---|---|---|
 | Artifact format | v3 only | v3 only |
@@ -28,6 +64,11 @@ What Ada does and does not support, why, and how each claim is checked:
 | KV cache | INT8, FP8, BF16, RK4V4E8 (Ada only) | plus NVFP4, K8V4 |
 | Vision, CLI, HTTP serving | yes | yes |
 | Static YaRN context extension | yes | yes |
+
+One caveat in this build: the offline `ninfer` and `ninfer-perplexity` argument parsers accept only
+`bf16|int8|fp8|nvfp4|k8v4` for `--kv-dtype`, so `rk4v4-e8` is reachable through serving
+(`ninfer-serve --kv-dtype rk4v4-e8`) but not through those two CLIs. The released Ada archive ships
+`bin/ninfer-serve` only, as r1 did.
 
 ## Optional YaRN for Qwen3.8-27B (both builds)
 
@@ -61,6 +102,22 @@ recipe or choose another supported mixture of formats.
 The current engine requires v3 artifacts. Existing official v2 downloads can be
 [upgraded locally](docs/weight-conversion.md#upgrade-an-existing-v2-artifact) without downloading
 the weights again.
+
+## Prebuilt engines
+
+Both builds ship as relocatable archives — no compiler and no CUDA Toolkit on the target host, the
+archive carries its own FFmpeg 6 and CUDA runtime libraries.
+
+* **[engine-sm120a-cu131-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm120a-cu131-r2)**
+  — RTX 50 series (`sm_120a`) / CUDA 13.1.
+* **[engine-sm89-cu128-r2](https://github.com/QilinWan/Ninfer-Blackwell-Ada/releases/tag/engine-sm89-cu128-r2)**
+  — RTX 40 series (`sm_89`) / CUDA 12.8, vision on, with `rk4v4-e8` and YaRN.
+
+The withdrawn `engine-sm89-cu128-r1` must not be used: its E8 route predates the output
+un-rotation and emits garbage. r2 replaces it.
+
+Each release carries a `.sha256` companion file; the build provenance and the measured ceilings are
+in the release notes.
 
 ## Quick start
 
