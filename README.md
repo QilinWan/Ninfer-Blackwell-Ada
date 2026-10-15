@@ -25,7 +25,7 @@ What Ada does and does not support, why, and how each claim is checked:
 | Artifact format | v3 only | v3 only |
 | Weight recipes | `groupwise-int` (Q4/Q5/Q6/Q8 + Q8 vocab) | groupwise-int, `nvfp4` |
 | Speculation | MTP, DFlash, DFlash2 | MTP, DFlash, DFlash2 |
-| KV cache | INT8, FP8, BF16 | plus NVFP4, K8V4 |
+| KV cache | INT8, FP8, BF16, RK4V4E8 (Ada only) | plus NVFP4, K8V4 |
 | Vision, CLI, HTTP serving | yes | yes |
 | Static YaRN context extension | yes | yes |
 
