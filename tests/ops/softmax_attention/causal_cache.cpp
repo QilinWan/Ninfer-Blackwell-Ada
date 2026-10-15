@@ -39,6 +39,20 @@ constexpr std::int32_t kNvfp4CodeBytes   = kHeadDim / 2;
 constexpr float kAttentionScale          = 0.0625f;
 constexpr std::uint16_t kOutputCanary    = 0x7fc1u;
 
+// A build only contains the KV routes its architecture implements: an Ada build has no FP4 kernel
+// route at all (cmake/Sm89Compat.cmake), so the shared entry skips the layouts it cannot execute
+// rather than asking for them. `ctest` then stays a real gate on both architectures instead of
+// turning an absent architecture feature into a failure.
+[[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
+#ifdef NINFER_SM89
+    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
+#else
+    static_cast<void>(storage);
+    return true;
+#endif
+}
+
+
 // A1 and A3 use one fixed criterion for each registered storage profile; token count, geometry,
 // execution envelope, and private launch route do not select or relax it.
 // Native INT8-G64 / FP8 Q quantization is an accepted production approximation. The unchanged
@@ -1766,6 +1780,7 @@ int run_a1_case(DeviceExecutionView execution, const Geometry& geometry, KvCache
                 const AttentionCase& test_case, MappingPattern mapping,
                 std::span<const int> oracle_queries         = {},
                 std::span<const std::uint32_t> graph_limits = {}) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -1896,6 +1911,7 @@ int run_a1_case(DeviceExecutionView execution, const Geometry& geometry, KvCache
 int run_a3_case(DeviceExecutionView execution, const Geometry& geometry, KvCacheStorage storage,
                 const AttentionCase& test_case, MappingPattern mapping,
                 std::span<const int> oracle_queries = {}) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const std::int32_t total       = test_case.base + test_case.tokens;
     const std::int32_t max_context = static_cast<std::int32_t>(
         std::max<std::uint32_t>(static_cast<std::uint32_t>(total + 3), test_case.envelope_max));
@@ -2020,6 +2036,7 @@ int verify_invalid_columns_zero(const std::string& label, std::span<const std::u
 int run_batch_case(DeviceExecutionView execution, const Geometry& geometry, KvCacheStorage storage,
                    const BatchAttentionCase& test_case, int envelope_max = 0,
                    std::span<const std::uint32_t> graph_limits = {}) {
+    if (!kv_storage_supported(storage)) { return 0; }
     const int batch = test_case.contexts.size(), width = test_case.width;
     const int pool_rows = std::max(
         batch, *std::max_element(test_case.table_rows.begin(), test_case.table_rows.end()) + 1);
@@ -2750,19 +2767,6 @@ int run_storage_cases(DeviceExecutionView execution, KvCacheStorage storage) {
 
 } // namespace
 
-// A build only contains the KV routes its architecture implements: an Ada build has no FP4 kernel
-// route at all (cmake/Sm89Compat.cmake), so the shared entry skips the layouts it cannot execute
-// rather than asking for them. `ctest` then stays a real gate on both architectures instead of
-// turning an absent architecture feature into a failure.
-[[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
-#ifdef NINFER_SM89
-    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
-#else
-    static_cast<void>(storage);
-    return true;
-#endif
-}
-
 int run_softmax_attention_causal_cache_tests(std::optional<KvCacheStorage> selected) {
     if (cuda_unavailable()) {
         std::cout << "SKIP: no usable CUDA device\n";
@@ -2774,7 +2778,11 @@ int run_softmax_attention_causal_cache_tests(std::optional<KvCacheStorage> selec
     for (const auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
-        if (!kv_storage_supported(storage)) { continue; }
+        if (!kv_storage_supported(storage)) {
+            std::cout << "SKIP causal_softmax_attention " << cache_name(storage)
+                      << " (this build does not contain the route)\n";
+            continue;
+        }
         if (selected && storage != *selected) continue;
         const auto start = std::chrono::steady_clock::now();
         std::cout << "RUN causal_softmax_attention " << cache_name(storage) << std::endl;
