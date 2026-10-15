@@ -63,3 +63,7 @@ profiles/
 
 # Claude Code personal/local settings (may contain API tokens)
 .claude/settings.local.json
+
+# TP2 reference goldens are gate inputs: the --tp 1 equivalence suite (tools/tp2/gate.sh) reads
+# these logs, so they are tracked data, not run output.
+!tools/tp2/reference/golden/*.log

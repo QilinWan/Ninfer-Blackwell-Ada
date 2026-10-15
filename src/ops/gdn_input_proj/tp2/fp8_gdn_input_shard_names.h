@@ -1,0 +1,13 @@
+// Renames that turn upstream's FP8 gdn_input_proj sources into the [8192,5120] shard's when a
+// translation unit of this directory includes them. Include it once, after
+// fp8_gdn_input_shard_prelude.h and right before the upstream source.
+
+#define Fp8GdnInputOutput Fp8GdnInputShardOutput
+#define fp8_gdn_input_decode_launch fp8_gdn_input_shard_decode_launch
+#define fp8_gdn_input_matrix_launch fp8_gdn_input_shard_matrix_launch
+#define fp8_gdn_input_a8_launch fp8_gdn_input_shard_a8_launch
+#define fp8_gdn_input_a16_dispatch fp8_gdn_input_shard_a16_dispatch
+#define fp8_gdn_input_a8_dispatch fp8_gdn_input_shard_a8_dispatch
+#define fp8_gdn_input_dispatch fp8_gdn_input_shard_dispatch
+#define fp8_gdn_input_partial_capacity_bytes fp8_gdn_input_shard_partial_capacity_bytes
+#define fp8_gdn_input_workspace_capacity_bytes fp8_gdn_input_shard_workspace_capacity_bytes
