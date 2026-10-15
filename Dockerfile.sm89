@@ -4,7 +4,7 @@
 # report can be reproduced without touching a host toolchain.
 #
 #   docker build -f Dockerfile.sm89 -t ninfer-sm89 .
-#   docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 .
+#   docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04 .
 #   docker run --rm --gpus all -v "$PWD/models:/workspace/models" ninfer-sm89 \
 #       ninfer /workspace/models/qwen3_8_27b.ninfer --prompt "hello" --max-tokens 32
 

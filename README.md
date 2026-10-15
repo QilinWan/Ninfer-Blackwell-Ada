@@ -166,10 +166,11 @@ reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multim
 
 ## Performance
 
-Published measurements use an RTX 5090. The [performance index](docs/performance.md) links to
+Blackwell measurements use an RTX 5090. The [performance index](docs/performance.md) links to
 per-model run records and the [measurement rules](docs/performance/methodology.md). The tables
 below are excerpts from those detailed results. Qwen3.8 uses FP8 E4M3 row-256 KV;
-Qwen3.6 uses INT8 group-64 KV.
+Qwen3.6 uses INT8 group-64 KV. Tuned Ada measurements (RTX 4080 SUPER 32 GB) are at the end of
+this section; see [NInfer on Ada](docs/sm89.md#measured-throughput) for the full sweep records.
 
 ### Concurrent MTP3 decode
 
@@ -200,6 +201,25 @@ linked from each model below.
 | [Qwen3.6-27B](docs/performance/qwen3.6-27b.md#single-request-speculative-decode) `nvfp4` | 11,191.5 tok/s | 2,510.6 tok/s | 252.2 tok/s |
 | [Qwen3.8-27B](docs/performance/qwen3.8-27b.md#single-request-speculative-decode) `groupwise-int` | 3,331.9 tok/s | 2,139.4 tok/s | 214.7 tok/s |
 | [Qwen3.8-27B](docs/performance/qwen3.8-27b.md#single-request-speculative-decode) `nvfp4` | 12,819.1 tok/s | 4,016.4 tok/s | 231.7 tok/s |
+
+### Ada field measurements (RTX 4080 SUPER 32 GB, sm_89)
+
+Tuned on a 32 GB modded 4080 SUPER (80 SM, power-limited at ~300 W) with two community Qwen3.8-27B
+`groupwise-int` artifacts carrying an MTP head and a DFlash2 head. Single lane, greedy, INT8 KV,
+`--prefill-chunk 2048`; decode rates are phase rates excluding prefill.
+
+| Profile | Best spec setting | Code | Structured | Math | Narrative | No-spec baseline |
+|---|---|---:|---:|---:|---:|---:|
+| MTP head | `--spec mtp --draft-tokens 3 --lm-head-draft` | 88.1 | 111.2 | 101.3 | **75.2** | 40.1 |
+| DFlash2 head | `--spec dflash2 --draft-tokens 7 --lm-head-draft` | **100.9** | **149.6** | **116.8** | 64.5 | 40.1 |
+
+Rates are tok/s. Draft-token count is not monotonic: the MTP head peaks at K=3 (four-scenario mean
+91.4 vs 80.5/84.4/84.0 at K=2/4/5), DFlash2 peaks at K=7 (101.0, collapsing to 81.6 at K=9).
+`--lm-head-draft` is a net win on both heads on this card (+9% MTP, +5-11% DFlash2). INT8 is the
+optimal KV dtype (fp8 -2~-10%, NVFP4/K8V4 refused at build time on Ada). `--no-thinking` adds ~16%.
+At 262,144 tokens per sequence the INT8 KV pool costs 8.77 GiB (MTP) / 8.25 GiB (DFlash2) and the
+server runs up to 4 lanes: aggregate 142.8 (MTP) / 159.1 (DFlash2) tok/s at C=4; C=8 at full
+context exceeds the runtime reservation.
 
 ## Evaluation
 
