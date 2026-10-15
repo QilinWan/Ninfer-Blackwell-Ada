@@ -10,6 +10,7 @@ verified.
 | Document | Purpose |
 |---|---|
 | [NInfer on Ada (sm_89)](sm89.md) | supported SKUs and artifacts, the four architecture deltas, unsupported Blackwell routes, build and verification status |
+| [NInfer 于 Ada (sm_89) · 中文](sm89.zh-CN.md) | 中文版：支持矩阵、构建步骤、实测踩坑清单、权重获取与吞吐采样 |
 | [CLI](cli.md) | text, chat-history, image/video input, output streams, sampling, MTP, and common runtime options |
 | [HTTP serving](serving.md) | OpenAI Responses/Chat Completions, Anthropic Messages, state, streaming, token counting, authentication, and tool calls |
 | [Performance](performance.md) | RTX 5090 measurement coverage, per-model serving results, methodology, and publication rules |

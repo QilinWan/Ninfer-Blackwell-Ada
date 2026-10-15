@@ -18,6 +18,8 @@ so no re-download or re-conversion is needed.
 What Ada does and does not support, why, and how each claim is checked:
 **[docs/sm89.md](docs/sm89.md)**. Everything else on this page is upstream's product documentation.
 
+> 中文构建指南、支持矩阵与踩坑清单见 **[docs/sm89.zh-CN.md](docs/sm89.zh-CN.md)**。
+
 | | Ada (`-DCMAKE_CUDA_ARCHITECTURES=89`) | Blackwell (`120a`, upstream default) |
 |---|---|---|
 | Artifact format | v3 only | v3 only |
@@ -67,8 +69,8 @@ configure time rather than producing a binary that cannot launch.
 Build the product binaries:
 
 ```bash
-git clone https://github.com/QilinWan/Ninfer-sm89.git
-cd Ninfer-sm89
+git clone https://github.com/QilinWan/Ninfer-Blackwell-Ada.git
+cd Ninfer-Blackwell-Ada
 
 # Ada (RTX 4090 / 4090D / 4080 SUPER / 4070 / 4060)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=89
