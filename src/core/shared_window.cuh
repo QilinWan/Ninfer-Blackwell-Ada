@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdint>
+#include "core/kernel_attr_once.h"
 
 // The single authority for shared staging that does not fit the static window.
 //
@@ -43,9 +44,9 @@ __device__ __forceinline__ unsigned char* shared_window_storage() {
 template <int Bytes, auto Kernel>
 int request_shared_window() {
     if constexpr (Bytes > kSharedStaticCapBytes) {
-        static const cudaError_t shared_window_status = cudaFuncSetAttribute(
+        static core::FuncAttrPerDevice shared_window_status;
+        shared_window_status.ensure(
             Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
-        CUDA_CHECK(shared_window_status);
         return Bytes;
     } else {
         return 0;

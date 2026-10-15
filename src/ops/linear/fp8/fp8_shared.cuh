@@ -1,5 +1,6 @@
 #pragma once
 #include "core/device.h"
+#include "core/kernel_attr_once.h"
 
 namespace ninfer::ops::detail {
 template <int Bytes>
@@ -18,9 +19,8 @@ template <int Bytes, auto Kernel, bool Dynamic = false>
 int fp8_prepare_shared() {
     static_assert(Bytes <= 99 * 1024);
     if constexpr (Bytes > 48 * 1024) {
-        static const cudaError_t status =
-            cudaFuncSetAttribute(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
-        CUDA_CHECK(status);
+        static core::FuncAttrPerDevice status;
+        status.ensure(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
         return Bytes;
     } else {
         return Dynamic ? Bytes : 0;

@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include "core/kernel_attr_once.h"
 
 namespace ninfer::ops::detail {
 namespace {
@@ -30,12 +31,12 @@ void launch_e8_partial(const Tensor& q, CacheInput input, const Tensor& pos, flo
         constexpr std::size_t kDynamicBytes =
             DynamicArena ? static_cast<std::size_t>(4 * KeyBlock * kCausalHeadDim) : 0u;
         if constexpr (DynamicArena) {
-            static const cudaError_t attr = cudaFuncSetAttribute(
+            static core::FuncAttrPerDevice attr;
+            attr.ensure(
                 causal_attention_small_t_e8_tiled_kernel<Geometry, TokenTile, WarpsPerCta,
                                                          MinBlocksPerSm, KeyBlock, DynamicArena,
                                                          MultiBatch, Masked, CacheInput>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(kDynamicBytes));
-            CUDA_CHECK(attr);
         }
         causal_attention_small_t_e8_tiled_kernel<Geometry, TokenTile, WarpsPerCta, MinBlocksPerSm,
                                                 KeyBlock, DynamicArena, MultiBatch, Masked,

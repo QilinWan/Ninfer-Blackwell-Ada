@@ -10,6 +10,7 @@
 #include "ops/softmax_attention/dense/causal_cache/e8/output_rotate.cuh"
 
 #include <cstdint>
+#include "core/kernel_attr_once.h"
 
 namespace ninfer::ops::detail {
 namespace {
@@ -19,10 +20,10 @@ void causal_attention_prompt_e8_attention_launch_for(const Tensor& q, const Tens
                                                      float scale, const CacheView& cache,
                                                      Metadata metadata, Tensor& out,
                                                      cudaStream_t stream) {
-    static const cudaError_t attr = cudaFuncSetAttribute(
+    static core::FuncAttrPerDevice attr;
+    attr.ensure(
         causal_attention_prompt_e8_kernel<Geometry, Metadata>,
         cudaFuncAttributeMaxDynamicSharedMemorySize, kCausalPromptE8SmemBytes);
-    CUDA_CHECK(attr);
 
     const auto tokens = static_cast<std::int32_t>(q.ne[2]);
     const dim3 grid(static_cast<unsigned>(div_up(tokens, kCausalPromptE8Br)),
