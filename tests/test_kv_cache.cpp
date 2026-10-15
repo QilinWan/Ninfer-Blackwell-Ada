@@ -549,7 +549,7 @@ int main() {
                         {ninfer::DType::FP16, 1, 4, 256},
                     },
             },
-            "RK4V4E8 symmetric HeadMajor", {4, 6, 6, 6});
+            "RK4V4E8 symmetric HeadMajor", {4, 8, 12, 16});
         failures += exercise_layout_and_transfer(
             context,
             ninfer::KVPageGeometry{
