@@ -1,12 +1,15 @@
 # NInfer documentation
 
 Start with the [project README](../README.md) to build NInfer, download a published artifact, and
-run the CLI or HTTP server.
+run the CLI or HTTP server. This repository additionally maintains an Ada build; see
+[NInfer on Ada (sm_89)](sm89.md) for what changes, what is unsupported there, and how each claim is
+verified.
 
 ## User guides
 
 | Document | Purpose |
 |---|---|
+| [NInfer on Ada (sm_89)](sm89.md) | supported SKUs and artifacts, the four architecture deltas, unsupported Blackwell routes, build and verification status |
 | [CLI](cli.md) | text, chat-history, image/video input, output streams, sampling, MTP, and common runtime options |
 | [HTTP serving](serving.md) | OpenAI Responses/Chat Completions, Anthropic Messages, state, streaming, token counting, authentication, and tool calls |
 | [Performance](performance.md) | RTX 5090 measurement coverage, per-model serving results, methodology, and publication rules |

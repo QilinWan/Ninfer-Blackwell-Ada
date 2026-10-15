@@ -1,14 +1,20 @@
 cmake_minimum_required(VERSION 3.28)
 
-# The current implementation is compiled only for sm_120a. Set and validate the
-# architecture before CUDA compiler detection so CMake never injects a generic
-# host-toolchain default or accepts an unsupported target.
+# Upstream NInfer compiles exactly one architecture: sm_120a (Blackwell). This
+# repository additionally targets Ada (sm_89: RTX 4090 / 4090D / 4080 SUPER /
+# 4070 family). Set and validate the architecture before CUDA compiler detection
+# so CMake never injects a generic host-toolchain default or accepts an
+# unsupported target.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures to build")
+  set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architecture to build: 120a or 89")
 endif()
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
+set(NINFER_SM89_BUILD OFF)
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+  set(NINFER_SM89_BUILD ON)
+  add_compile_definitions(NINFER_SM89=1)
+elseif(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
   message(FATAL_ERROR
-    "NInfer supports only CMAKE_CUDA_ARCHITECTURES=120a; got "
+    "NInfer supports CMAKE_CUDA_ARCHITECTURES=120a (upstream, Blackwell) or 89 (Ada); got "
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
 
@@ -23,6 +29,9 @@ option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
 # packages; the vision route then fails with an explicit message instead of a
 # configure-time dependency error.
 option(NINFER_ENABLE_VISION "Build the FFmpeg-backed media decoder" ON)
+# Links the engine archives into an executable on hosts without a GPU. Useful in CI and for
+# downstream packagers: it catches unresolved kernel routes that static archives tolerate.
+option(NINFER_BUILD_LINK_SMOKE "Build the engine link smoke executable" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,4 +67,8 @@ if(BUILD_TESTING)
 endif()
 if(NINFER_BUILD_BENCHMARKS)
   add_subdirectory(bench)
+endif()
+
+if(NINFER_BUILD_LINK_SMOKE)
+  add_subdirectory(tools/link_smoke)
 endif()

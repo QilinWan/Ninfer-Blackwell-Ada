@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1
+# Reproducible Ada build. Upstream's Dockerfile targets sm_120a with CUDA 13.1; this one keeps the
+# same two-stage shape and parameterizes both the toolkit and the architecture, so a CUDA 12.x
+# report can be reproduced without touching a host toolchain.
+#
+#   docker build -f Dockerfile.sm89 -t ninfer-sm89 .
+#   docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 .
+#   docker run --rm --gpus all -v "$PWD/models:/workspace/models" ninfer-sm89 \
+#       ninfer /workspace/models/qwen3_8_27b.ninfer --prompt "hello" --max-tokens 32
+
+ARG CUDA_IMAGE=nvidia/cuda:13.1.2-devel-ubuntu24.04
+FROM ${CUDA_IMAGE} AS build
+
+ARG NINFER_CUDA_ARCHITECTURES=89
+ARG NINFER_ENABLE_VISION=ON
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libavcodec-dev \
+        libavformat-dev \
+        libavutil-dev \
+        libcurl4-openssl-dev \
+        libswscale-dev \
+        ninja-build \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+RUN cmake -S . -B /build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES=${NINFER_CUDA_ARCHITECTURES} \
+        -DNINFER_ENABLE_VISION=${NINFER_ENABLE_VISION} \
+        -DNINFER_BUILD_APPS=ON \
+        -DNINFER_BUILD_LINK_SMOKE=ON \
+        -DBUILD_TESTING=OFF \
+        -DNINFER_BUILD_BENCHMARKS=OFF \
+    && cmake --build /build --parallel --target ninfer ninfer-serve ninfer-link-smoke \
+    && /build/tools/link_smoke/ninfer-link-smoke
+
+FROM ${CUDA_IMAGE} AS runtime
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        libavcodec60 \
+        libavformat60 \
+        libavutil58 \
+        libcurl4t64 \
+        libswscale7 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /build/apps/ninfer /usr/local/bin/ninfer
+COPY --from=build /build/apps/ninfer-serve /usr/local/bin/ninfer-serve
+
+WORKDIR /workspace
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+CMD ["ninfer-serve", "--help"]

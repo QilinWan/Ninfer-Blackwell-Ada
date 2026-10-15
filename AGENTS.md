@@ -3,8 +3,10 @@
 ## Product and architecture
 
 NInfer is a C++/CUDA inference engine for maximum single-GPU performance, targeting `sm_120a`
-on NVIDIA GeForce RTX 5090. Choose designs for functional and numerical correctness, clear
-ownership, and the performance goal within the requested scope.
+on NVIDIA GeForce RTX 5090. This repository additionally builds for Ada `sm_89`, which shares every
+route except the Blackwell-only FP4 ones; see [NInfer on Ada (sm_89)](docs/sm89.md). Choose designs
+for functional and numerical correctness, clear ownership, and the performance goal within the
+requested scope.
 
 It implements `Qwen3_5ForCausalLM` and `Qwen3_5MoeForCausalLM`. Checkpoints and recipe combinations
 of existing representations use the same architecture, binding and execution path; do not add

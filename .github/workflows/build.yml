@@ -1,0 +1,80 @@
+name: build
+
+# The product promise of this repository is that anyone can clone it and compile it. Neither job
+# needs a GPU: compiling and linking for Ada is the thing that breaks when an sm_120a-only
+# instruction sneaks back in, and it is checked on every push.
+
+on:
+  push:
+    branches: [master, sm89]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ matrix.image }}
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sm89-cuda13-text-only
+            image: nvidia/cuda:13.1.2-devel-ubuntu24.04
+            arch: "89"
+            vision: "OFF"
+          - name: sm89-cuda12-full
+            image: nvidia/cuda:12.6.3-devel-ubuntu24.04
+            arch: "89"
+            vision: "ON"
+          - name: sm120a-cuda13-upstream-path
+            image: nvidia/cuda:13.1.2-devel-ubuntu24.04
+            arch: "120a"
+            vision: "ON"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates cmake git ninja-build pkg-config \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libcurl4-openssl-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }} \
+            -DNINFER_ENABLE_VISION=${{ matrix.vision }} \
+            -DNINFER_BUILD_APPS=ON \
+            -DNINFER_BUILD_LINK_SMOKE=ON \
+            -DBUILD_TESTING=OFF \
+            -DNINFER_BUILD_BENCHMARKS=OFF
+
+      - name: Compile the engine, CLI and server
+        run: cmake --build build --parallel --target ninfer ninfer-serve
+
+      - name: Link the whole engine without a GPU
+        run: |
+          cmake --build build --parallel --target ninfer-link-smoke
+          ./build/tools/link_smoke/ninfer-link-smoke
+
+      - name: Report the built architecture
+        run: cuobjdump --list-elf build/src/ops/libninfer_ops.a | head -5
+
+  container:
+    name: Dockerfile.sm89
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the reproducible Ada image
+        run: docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.6.3-devel-ubuntu24.04 .
