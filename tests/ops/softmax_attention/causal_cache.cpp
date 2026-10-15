@@ -2750,6 +2750,19 @@ int run_storage_cases(DeviceExecutionView execution, KvCacheStorage storage) {
 
 } // namespace
 
+// A build only contains the KV routes its architecture implements: an Ada build has no FP4 kernel
+// route at all (cmake/Sm89Compat.cmake), so the shared entry skips the layouts it cannot execute
+// rather than asking for them. `ctest` then stays a real gate on both architectures instead of
+// turning an absent architecture feature into a failure.
+[[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
+#ifdef NINFER_SM89
+    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
+#else
+    static_cast<void>(storage);
+    return true;
+#endif
+}
+
 int run_softmax_attention_causal_cache_tests(std::optional<KvCacheStorage> selected) {
     if (cuda_unavailable()) {
         std::cout << "SKIP: no usable CUDA device\n";
@@ -2761,6 +2774,7 @@ int run_softmax_attention_causal_cache_tests(std::optional<KvCacheStorage> selec
     for (const auto storage :
          {KvCacheStorage::BFloat16, KvCacheStorage::Int8Group64, KvCacheStorage::Fp8E4M3Row256,
           KvCacheStorage::Nvfp4Group16, KvCacheStorage::Fp8KeyNvfp4Value}) {
+        if (!kv_storage_supported(storage)) { continue; }
         if (selected && storage != *selected) continue;
         const auto start = std::chrono::steady_clock::now();
         std::cout << "RUN causal_softmax_attention " << cache_name(storage) << std::endl;
