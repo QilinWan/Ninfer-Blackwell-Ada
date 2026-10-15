@@ -46,30 +46,16 @@ void attention_projection(const Tensor& hidden, const AttentionParameters& param
 
 void text_rope(const Tensor& positions, const RopeConfig& config,
                const ops::TextRopeScaling* scaling, Tensor& query, DeviceExecutionView execution) {
-void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query,
-               cudaStream_t stream) {
-void text_rope(const Tensor& positions, const RopeConfig& config,
-               const ops::TextRopeScaling* scaling, Tensor& query, cudaStream_t stream) {
     require_rope_axes(positions, config);
     ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, execution,
               scaling);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, stream);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, stream, scaling);
 }
 
 void text_rope(const Tensor& positions, const RopeConfig& config,
                const ops::TextRopeScaling* scaling, Tensor& query, Tensor& key,
                DeviceExecutionView execution) {
-void text_rope(const Tensor& positions, const RopeConfig& config, Tensor& query, Tensor& key,
-               cudaStream_t stream) {
-void text_rope(const Tensor& positions, const RopeConfig& config,
-               const ops::TextRopeScaling* scaling, Tensor& query, Tensor& key,
-               cudaStream_t stream) {
     require_rope_axes(positions, config);
     ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, execution,
-              scaling);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, stream);
-    ops::rope(positions, dimension(config.rotary_dim), config.rope_theta, query, key, stream,
               scaling);
 }
 

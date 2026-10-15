@@ -4,6 +4,7 @@
 // weight tile while N-groups cover disjoint column ranges. Output owns the
 // physical direct-write policy.
 
+#include "core/shared_window.cuh"
 #include "ops/linear/q8/q8_a16_sliced_k_mma.cuh"
 
 #include <cuda_bf16.h>
@@ -51,7 +52,7 @@ __global__ __launch_bounds__(
     };
 
     static_assert(sizeof(Shared) == Schedule::kSharedBytes);
-    auto& shared = *reinterpret_cast<Shared*>(q8_shared_storage<sizeof(Shared)>());
+    auto& shared = *reinterpret_cast<Shared*>(core::shared_window_storage<sizeof(Shared)>());
 
     const int tid         = static_cast<int>(threadIdx.x);
     const int warp        = tid >> 5;
