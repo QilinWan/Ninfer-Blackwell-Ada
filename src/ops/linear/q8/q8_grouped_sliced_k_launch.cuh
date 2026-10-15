@@ -1,4 +1,5 @@
 #pragma once
+#include "core/shared_window.cuh"
 #include "ops/common/math.h"
 #include "ops/common/token_slices.h"
 #include "ops/linear/q8/q8_a16_grouped_sliced_k_mma.cuh"
@@ -23,7 +24,7 @@ void launch_q8_a16_grouped_sliced_k_mma(const Q8LinearOperands& operands, Output
         const auto launch = [&]<bool Full>() {
             constexpr auto kernel =
                 q8_a16_grouped_sliced_k_mma_kernel<Schedule, Full, Output, Epilogue>;
-            const int shared = q8_prepare_shared<Schedule::kSharedBytes, kernel>();
+            const int shared = core::request_shared_window<Schedule::kSharedBytes, kernel>();
             kernel<<<grid, Schedule::kThreads, shared, stream>>>(operands, output, epilogue, offset,
                                                                  count);
             CUDA_CHECK(cudaGetLastError());

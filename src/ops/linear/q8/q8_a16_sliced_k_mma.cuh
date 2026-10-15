@@ -12,7 +12,7 @@
 #include "ops/common/memory.cuh"
 #include "ops/linear/q8/q8_schedule.cuh"
 #include "ops/linear/q8/q8_operands.h"
-#include "ops/linear/q8/q8_shared.cuh"
+#include "core/shared_window.cuh"
 #include "ops/linear/common/epilogue.cuh"
 
 #include <cuda_bf16.h>
@@ -102,7 +102,7 @@ __device__ __forceinline__ void q8_a16_sliced_k_mma(Q8LinearOperands operands, O
     using SharedStorage = Q8SlicedKSharedStorage<Schedule>;
 
     static_assert(sizeof(SharedStorage) == Schedule::kSharedBytes);
-    auto& shared   = *reinterpret_cast<SharedStorage*>(q8_shared_storage<sizeof(SharedStorage)>());
+    auto& shared   = *reinterpret_cast<SharedStorage*>(core::shared_window_storage<sizeof(SharedStorage)>());
     const int tid  = static_cast<int>(threadIdx.x);
     const int warp = tid >> 5;
     const int lane = tid & 31;

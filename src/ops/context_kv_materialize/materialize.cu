@@ -1,5 +1,6 @@
 #include "ops/context_kv_materialize/launch.h"
 #include "core/device.h"
+#include "core/shared_window.cuh"
 #include "ops/common/memory.cuh"
 #include "ops/common/mma.cuh"
 #include "ops/linear/q8/q8_sliced_k_launch.cuh"
@@ -389,7 +390,7 @@ void launch_grouped(const Tensor& x, const Tensor& positions, const Tensor& coun
                     ContextKVMaterializeExecutionEnvelope envelope, const Tensor& scratch,
                     cudaStream_t stream) {
     constexpr auto kernel = context_kv_grouped_kernel<Columns, KWarps>;
-    const int shared = q8_prepare_shared<GroupedSchedule<Columns, KWarps>::kSharedBytes, kernel>();
+    const int shared = core::request_shared_window<GroupedSchedule<Columns, KWarps>::kSharedBytes, kernel>();
     kernel<<<dim3(64, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10), KWarps * 32,
              shared, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const int*>(positions.data),

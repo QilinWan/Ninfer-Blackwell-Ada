@@ -13,7 +13,7 @@
 #include "ops/common/memory.cuh"
 #include "ops/linear/q8/q8_schedule.cuh"
 #include "ops/linear/q8/q8_operands.h"
-#include "ops/linear/q8/q8_shared.cuh"
+#include "core/shared_window.cuh"
 #include "ops/linear/common/epilogue.cuh"
 
 #include <cuda_bf16.h>
@@ -81,7 +81,7 @@ __global__ __launch_bounds__(Cfg::kThreads, Cfg::kMinBlocksPerSm) void q8_a16_mm
     };
 
     static_assert(sizeof(OperandStorage) == Cfg::kSharedBytes);
-    auto* scratch = q8_shared_storage<q8_mma_shared_bytes<Cfg, Epilogue>>();
+    auto* scratch = core::shared_window_storage<q8_mma_shared_bytes<Cfg, Epilogue>>();
     auto& shared  = *reinterpret_cast<OperandStorage*>(scratch);
     auto& As      = shared.weights;
     auto& Bs      = shared.activations;
