@@ -12,7 +12,7 @@ endif()
 
 set(NINFER_SM120A_DROPPED_PATTERNS
   "/kv_cache/append/e8_launch\\.cu$"
-  "/causal_cache/(small_t|prompt)_e8\\.cu$"
+  "/causal_cache/e8/.*\\.(cu|cpp)$"
 )
 
 get_target_property(_ninfer_ops_sources ninfer_ops SOURCES)
