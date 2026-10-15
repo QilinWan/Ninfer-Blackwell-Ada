@@ -24,25 +24,36 @@ enum class RopeKernelMode : std::int32_t {
 
 inline constexpr int kRopeMaxHalf = 128;
 
-static __device__ __constant__ float kTextRopeInvFrequency[32] = {
-    1.000000000e+00F, 6.042963902e-01F, 3.651741273e-01F, 2.206734069e-01F, 1.333521432e-01F,
-    8.058421878e-02F, 4.869675252e-02F, 2.942727176e-02F, 1.778279410e-02F, 1.074607828e-02F,
-    6.493816316e-03F, 3.924189758e-03F, 2.371373706e-03F, 1.433012570e-03F, 8.659643234e-04F,
-    5.232991147e-04F, 3.162277660e-04F, 1.910952975e-04F, 1.154781985e-04F, 6.978305849e-05F,
-    4.216965034e-05F, 2.548296748e-05F, 1.539926526e-05F, 9.305720409e-06F, 5.623413252e-06F,
-    3.398208329e-06F, 2.053525026e-06F, 1.240937761e-06F, 7.498942093e-07F, 4.531583638e-07F,
-    2.738419634e-07F, 1.654817100e-07F,
+// Double-precision inverse frequencies, as for the DFlash route (ops/common/dflash_rope.cuh): the
+// rotary phase is formed in double, so the coefficient table has to carry double precision too.
+// Each entry is the correctly rounded value of theta^(-2*pairs/exp-div), and every entry projects
+// onto exactly the float constant this table replaces (verified digit by digit), so the float
+// behaviour of short-context routes is unchanged.
+static __device__ __constant__ double kTextRopeInvFrequency[32] = {
+      1.00000000000000000e+00,  0.604296390238132819e+00,  0.365174127254837706e+00,
+      0.220673406908458980e+00,  0.133352143216332403e+00,  0.0805842187761481817e+00,
+      0.0486967525165863115e+00,  0.0294272717620928181e+00,  0.0177827941003892280e+00,
+      0.0107460782832131750e+00,  0.00649381631576211315e+00,  0.00392418975848453586e+00,
+      0.00237137370566165526e+00,  0.00143301257023696274e+00,  0.000865964323360065352e+00,
+      0.000523299114681494688e+00,  0.000316227766016837933e+00,  0.000191095297497044052e+00,
+      0.000115478198468945818e+00,  0.0000697830584859866338e+00,  0.0000421696503428582249e+00,
+      0.0000254829674797934653e+00,  0.0000153992652605949199e+00,  0.00000930572040929698979e+00,
+      0.00000562341325190349080e+00,  0.00000339820832894255937e+00,  0.00000205352502645714607e+00,
+      0.00000124093776075171957e+00,  0.000000749894209332455827e+00,  0.000000453158363760081788e+00,
+      0.000000273841963426436129e+00,  0.000000165481709994318142e+00,
 };
 
-static __device__ __constant__ float kVisionRopeInvFrequency[18] = {
-    1.000000000e+00F, 5.994842503e-01F, 3.593813664e-01F, 2.154434690e-01F, 1.291549665e-01F,
-    7.742636827e-02F, 4.641588834e-02F, 2.782559402e-02F, 1.668100537e-02F, 1.000000000e-02F,
-    5.994842503e-03F, 3.593813664e-03F, 2.154434690e-03F, 1.291549665e-03F, 7.742636827e-04F,
-    4.641588834e-04F, 2.782559402e-04F, 1.668100537e-04F,
+static __device__ __constant__ double kVisionRopeInvFrequency[18] = {
+      1.00000000000000000e+00,  0.599484250318941015e+00,  0.359381366380462730e+00,
+      0.215443469003188372e+00,  0.129154966501488388e+00,  0.0774263682681127060e+00,
+      0.0464158883361277889e+00,  0.0278255940220712460e+00,  0.0166810053720005875e+00,
+      0.0100000000000000000e+00,  0.00599484250318941015e+00,  0.00359381366380462730e+00,
+      0.00215443469003188372e+00,  0.00129154966501488388e+00,  0.000774263682681127060e+00,
+      0.000464158883361277889e+00,  0.000278255940220712460e+00,  0.000166810053720005875e+00,
 };
 
 template <RopeKernelMode Mode>
-__device__ __forceinline__ void fixed_axis_frequency(int pair, int* axis, float* frequency) {
+__device__ __forceinline__ void fixed_axis_frequency(int pair, int* axis, double* frequency) {
     if constexpr (Mode == RopeKernelMode::Vision2D) {
         *axis      = pair / 18;
         *frequency = kVisionRopeInvFrequency[pair % 18];
@@ -52,19 +63,33 @@ __device__ __forceinline__ void fixed_axis_frequency(int pair, int* axis, float*
     }
 }
 
+// Form the phase and its 2π reduction in double, then hand a value inside [-π, π] to the accurate
+// float sincos, exactly as the DFlash route does. The rotary phase grows linearly with the position,
+// so a float phase carries argument-reduction error of the same order as the profile a rope output
+// is checked against: at position 1,048,000 the float ulp of a 3.8e5 rad phase is 0.031 rad, four
+// times the BF16 pair tolerance a long-context tail must stay inside. One CTA computes this kHalf
+// times and shares the coefficients across heads, so the double work is off the bandwidth path.
+__device__ __forceinline__ void reduced_sincos(std::int32_t position, double frequency, float* sine,
+                                               float* cosine) {
+    constexpr double kInvTwoPi = 1.59154943091895336e-01;
+    constexpr double kTwoPi    = 6.28318530717958648e+00;
+    const double angle         = static_cast<double>(position) * frequency;
+    const double turns         = angle * kInvTwoPi;
+    const float reduced        = static_cast<float>(angle - nearbyint(turns) * kTwoPi);
+    sincosf(reduced, sine, cosine);
+}
+
 template <RopeKernelMode Mode>
 __device__ __forceinline__ void fixed_sincos(const std::int32_t* positions, int tokens, int token,
                                              int pair, float* sine, float* cosine) {
     if constexpr (Mode == RopeKernelMode::DflashText1D) {
         dflash_rope_sincos(positions, token, pair, sine, cosine);
     } else {
-        int axis = 0;
-        float frequency;
+        int axis  = 0;
+        double frequency;
         fixed_axis_frequency<Mode>(pair, &axis, &frequency);
-        const float angle =
-            static_cast<float>(positions[static_cast<std::int64_t>(axis) * tokens + token]) *
-            frequency;
-        sincosf(angle, sine, cosine);
+        reduced_sincos(positions[static_cast<std::int64_t>(axis) * tokens + token], frequency, sine,
+                       cosine);
     }
 }
 
@@ -167,14 +192,14 @@ __global__ void rope_fixed_split_kernel(const std::int32_t* positions, __nv_bflo
 }
 
 __device__ __forceinline__ void generic_axis_frequency(int axes, int head_dim, int rotary_dim,
-                                                       int pair, int* axis, float* exponent) {
+                                                       int pair, int* axis, double* exponent) {
     if (axes == 2 && head_dim == 72 && rotary_dim == 72) {
         *axis           = pair / 18;
         const int local = pair % 18;
-        *exponent       = -2.0F * static_cast<float>(local) / 36.0F;
+        *exponent       = -2.0 * static_cast<double>(local) / 36.0;
     } else {
         *axis     = axes == 3 ? pair % 3 : 0;
-        *exponent = -2.0F * static_cast<float>(pair) / static_cast<float>(rotary_dim);
+        *exponent = -2.0 * static_cast<double>(pair) / static_cast<double>(rotary_dim);
     }
 }
 
@@ -195,23 +220,17 @@ static __global__ void rope_generic_kernel(const std::int32_t* positions, std::i
             fixed_sincos<RopeKernelMode::DflashText1D>(positions, tokens, token, pair,
                                                        &sin_cache[pair], &cos_cache[pair]);
         } else {
-            int axis       = 0;
-            float exponent = 0.0F;
+            int axis      = 0;
+            double exponent = 0.0;
             generic_axis_frequency(axes, head_dim, rotary_dim, pair, &axis, &exponent);
-            const float frequency =
-                scaling.enabled ? scaling.inverse_frequency[pair] : powf(theta, exponent);
+            // Native frequencies come from the double power, so a shape outside the fixed tables
+            // keeps the same phase accuracy as the selected routes.
+            const double frequency = scaling.enabled
+                                         ? static_cast<double>(scaling.inverse_frequency[pair])
+                                         : pow(static_cast<double>(theta), exponent);
             const std::int32_t position =
                 positions[static_cast<std::int64_t>(axis) * tokens + token];
-            if (scaling.enabled) {
-                constexpr double two_pi = 6.28318530717958647693;
-                const double angle      = static_cast<double>(position) * frequency;
-                const float reduced =
-                    static_cast<float>(angle - nearbyint(angle / two_pi) * two_pi);
-                sincosf(reduced, &sin_cache[pair], &cos_cache[pair]);
-            } else {
-                sincosf(static_cast<float>(position) * frequency, &sin_cache[pair],
-                        &cos_cache[pair]);
-            }
+            reduced_sincos(position, frequency, &sin_cache[pair], &cos_cache[pair]);
             if (scaling.enabled) {
                 sin_cache[pair] *= scaling.attention_factor;
                 cos_cache[pair] *= scaling.attention_factor;

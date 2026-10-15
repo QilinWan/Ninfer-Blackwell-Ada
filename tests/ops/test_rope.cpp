@@ -499,12 +499,15 @@ int main() {
     failures +=
         run_single_case(execution, {"35b mtp k text", 256, 64, 1, 5, kTextTheta}, 2, 16384, 8);
 
+    // The YaRN cases pass lane_width explicitly so the factor lands in yarn_factor: the trailing
+    // `false, 1.5F` shorthand bound the factor to the bool `graph` parameter and left the case on
+    // the native path. Positions sit on the far tail of each factor's scaled window.
     failures +=
         run_pair_case(execution, {"YaRN 1.5 text pair", 256, 64, 1, 3, kTextTheta}, 24, 4, 393200,
-                      0, 0, false, 1.5F);
+                      0, 0, 0, false, 1.5F);
     failures +=
         run_pair_case(execution, {"YaRN 4 MRoPE pair", 256, 64, 3, 17, kTextTheta}, 24, 4, 1048000,
-                      16, 8, false, 4.0F);
+                      16, 8, 0, false, 4.0F);
     failures += run_vision_packed_case(execution);
 
     // DFlash proposal consumes 2..16 tokens; context append uses the single-K form.

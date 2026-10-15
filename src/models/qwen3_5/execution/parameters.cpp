@@ -1,6 +1,7 @@
 #include "models/qwen3_5/execution/parameters.h"
 
 #include "core/weight_view.h"
+#include "runtime/contract/yarn.h"
 
 #include <limits>
 #include <stdexcept>
@@ -258,9 +259,21 @@ private:
 } // namespace
 
 Parameters::Parameters(const Model& source, const YarnOptions& yarn) : model(source) {
-    if (yarn.factor > 1.0F && source.config().text.rope_parameters) {
-        rope_scaling = ops::make_text_yarn_scaling(
-            yarn.factor, yarn.original_context, source.config().text.rope_parameters->rope_theta);
+    if (yarn.factor > 1.0F) {
+        const auto& text = source.config().text;
+        // The loaded artifact is where the rotary shape is known, so the YaRN domain contract
+        // (runtime/contract/yarn.h, include/ninfer/ops/rope.h) is enforced here: a factor that the
+        // artifact's rotary domain cannot express is reported with its reason at load time instead
+        // of being built here and then ignored by the kernel that owns that domain.
+        if (!text.rope_parameters || !text.attention) {
+            throw std::invalid_argument(
+                "--rope-yarn-factor requires a rotary text domain; this artifact has no text "
+                "rope_parameters/attention configuration");
+        }
+        runtime::validate_yarn_rotary_domain(text.attention->head_dim,
+                                             text.rope_parameters->rotary_dim, yarn.factor);
+        rope_scaling = ops::make_text_yarn_scaling(yarn.factor, yarn.original_context,
+                                                  text.rope_parameters->rope_theta);
     }
     const Prepare prepare(model);
     const auto& w        = model.weights();
