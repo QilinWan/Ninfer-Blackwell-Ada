@@ -39,6 +39,12 @@ void fp8_linear_add_decode_launch(const Tensor& x, const Weight& weight, Tensor&
     case Fp8GeometryId::N16384K5120:
     case Fp8GeometryId::N34816K5120:
     case Fp8GeometryId::N248320K5120:
+    case Fp8GeometryId::N7168K5120:
+    case Fp8GeometryId::N8192K5120:
+    case Fp8GeometryId::N17408K5120:
+    case Fp8GeometryId::N124160K5120:
+    case Fp8GeometryId::N5120K3072:
+    case Fp8GeometryId::N5120K8704:
         break;
     }
     throw std::invalid_argument("fp8 linear_add: unsupported problem");

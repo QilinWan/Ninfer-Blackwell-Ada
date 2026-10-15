@@ -35,6 +35,13 @@ void launch_nvfp4_a4_tma_linear(Nvfp4GeometryId problem, const Nvfp4A4Operands& 
     case Nvfp4GeometryId::N5120K17408:
         launch<17408>(p, output, stream);
         return;
+    // The two-device shards keep their parent's TMA schedule and promotion.
+    case Nvfp4GeometryId::N17408K5120:
+        launch<5120, CU_TENSOR_MAP_L2_PROMOTION_L2_128B>(p, output, stream);
+        return;
+    case Nvfp4GeometryId::N5120K8704:
+        launch<8704>(p, output, stream);
+        return;
     }
     throw std::invalid_argument("NVFP4 TMA linear: unsupported geometry");
 }

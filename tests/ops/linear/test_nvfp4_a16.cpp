@@ -29,8 +29,14 @@ int run_nvfp4_a16() {
                           {5120, 6144, 705U, Comparison::Sampled, true, invocations});
     failures += run_shape("NVFP4_A16", ActivationCompute::A16, make_nvfp4_weight,
                           {5120, 17408, 707U, Comparison::Sampled, true, invocations});
+    // Two-device halves of the MLP gate/up and down projections, on the parent's routes.
+    failures += run_shape("NVFP4_A16", ActivationCompute::A16, make_nvfp4_weight,
+                          {17408, 5120, 709U, Comparison::Sampled, true, invocations});
+    failures += run_shape("NVFP4_A16", ActivationCompute::A16, make_nvfp4_weight,
+                          {5120, 8704, 711U, Comparison::Sampled, true, invocations});
     for (auto [n, k] : {std::pair{14336, 5120}, std::pair{16384, 5120}, std::pair{34816, 5120},
-                        std::pair{5120, 6144}, std::pair{5120, 17408}}) {
+                        std::pair{5120, 6144}, std::pair{5120, 17408}, std::pair{17408, 5120},
+                        std::pair{5120, 8704}}) {
         failures += verify_workspace_envelopes(QType::NVFP4, n, k);
     }
     return failures;

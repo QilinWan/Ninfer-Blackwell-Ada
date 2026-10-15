@@ -5,6 +5,7 @@
 #include <array>
 #include <exception>
 #include <iostream>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -73,16 +74,18 @@ int run_fp8_a16() {
         ops::LinearPolicy::AllowA4,
     };
     for (const ops::LinearPolicy policy : vocabulary_policies) {
-        try {
-            const std::size_t capacity = ops::linear_workspace_capacity_bytes(
-                QType::FP8_E4M3FN_ROW_BF16, 248320, 5120, policy, 1, 2048);
-            if (capacity != 0) {
-                std::cerr << "FP8 vocabulary A16 route reported nonzero workspace\n";
+        for (const std::int32_t rows : {248320, 124160}) {
+            try {
+                const std::size_t capacity = ops::linear_workspace_capacity_bytes(
+                    QType::FP8_E4M3FN_ROW_BF16, rows, 5120, policy, 1, 2048);
+                if (capacity != 0) {
+                    std::cerr << "FP8 vocabulary A16 route reported nonzero workspace\n";
+                    ++failures;
+                }
+            } catch (const std::exception& error) {
+                std::cerr << "FP8 vocabulary policy was rejected: " << error.what() << '\n';
                 ++failures;
             }
-        } catch (const std::exception& error) {
-            std::cerr << "FP8 vocabulary policy was rejected: " << error.what() << '\n';
-            ++failures;
         }
     }
     const auto residual6144_invocations = a16_capacity_calls();
@@ -92,6 +95,22 @@ int run_fp8_a16() {
     failures +=
         run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
                   {5120, 17408, 829U, Comparison::Sampled, true, residual17408_invocations});
+
+    // Two-device halves. Each inherits the A16 route of the problem it halves, so the parent's
+    // probe interval set applies unchanged; the vocabulary shard reuses the parent's invocation
+    // list for the same reason.
+    for (const auto [n, k, seed] :
+         {std::tuple{7168, 5120, 841U}, std::tuple{8192, 5120, 843U},
+          std::tuple{17408, 5120, 847U}, std::tuple{5120, 3072, 849U},
+          std::tuple{5120, 8704, 851U}}) {
+        const auto shard_invocations = a16_capacity_calls();
+        failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                              {n, k, seed, Comparison::Sampled, true, shard_invocations});
+    }
+    const std::vector<Invocation> vocabulary_shard_invocations = vocabulary_invocations;
+    failures += run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                          {124160, 5120, 853U, Comparison::Sampled, true,
+                           vocabulary_shard_invocations});
 
     auto packed = make_fp8_weight(14336, 5120, 831U);
     try {
@@ -117,7 +136,9 @@ int run_fp8_a16() {
     invalid.payload_bytes = invalid.payload_bytes - 1;
     expect_invalid("payload bound", invalid);
     for (auto [n, k] : {std::pair{14336, 5120}, std::pair{16384, 5120}, std::pair{34816, 5120},
-                        std::pair{248320, 5120}, std::pair{5120, 6144}, std::pair{5120, 17408}}) {
+                        std::pair{248320, 5120}, std::pair{5120, 6144}, std::pair{5120, 17408},
+                        std::pair{7168, 5120}, std::pair{8192, 5120}, std::pair{17408, 5120},
+                        std::pair{124160, 5120}, std::pair{5120, 3072}, std::pair{5120, 8704}}) {
         failures += verify_workspace_envelopes(QType::FP8_E4M3FN_ROW_BF16, n, k);
     }
     return failures;

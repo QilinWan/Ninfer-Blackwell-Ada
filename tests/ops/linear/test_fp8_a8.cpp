@@ -164,6 +164,168 @@ int run_fp8_a8() {
         "FP8_A8", ActivationCompute::A8, make_fp8_weight,
         {5120, 17408, 859U, Comparison::Sampled, true, residual17408_invocations});
 
+    // Two-device halves, probed at the A8 crossover and the bulk anchors each inherits from the
+    // problem it halves. The routes are the parents', so the token intervals are too.
+    constexpr std::array attn_shard_decode_invocations{
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures +=
+        run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                  {7168, 5120, 881U, Comparison::Sampled, true, attn_shard_decode_invocations});
+    constexpr std::array attn_shard_invocations{
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1023, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {7168, 5120, 883U, Comparison::Sampled, true, attn_shard_invocations});
+    constexpr std::array attn_shard_bulk_invocations{
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{288, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{289, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{385, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures +=
+        run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                  {7168, 5120, 887U, Comparison::Sampled, true, attn_shard_bulk_invocations});
+
+    constexpr std::array gdn_shard_decode_invocations{
+        Invocation{1, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures +=
+        run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                  {8192, 5120, 889U, Comparison::Sampled, true, gdn_shard_decode_invocations});
+    constexpr std::array gdn_shard_invocations{
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {8192, 5120, 893U, Comparison::Sampled, true, gdn_shard_invocations});
+    constexpr std::array gdn_shard_bulk_invocations{
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{384, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{385, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {8192, 5120, 897U, Comparison::Sampled, true, gdn_shard_bulk_invocations});
+
+    constexpr std::array mlp_shard_decode_invocations{
+        Invocation{1, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{2, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{3, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures +=
+        run_shape("FP8_A16", ActivationCompute::A16, make_fp8_weight,
+                  {17408, 5120, 901U, Comparison::Sampled, true, mlp_shard_decode_invocations});
+    constexpr std::array mlp_shard_invocations{
+        Invocation{5, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                          {17408, 5120, 903U, Comparison::Sampled, true, mlp_shard_invocations});
+    constexpr std::array mlp_shard_bulk_invocations{
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{511, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{2048, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures +=
+        run_shape("FP8_A8", ActivationCompute::A8, make_fp8_weight,
+                  {17408, 5120, 907U, Comparison::Sampled, true, mlp_shard_bulk_invocations});
+
+    constexpr std::array residual3072_shard_decode_invocations{
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape(
+        "FP8_A16", ActivationCompute::A16, make_fp8_weight,
+        {5120, 3072, 911U, Comparison::Sampled, true, residual3072_shard_decode_invocations});
+    constexpr std::array residual3072_shard_invocations{
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{192, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{193, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{768, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{769, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures += run_shape(
+        "FP8_A8", ActivationCompute::A8, make_fp8_weight,
+        {5120, 3072, 913U, Comparison::Sampled, true, residual3072_shard_invocations});
+
+    constexpr std::array residual8704_shard_decode_invocations{
+        Invocation{4, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{8, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{16, CallForm::Policy, ops::LinearPolicy::AllowA8},
+    };
+    failures += run_shape(
+        "FP8_A16", ActivationCompute::A16, make_fp8_weight,
+        {5120, 8704, 917U, Comparison::Sampled, true, residual8704_shard_decode_invocations});
+    constexpr std::array residual8704_shard_invocations{
+        Invocation{17, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{48, CallForm::Policy, ops::LinearPolicy::AllowA4},
+        Invocation{64, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{65, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{128, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{129, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{256, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{257, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{384, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{385, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{512, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{513, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+        Invocation{768, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{769, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1024, CallForm::Policy, ops::LinearPolicy::AllowA8},
+        Invocation{1025, CallForm::Policy, ops::LinearPolicy::AllowA8, true},
+    };
+    failures += run_shape(
+        "FP8_A8", ActivationCompute::A8, make_fp8_weight,
+        {5120, 8704, 919U, Comparison::Sampled, true, residual8704_shard_invocations});
+
     struct Problem {
         std::int32_t rows;
         std::int32_t input_rows;
@@ -174,7 +336,9 @@ int run_fp8_a8() {
     for (const Problem problem :
          {Problem{14336, 5120, false, false}, Problem{16384, 5120, false, false},
           Problem{34816, 5120, false, false}, Problem{5120, 6144, false, false},
-          Problem{5120, 17408, false, false}}) {
+          Problem{5120, 17408, false, false}, Problem{7168, 5120, false, false},
+          Problem{8192, 5120, false, false}, Problem{17408, 5120, false, false},
+          Problem{5120, 3072, false, false}, Problem{5120, 8704, false, false}}) {
         const std::size_t one = ops::linear_workspace_capacity_bytes(
             QType::FP8_E4M3FN_ROW_BF16, problem.rows, problem.input_rows,
             ops::LinearPolicy::AllowA8, 1, 1);

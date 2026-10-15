@@ -75,6 +75,10 @@ std::vector<std::int32_t> sampled_rows(std::int32_t rows) {
     if (rows == 14336) {
         result.insert(result.end(), {1023, 6143, 6144, 7167, 7168, 13311, 13312});
     }
+    if (rows == 7168) {
+        // The shard's own output-row half boundary, on top of the tile edges above.
+        result.insert(result.end(), {3583, 3584, 7166, 7167});
+    }
     std::sort(result.begin(), result.end());
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
@@ -266,7 +270,11 @@ int run_bf16_linear() {
     int failures = 0;
     DeviceWeight attention_weight(make_patterned(14336, 5120, 401U));
     DeviceWeight output_weight(make_patterned(5120, 6144, 409U));
-    for (DeviceWeight* weight : {&attention_weight, &output_weight}) {
+    // The two-device halves of the attention input and output projections.
+    DeviceWeight attention_shard(make_patterned(7168, 5120, 403U));
+    DeviceWeight output_shard(make_patterned(5120, 3072, 411U));
+    for (DeviceWeight* weight :
+         {&attention_weight, &output_weight, &attention_shard, &output_shard}) {
         for (int tokens = 1; tokens <= 33; ++tokens) {
             failures += run_bf16_linear_case(*weight, tokens);
         }

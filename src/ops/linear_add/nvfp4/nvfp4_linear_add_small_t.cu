@@ -59,6 +59,8 @@ void nvfp4_linear_add_small_t_launch(const Tensor& x, const Weight& weight, Tens
     case Nvfp4GeometryId::N14336K5120:
     case Nvfp4GeometryId::N16384K5120:
     case Nvfp4GeometryId::N34816K5120:
+    case Nvfp4GeometryId::N17408K5120:
+    case Nvfp4GeometryId::N5120K8704:
         break;
     }
     throw std::invalid_argument("nvfp4 linear_add: unsupported problem");

@@ -5,6 +5,9 @@
 namespace ninfer::ops::detail {
 
 [[nodiscard]] Bf16Launch select_bf16_n14336_k5120(std::int32_t tokens);
+// Two-device shards of the attention input projection and the residual projection.
+[[nodiscard]] Bf16Launch select_bf16_n7168_k5120(std::int32_t tokens);
+[[nodiscard]] Bf16Launch select_bf16_n5120_k3072(std::int32_t tokens);
 [[nodiscard]] Bf16Launch select_bf16_n5120_k6144(std::int32_t tokens);
 [[nodiscard]] Bf16Launch select_bf16_n48_k2560(std::int32_t tokens);
 [[nodiscard]] Bf16Launch select_bf16_n96_k2560(std::int32_t tokens);
