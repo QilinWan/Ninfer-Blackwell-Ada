@@ -29,12 +29,14 @@ if(CUDAToolkit_VERSION VERSION_LESS "12.8")
 endif()
 
 set(NINFER_SM89_DROPPED_PATTERNS
-  "/nvfp4/.*w4a4.*\\.cu$"
+  # FP4 activation routes: Blackwell block-scaled MMA/TMA (the retired *_w4a4* names became *_a4*
+  # and *_a4_tma* when the families moved to one directory per route).
+  "/nvfp4/.*_a4.*\\.cu$"
   "/nvfp4/shapes/.*\\.cu$"
-  "/nvfp4_w4a4\\.cu$"
-  "/nvfp4_w4a4_tma\\.cu$"
+  # K8V4 and NVFP4 causal routes: the flat small_t_/prompt_ files became <route>/launch.cu and
+  # <route>/tiled_launch.cu, so the anchor is the route directory.
+  "/causal_cache/(nvfp4|k8v4)/.*\\.cu$"
   "/kv_cache/append/(nvfp4|k8v4)_launch\\.cu$"
-  "/causal_cache/(small_t|prompt)_(nvfp4|k8v4)\\.cu$"
 )
 
 get_target_property(_ninfer_ops_sources ninfer_ops SOURCES)
