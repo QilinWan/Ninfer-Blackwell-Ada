@@ -33,6 +33,8 @@ void nvfp4_linear_add_decode_launch(const Tensor& x, const Weight& weight, Tenso
     case Nvfp4GeometryId::N5120K8704:
         launch<Nvfp4N5120K8704>(x, weight, residual, stream);
         return;
+    // The [5120,6144] family's input-column half is a linear_add problem on A16 only: its A4 route
+    // lives in the fork's W4A4 family, which this tree does not carry (nvfp4_linear_add_plan.cpp).
     case Nvfp4GeometryId::N5120K3072:
         launch<Nvfp4N5120K3072>(x, weight, residual, stream);
         return;

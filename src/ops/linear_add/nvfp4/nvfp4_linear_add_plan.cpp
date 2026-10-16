@@ -32,6 +32,9 @@ Nvfp4LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_r
         return Nvfp4LinearAddRoute::A16;
     }
     if (!allows_a4(policy)) { throw std::invalid_argument("nvfp4 linear_add: unsupported policy"); }
+    if (input_rows == Nvfp4N5120K3072::kInputRows) {
+        return Nvfp4LinearAddRoute::A16;  // no A4 route for this half in this tree
+    }
     const std::int32_t first_a4 =
         output_family ? kNvfp4OutputFamilyFirstA4Tokens : kNvfp4DownFamilyFirstA4Tokens;
     return tokens >= first_a4 ? Nvfp4LinearAddRoute::A4 : Nvfp4LinearAddRoute::A16;
