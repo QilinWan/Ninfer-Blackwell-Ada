@@ -4,6 +4,7 @@
 // adapters normalize before this layer and render IDs, usage, and response events after it.
 
 #include "ninfer/engine.h"
+#include "serve/prefill_miss_dump.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
 
@@ -24,6 +25,9 @@ struct RequestLifetime;
 struct RequestCapacity;
 
 struct GenerationMetrics {
+    // --prefill-miss-dump: set when this request's prefill qualified and was dumped, and
+    // carried into the request log by the writer.
+    std::optional<PrefillMissReport> prefill_miss;
     std::uint64_t engine_request_id       = 0;
     std::uint32_t computed_prefill_tokens = 0;
     double prepare_seconds                = 0.0;

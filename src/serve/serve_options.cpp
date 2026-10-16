@@ -130,6 +130,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--device-state-slots N] [--host-context-mib N] [--turn-anchors N] "
            "[--log-speculation-detail [--log-speculation-detail-max-steps N]] "
            "[--request-log-jsonl FILE] "
+           "[--prefill-miss-dump DIR [--prefill-miss-min-tokens N] [--prefill-miss-min-match F]] "
            "[--response-store-max-records N] [--response-store-max-mib N] "
            "[--kv-dtype bf16|int8|fp8|nvfp4|k8v4|rk4v4-e8] "
            "[--spec mtp|dflash|dflash2 --draft-tokens N] "
@@ -213,6 +214,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool device_explicit             = false;
     bool host_capacity_explicit      = false;
     bool detail_steps_explicit           = false;
+    bool prefill_miss_tuned            = false;
     std::optional<std::size_t> vram_headroom_mib;
 
     if (argc >= 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
@@ -307,16 +309,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 parse_host_context_mib(require_value("--host-context-mib"));
             options.context_cache.host_capacity_bytes = bytes;
             host_capacity_explicit                    = bytes != 0;
-        } else if (arg == "--log-speculation-detail") {
-            options.log_speculation_detail = true;
-        } else if (arg == "--log-speculation-detail-max-steps") {
-            const std::uint64_t steps = parse_u64(
-                require_value("--log-speculation-detail-max-steps"),
-                "log-speculation-detail-max-steps");
-            if (steps > (1ULL << 20)) {
-                throw std::invalid_argument("--log-speculation-detail-max-steps exceeds 2^20");
-            }
-            options.speculation_detail_max_steps = static_cast<std::uint32_t>(steps);
         } else if (arg == "--turn-anchors") {
             options.turn_anchors = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--turn-anchors"), "turn-anchors"));
@@ -325,6 +317,23 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             if (options.request_log_jsonl.empty()) {
                 throw std::invalid_argument("--request-log-jsonl must not be empty");
             }
+        } else if (arg == "--prefill-miss-dump") {
+            options.prefill_miss_dump_dir = require_value("--prefill-miss-dump");
+            if (options.prefill_miss_dump_dir.empty()) {
+                throw std::invalid_argument("--prefill-miss-dump must not be empty");
+            }
+        } else if (arg == "--prefill-miss-min-tokens") {
+            const int tokens = parse_nonnegative_int(require_value("--prefill-miss-min-tokens"),
+                                                     "prefill-miss-min-tokens");
+            if (tokens == 0) {
+                throw std::invalid_argument("--prefill-miss-min-tokens must be positive");
+            }
+            options.prefill_miss_min_tokens = static_cast<std::uint32_t>(tokens);
+            prefill_miss_tuned              = true;
+        } else if (arg == "--prefill-miss-min-match") {
+            options.prefill_miss_min_match = parse_float_in(
+                require_value("--prefill-miss-min-match"), "prefill-miss-min-match", 0.0f, 1.0f);
+            prefill_miss_tuned = true;
         } else if (arg == "--log-speculation-detail") {
             options.log_speculation_detail = true;
         } else if (arg == "--log-speculation-detail-max-steps") {
@@ -443,6 +452,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     }
     if (options.log_speculation_detail && options.request_log_jsonl.empty()) {
         throw std::invalid_argument("--log-speculation-detail requires --request-log-jsonl");
+    }
+    if (prefill_miss_tuned && options.prefill_miss_dump_dir.empty()) {
+        throw std::invalid_argument(
+            "--prefill-miss-min-tokens and --prefill-miss-min-match require --prefill-miss-dump");
     }
     if (detail_steps_explicit && !options.log_speculation_detail) {
         throw std::invalid_argument(
