@@ -68,6 +68,13 @@ struct WorkspacePlan {
     std::size_t general_capacity = 0;
     std::optional<VisionWorkspacePlan> vision;
     std::size_t capacity = 0;
+    // Rank 1's share of the two sizes above at tensor-parallel width 2.  A plan that does not
+    // split per rank leaves them 0, meaning "rank 1 uses rank 0's value", so tp 1 and every
+    // unsplit plan keep one arena for both ranks.  The Vision tower is held whole by one rank and
+    // encodes there, so only that rank's arena carries its encode workspace and the receiving rank
+    // is sized by its own text phases: ProgramImpl allocates each rank's arena from its share.
+    std::size_t peer_general_capacity = 0;
+    std::size_t peer_capacity         = 0;
 };
 
 struct SequencePlanningInputs {
@@ -118,7 +125,9 @@ struct SequencePlanImpl {
     std::optional<PersistentLayout> peer_persistent;
     WorkspacePlan workspace;
     std::size_t graph_allowance_bytes = 0;
-    // Per rank: at tp 2 each device is budgeted for rank 0's reservation, which bounds rank 1's.
+    // Per rank: the reservation each device is budgeted for.  It is the larger of the two ranks'
+    // totals (rank 0's persistent layout plus its arena, rank 1's without the drafter's state and
+    // with the arena share the plan gave it), because one KV page count drives both ranks' pools.
     std::size_t device_reservation_bytes = 0;
 };
 

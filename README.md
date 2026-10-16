@@ -6,7 +6,9 @@
 > Wael Mansour, natpate, ivanov84 and parallelno; see [NOTICE](NOTICE) for attribution.
 >
 > - **Covered:** ordinary decoding, `--spec mtp`, `--spec dflash2 --lm-head-draft`, prefix
->   reuse, concurrent requests, CUDA Graph decode and `--vision`, with `bf16` or `int8` KV. See
+>   reuse, concurrent requests, CUDA Graph decode and causal scoring, with `bf16` or `int8` KV.
+>   `--vision` loads there too, with the tower resident on the first `--devices` entry; a prompt
+>   carrying media needs the layout batch (see the limits below). See
 >   [Two GPUs](docs/cli.md#two-gpus) and [serving](docs/serving.md).
 > - **Verified on:** two RTX 5070 Ti 16 GB without peer access, Linux, CUDA 13.1, core clocks
 >   capped at about 2.1 GHz. Other GPUs and P2P-capable pairs are untested.
@@ -84,15 +86,17 @@
 >   unchanged). `--log-speculation-detail` adds the per-step accepted draft lengths and the
 >   output/prompt 4-gram overlap to the request log, and each throughput record now carries
 >   per-GPU clocks, power, energy, temperature and clock-event reasons. The upstream claims for
->   `nvfp4` KV, a split DFlash2 drafter and Vision at `--tp 2` do not apply to this tree: those
->   sit on the layout batch (ledger P1) or on its measurements, and this tree rejects them.
+>   `nvfp4` KV, a split DFlash2 drafter and a Vision prompt at `--tp 2` do not apply to this tree:
+>   those sit on the layout batch (ledger P1) or on its measurements, and this tree rejects them.
 > - **No host tier.** `--host-state-slots` and `--host-kv-mib` must be 0 at `--tp 2`: retained
 >   conversations live only in the device state slots. With many conversations in parallel the
 >   oldest idle ones are evicted, and their next turn is prefilled again.
-> - **Vision.** `--vision` works at `--tp 2`: the tower and its encode workspace live whole on
->   one GPU (`--vision-device`, default `A`), which pays for them; each image or video item is
->   encoded once and the merged embeddings are copied to the other GPU, which holds only the
->   buffer they land in. Measured in the two-GPU window (not yet on 2x RTX 5060 Ti).
+> - **Vision.** `--vision` loads at `--tp 2` and the tower lives whole on one GPU, the first
+>   `--devices` entry (`--vision-device` must name it): its weights and its encode workspace are
+>   charged to that GPU's arena alone, and the other keeps the capacity its text work needs.
+>   Text-only prompts generate there; a prompt that carries an image or video is rejected on the
+>   two-device schedule until the merged embeddings get their rank-to-rank handoff (ledger P1).
+>   Measured in the two-GPU window (not yet on 2x RTX 5060 Ti).
 > - **Speculative decoding.** DFlash2 needs `--lm-head-draft` and a drafter without
 >   full-attention layers (the published drafter has none). `--spec dflash` is not supported.
 > - **KV cache types.** `bf16` and `int8` only; `fp8`, `nvfp4` and `k8v4` are rejected.
@@ -286,8 +290,9 @@ cmake --build build -j
 ```
 
 **Fork note — two 16 GB boards.** The single-GPU examples below need a 5090; on two 16 GB boards
-use the two-GPU mode instead (this is the configuration verified in this fork; `fp8` KV, `--vision`
-and the host tiers are rejected at `--tp 2`):
+use the two-GPU mode instead (this is the configuration verified in this fork; `fp8` KV and the
+host tiers are rejected at `--tp 2`, and `--vision` loads there with the tower on the first
+`--devices` entry):
 
 ```bash
 ./build/apps/ninfer-serve models/qwen3_8_27b_quasar_nvfp4.ninfer \

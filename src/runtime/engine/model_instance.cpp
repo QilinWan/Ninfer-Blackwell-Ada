@@ -66,7 +66,7 @@ void validate_options(const EngineOptions& options) {
         // Rejected before the artifact is read: the two-device schedule covers text prefill,
         // the ordinary decode round, the MTP round, the DFlash2 round of the dense Text model
         // and causal scoring over its text prefill, only (models/qwen3_5/execution/text.h);
-        // Vision runs on one rank (see the --vision-device placement below).
+        // Vision runs whole on the rank that holds the tower (see the placement below).
         if (options.speculative.backend == SpeculativeBackend::DFlash) {
             throw std::invalid_argument("Engine tp 2 does not support DFlash speculative decoding");
         }
@@ -78,9 +78,15 @@ void validate_options(const EngineOptions& options) {
             throw std::invalid_argument(
                 "Engine tp 2 DFlash2 requires the optimized proposal head (--lm-head-draft)");
         }
-        // Vision at tp 2: the tower and its encode workspace live whole on one rank
-        // (--vision-device, resolved to load_options.vision_rank); the merged embeddings are
-        // copied to the other rank, which holds only the buffer they land in.
+        // Vision at tp 2: the tower is held whole by one rank and encodes there, on rank 0.  Its
+        // encode workspace is charged to that rank's arena alone (the plan splits the arena per
+        // rank), and a prompt that carries media is rejected on the two-device schedule
+        // (execution/text.cpp: multimodal prefill), so `--vision-device` names rank 0.
+        if (options.enable_vision && models::load_options(options).vision_rank != 0) {
+            throw std::invalid_argument(
+                "Engine tp 2 encodes Vision on rank 0: --vision-device must name the first "
+                "--devices entry");
+        }
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
             options.kv_cache != KvCacheStorage::Int8Group64) {
             throw std::invalid_argument("Engine tp 2 supports only bf16 and int8 KV caches");

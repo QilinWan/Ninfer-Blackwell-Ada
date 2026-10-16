@@ -399,9 +399,12 @@ proposal head is loaded on rank 0 only and proposes there alone). The DFlash2 dr
 0 alone and requires `--lm-head-draft`, since the full output head is split by vocabulary across
 the ranks; a drafter with full-attention layers is not supported there (its KV has no rank 1
 mirror). `--spec dflash`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8`
-KV types are rejected at startup, as is a nonzero `--host-context-mib`. `--vision` runs at
-`--tp 2` with the tower on one GPU: `--vision-device` (default `A`) must be one of the
-`--devices` ids, and that GPU carries the tower and its encode workspace alone.
+KV types are rejected at startup, as is a nonzero `--host-context-mib`. `--vision` loads at
+`--tp 2` with the tower whole on the GPU that encodes it: `--vision-device` must name the first
+`--devices` id (default `A`), and that GPU carries the tower's weights and its encode workspace
+alone, the other rank keeping the capacity its own text phases need. Text-only prompts generate on
+that pair; a prompt carrying an image or video is rejected there until the two-device schedule gets
+its merged-embedding handoff.
 `ninfer-perplexity` takes the same `--tp 2 --devices A,B` ([Perplexity](perplexity.md#two-gpus)).
 The split attention and Gated DeltaNet projections take FP8 or NVFP4 weights and the split MLP
 FP8 or NVFP4, so both the official mixed artifact (FP8 attention and GDN, NVFP4 MLP) and an

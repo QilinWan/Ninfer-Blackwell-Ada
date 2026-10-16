@@ -492,9 +492,9 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     const auto& config     = parameters.model.config().text;
     const TextConfig shard = execution::shard_text_config(config, plan.tp);
     // Causal scoring is a supported tp 2 purpose: the plan reserves its score-tile phase below
-    // (both ranks' layouts). Vision is supported too: the tower is held whole by one rank
-    // (load_options' vision_rank) and the plan below sizes the arena for that rank. DFlash has
-    // no split form.
+    // (both ranks' layouts). Vision is supported on the rank that encodes: the tower is held whole
+    // by one rank (load_options' vision_rank, admitted as rank 0 by validate_target_options) and
+    // the plan below charges its arena to that rank alone. DFlash has no split form.
     if (plan.speculative_backend == SpeculativeBackend::DFlash) {
         throw std::invalid_argument(
             "tensor-parallel workspace supports ordinary, MTP and DFlash2 text generation, causal "
@@ -786,16 +786,20 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                                      out.causal_score});
     out.capacity = out.general_capacity;
     if (plan.features.vision) {
-        // The tower lives whole on `plan.features.vision_rank`, and a WorkspacePlan is one
-        // arena capacity shared by both ranks: the encode plan is added to the max, so the
-        // rank that pays for it fits and the other is sized no tighter than the text work.
-        // Same formula as the single-device plan below (kMaximumVisionItemTokens cap).
+        // One capacity per rank.  The tower is held whole by one rank and encodes there, and the
+        // session that encodes is rank 0's (transactions/binding.cpp builds VisionPrefillSession
+        // with rank 0's device, Parameters and arena), so the encode workspace is charged to rank
+        // 0's arena alone; rank 1 keeps the general capacity its own text phases need.
+        // validate_target_options admits that placement only.  Same formula as the single-device
+        // plan below (kMaximumVisionItemTokens cap).
         const std::uint32_t merged = static_cast<std::uint32_t>(
             std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
         out.vision = execution::VisionContext::plan_workspace(
             *parameters.model.config().vision, *parameters.vision, merged,
             out.general_capacity);
-        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+        out.capacity              = std::max(out.general_capacity, out.vision->capacity_bytes);
+        out.peer_general_capacity = out.general_capacity;
+        out.peer_capacity         = out.general_capacity;
     }
     return out;
 }
@@ -1223,14 +1227,28 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 "tensor-parallel planning requires rank 0 Parameters of a two-device Model");
         }
-        // The split schedule implements prefill, the ordinary decode round, the MTP round and
-        // the DFlash2 round of the dense Text model (TextContext); everything else runs on one
-        // device only.
-        if (options.purpose != EnginePurpose::Generation ||
-            options.speculative.backend == SpeculativeBackend::DFlash || options.enable_vision) {
+        // The split schedule implements prefill, the ordinary decode round, the MTP round, the
+        // DFlash2 round and causal scoring over the text prefill of the dense Text model
+        // (TextContext). DFlash, the masked drafter's prefill-time round, has no split form;
+        // Vision runs whole on the rank that holds and encodes on it (bounded below).
+        if (options.purpose != EnginePurpose::Generation &&
+            options.purpose != EnginePurpose::CausalScoring) {
+            throw std::invalid_argument("tensor-parallel planning supports Generation and "
+                                        "CausalScoring purposes only");
+        }
+        if (options.speculative.backend == SpeculativeBackend::DFlash) {
+            throw std::invalid_argument("tensor-parallel execution supports ordinary, MTP and "
+                                        "DFlash2 text generation and causal scoring (no DFlash)");
+        }
+        // The Vision encode session belongs to rank 0: transactions/binding.cpp builds it with
+        // rank 0's device, Parameters and arena, and rank 1 has no merged-embedding handoff to
+        // receive what it encodes (execution/text.cpp rejects a multimodal prefill at tp 2). The
+        // tower's weights go SingleDevice to vision_rank (load/sharding.cpp), so a tower placed on
+        // rank 1 leaves rank 0 without the Vision Parameters it encodes with.
+        if (options.enable_vision && parameters.model.options().vision_rank != 0) {
             throw std::invalid_argument(
-                "tensor-parallel execution supports ordinary, MTP and DFlash2 text generation only "
-                "(no DFlash, Vision or causal scoring)");
+                "tensor-parallel Vision encodes on rank 0: --vision-device must name the first "
+                "--devices entry");
         }
         // The DFlash2 drafter runs whole on rank 0, while the full output head is split by
         // vocabulary rows across the ranks.
@@ -1354,11 +1372,21 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         }
     }
 
-    // Rank 0's layout bounds rank 1's, which only omits the drafter's state; both ranks are
-    // budgeted for it.
-    impl->device_reservation_bytes = checked_add(
-        checked_add(impl->persistent.bytes, impl->workspace.capacity, "sequence memory plan"),
-        impl->graph_allowance_bytes, "sequence graph allowance");
+    // Each rank reserves its own persistent layout plus its own arena share, and one KV page count
+    // drives both ranks' pools, so every device is budgeted for the tighter rank's total.  Rank 0's
+    // layout bounds rank 1's, which omits the drafter's state, and the Vision encode workspace is
+    // carried by the rank that encodes alone (the plan splits the arena per rank).
+    std::size_t sequence_bytes =
+        checked_add(impl->persistent.bytes, impl->workspace.capacity, "sequence memory plan");
+    if (impl->tp != 1 && impl->peer_persistent) {
+        const std::size_t peer_arena = impl->workspace.peer_capacity != 0
+                                           ? impl->workspace.peer_capacity
+                                           : impl->workspace.capacity;
+        sequence_bytes = std::max(sequence_bytes, checked_add(impl->peer_persistent->bytes,
+                                                              peer_arena, "rank 1 memory plan"));
+    }
+    impl->device_reservation_bytes =
+        checked_add(sequence_bytes, impl->graph_allowance_bytes, "sequence graph allowance");
     return impl;
 }
 

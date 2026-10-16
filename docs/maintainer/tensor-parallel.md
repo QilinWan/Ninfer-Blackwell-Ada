@@ -505,20 +505,32 @@ full-attention layers is also rejected, since its paged KV would have no rank 1 
 ## 8. Vision at tp 2
 
 The tower is not split. `vision/*` is placed SingleDevice on `LoadOptions::vision_rank`, the index
-of `--vision-device` in `--devices` (default rank 0; [`load_options.h`](../../src/models/load_options.h)),
-and `--vision-device` must be one of `--devices`. The encoding rank's workspace follows the
-single-device Vision plan; the other rank's (`WorkspacePlan::vision_receiver`) is its general prefix
-plus a handoff of the same extent, with no encode region. `VisionPrefillSession`
-([`vision.cpp`](../../src/models/qwen3_5/execution/vision.cpp)) encodes each item once on the
-encoding rank; the other rank's stream waits on an event, copies the `[H, V]` merged embeddings into
-its own handoff (an eager, host-staged copy without P2P), and records a second event before the
-encoder may reuse its handoff. Each rank scatters its copy into its own residual.
+of `--vision-device` in `--devices` ([`load_options.h`](../../src/models/load_options.h)), and
+`--vision-device` must be one of `--devices`. This tree encodes on rank 0: `VisionPrefillSession`
+([`vision.cpp`](../../src/models/qwen3_5/execution/vision.cpp)) is built from rank 0's device,
+Parameters and arena ([`transactions/binding.cpp`](../../src/models/qwen3_5/program/transactions/binding.cpp)),
+so the admission checks (`runtime/engine/model_instance.cpp`,
+`planning/startup.cpp:validate_target_options`) require `vision_rank` 0, and
+`execution/parameters.cpp` prepares the Vision Parameters only on the rank that holds them.
 
-Memory cost: only the tower's rank holds the Vision weights and the encode workspace; the receiver
-holds a handoff of `hidden × 2` bytes per token of the largest item (10 KiB per token at hidden
-5120). `--max-vision-tokens` shrinks both. `--kv-capacity auto` credits the receiver with the encode
-workspace it does not allocate (§6), so the tower's rank pays for it alone, which is why the user
-docs recommend the GPU with more free memory as `--vision-device`.
+Workspace: the arena is sized per rank. `build_tensor_parallel_workspace_plan` follows the
+single-device Vision plan and charges its encode workspace to rank 0's share
+(`WorkspacePlan::capacity`), while rank 1 takes the general capacity its own text phases need
+(`WorkspacePlan::peer_general_capacity`, `peer_capacity`; both 0 in a plan that does not split).
+`ProgramImpl` allocates each rank's arena from its own share. One KV page count drives both ranks'
+pools, so `SequencePlanImpl::device_reservation_bytes` is the larger of the two ranks' totals and
+`resolve_kv_capacity_symmetric` resolves it against the tightest rank's free memory (§6): the
+encoding rank pays for the tower alone, so the board with more free memory goes first in
+`--devices`.
+
+The merged embeddings a chunk encodes are scattered into rank 0's residual on rank 0's schedule.
+The receiver's side of that exchange, an event-synchronized copy of the `[H, V]` block into the
+other rank's own buffer, is not in this tree: `TextContext::prefill_chunk` with a Vision session
+calls `require_single_device("multimodal prefill")`, so a prompt carrying media fails loudly on the
+two-device path instead of reading a block the other rank cannot see. That mechanism, with the
+`WorkspacePlan::vision_receiver` form the upstream notes describe, is part of the tp 2 layout batch
+this tree defers (ledger P1); the suite registered for it
+(`tests/models/qwen3_5/test_engine_vision_tp2_real.cpp`) skips on one device.
 
 ## 9. tp 1 identity
 

@@ -48,8 +48,16 @@ const PersistentLayout& ProgramImpl::PeerRuntime::layout(const SequencePlanImpl&
 
 ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const SequencePlanImpl& plan)
     : device(peer_device), persistent(layout(plan).bytes, ZeroFill::Yes),
-      workspace_storage(plan.workspace.capacity, ZeroFill::Yes),
-      work(DeviceSpan{workspace_storage.base(), plan.workspace.general_capacity}) {
+      // Rank 1's arena: the plan's per-rank shares when it split them, so the Vision encode
+      // workspace is allocated on the rank that encodes (rank 0) alone; 0 means the plan did not
+      // split, and rank 1 takes rank 0's sizes as before.
+      workspace_storage(plan.workspace.peer_capacity != 0 ? plan.workspace.peer_capacity
+                                                          : plan.workspace.capacity,
+                      ZeroFill::Yes),
+      work(DeviceSpan{workspace_storage.base(),
+                      plan.workspace.peer_general_capacity != 0
+                          ? plan.workspace.peer_general_capacity
+                          : plan.workspace.general_capacity}) {
     const PersistentLayout& own = layout(plan);
     const DeviceSpan backing    = persistent.alloc_bytes(own.bytes, 256);
     decoder                     = std::make_unique<qwen3_5::DecoderState>(backing, own.decoder);
