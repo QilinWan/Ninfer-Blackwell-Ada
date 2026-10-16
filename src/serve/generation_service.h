@@ -187,6 +187,8 @@ private:
 
     ServeOptions options_;
     std::unique_ptr<ninfer::Engine> engine_;
+    // --prefill-miss-dump: null unless the option names a directory (at most 64 dumps).
+    std::shared_ptr<PrefillMissDump> prefill_miss_dump_;
     std::shared_ptr<RequestCapacity> request_capacity_;
 };
 
