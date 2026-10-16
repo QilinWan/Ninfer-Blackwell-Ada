@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/device.h"
-#include "ops/launcher/kernel_attr_once.h"
+#include "core/kernel_attr_once.h"
 #include "ops/softmax_attention/dense/causal_cache/int8/grouped_mma.cuh"
 #include "ops/softmax_attention/dense/causal_cache/int8/tiled_mma.cuh"
 #include "ops/softmax_attention/common/causal_merge.cuh"
@@ -19,9 +19,8 @@ void launch_int8_kv_grouped_mma(const CausalAttentionOperands& p, Int8KvCacheVie
     if ((!ParallelQueries && p.width != S::kTokenTile) || MultiBatch != (p.batch > 1) ||
         Masked != (cache.valid_columns != nullptr) || partition.capacity < 1 ||
         partition.target > CausalKvPartition::kMaxSplits || partition.target < 1 ||
-        (1 << partition.key_shift) < S::kKeyRows || partition.key_shift > 12 ||
-        !partition.balanced ||
-        partition.capacity != partition.bound(p.visible_capacity) || !partial.acc ||
+        partition.key_shift < 6 || partition.key_shift > 12 ||
+        partition.capacity != partition.active(p.visible_capacity) || !partial.acc ||
         !partial.maximum || !partial.sum)
         throw std::invalid_argument("INT8 grouped attention: invalid schedule/partials");
     if constexpr (Input::writes_cache)
@@ -30,7 +29,7 @@ void launch_int8_kv_grouped_mma(const CausalAttentionOperands& p, Int8KvCacheVie
         int8_kv_grouped_mma_kernel<G, S, MultiBatch, Masked, Input, ParallelQueries>;
     constexpr int bytes = S::kDynamicArena ? S::kArenaBytes : 0;
     if constexpr (S::kDynamicArena) {
-        static FuncAttrPerDevice attribute;
+        static core::FuncAttrPerDevice attribute;
         attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes);
     }
     const dim3 grid(G::KVHeads * (ParallelQueries ? div_up(p.width, S::kTokenTile) : 1), p.batch,
@@ -50,7 +49,7 @@ void launch_int8_kv_tiled_mma(const CausalAttentionOperands& p, Int8KvReadView c
         throw std::invalid_argument("INT8 tiled attention requires a complete single query row");
     const auto invoke = [&]<class Metadata>(Metadata metadata) {
         constexpr auto kernel    = int8_kv_tiled_mma_kernel<G, S, Metadata>;
-        static FuncAttrPerDevice attribute;
+        static core::FuncAttrPerDevice attribute;
         attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, S::kSharedBytes);
         const dim3 grid(div_up(p.width, S::kQueryRows), G::QHeads);
         kernel<<<grid, S::kThreads, S::kSharedBytes, stream>>>(

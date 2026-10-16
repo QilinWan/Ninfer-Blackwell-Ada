@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/device.h"
-#include "ops/launcher/kernel_attr_once.h"
+#include "core/kernel_attr_once.h"
 #include "ops/softmax_attention/common/mxfp8_tiled_mma.cuh"
 #include "ops/softmax_attention/common/mxfp8_tiled_plan.h"
 #include <stdexcept>
@@ -19,7 +19,7 @@ void launch_mxfp8_kv_tiled_mma(const CausalAttentionOperands& p, View cache,
         throw std::invalid_argument("MXFP8 tiled attention: invalid batch or partial storage");
     const auto invoke = [&]<class Metadata>(Metadata metadata) {
         constexpr auto kernel    = mxfp8_kv_tiled_mma_kernel<G, S, Values, Metadata>;
-        static FuncAttrPerDevice attribute;
+        static core::FuncAttrPerDevice attribute;
         attribute.ensure(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, S::kSharedBytes);
         const dim3 grid(div_up(p.width, S::kQueryRows), G::QHeads, partition.capacity);
         kernel<<<grid, S::kThreads, S::kSharedBytes, stream>>>(

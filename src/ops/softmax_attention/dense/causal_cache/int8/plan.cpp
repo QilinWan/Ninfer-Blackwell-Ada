@@ -1,5 +1,4 @@
 #include "ops/softmax_attention/dense/causal_cache/int8/plan.h"
-#include "ops/softmax_attention/dense/causal_cache/int8/instances.h"
 #include "ops/softmax_attention/dense/causal_cache/int8/operands.h"
 #include <algorithm>
 #include <stdexcept>
@@ -7,36 +6,6 @@
 namespace ninfer::ops::detail {
 namespace {
 constexpr int kGroupedPrefillMaxWidth = 256;
-
-struct GroupedShape {
-    int resident_ctas; // CTAs per SM guaranteed by the schedule's launch bound
-    int key_shift;     // log2 of the schedule's key tile, the smallest split
-};
-
-template <class G>
-GroupedShape grouped_shape(int tokens) {
-    const auto of = []<int Tokens>() {
-        using S = typename Int8KvGroupedInstance<G, Tokens>::Schedule;
-        static_assert(S::kKeyRows == 32 || S::kKeyRows == 64);
-        return GroupedShape{S::kMinBlocks, S::kKeyRows == 32 ? 5 : 6};
-    };
-    switch (tokens) {
-    case 1: return of.template operator()<1>();
-    case 2: return of.template operator()<2>();
-    case 3: return of.template operator()<3>();
-    case 4: return of.template operator()<4>();
-    case 5: return of.template operator()<5>();
-    case 6: return of.template operator()<6>();
-    case 7: return of.template operator()<7>();
-    default: return of.template operator()<8>();
-    }
-}
-
-GroupedShape grouped_shape(int heads, int tokens) {
-    if (heads == 24) return grouped_shape<CausalD256H24Kv4>(tokens);
-    if (heads == 12) return grouped_shape<CausalD256H12Kv2>(tokens);
-    return grouped_shape<CausalD256H16Kv2>(tokens);
-}
 } // namespace
 
 Int8KvCausalPlan make_int8_kv_causal_plan(int heads, int width, int batch,

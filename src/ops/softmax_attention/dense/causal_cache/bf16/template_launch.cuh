@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/device.h"
-#include "ops/launcher/kernel_attr_once.h"
+#include "core/kernel_attr_once.h"
 #include "ops/softmax_attention/dense/causal_cache/bf16/grouped_mma.cuh"
 #include "ops/softmax_attention/dense/causal_cache/bf16/tiled_mma.cuh"
 #include "ops/softmax_attention/dense/causal_cache/bf16/merge.cuh"
@@ -30,7 +30,7 @@ template <int Bytes, auto Kernel>
 int bf16_kv_dynamic_shared() {
     static_assert(Bytes <= 99 * 1024);
     if constexpr (Bytes > 48 * 1024) {
-        static FuncAttrPerDevice attribute;
+        static core::FuncAttrPerDevice attribute;
         attribute.ensure(Kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, Bytes);
     }
     return Bytes;
