@@ -119,10 +119,13 @@ ninfer-serve qwen3_8_27b_quasar_nvfp4.ninfer --tp 2 --devices 0,1 --kv-dtype int
   --spec mtp --draft-tokens 3
 ```
 
-`--vision` is rejected at `--tp 2` in this tree (the tower and its encode workspace have no place in
-the split layout), so the measurements below were taken without it; on the donor's tree the same
-flags with Vision at 262,144 tokens and 8 device state slots also fit. Single GPU (`--tp 1`) should
-fit a 24 GB+ `sm_120a` board (untested).
+This tree admits `--vision` at `--tp 2`: the Vision tower and its encode workspace live whole on
+one GPU (`--vision-device`, default `A`) and the workspace plan reserves the encode phase on that
+rank; each item is encoded once and the merged embeddings are copied to the other GPU. The
+measurements below were taken **without** Vision, and the `--tp 2` + Vision combination has not
+been measured on 2x RTX 5060 Ti (16 GB) - that is a two-board window item. On the donor's 2x
+RTX 5070 Ti the same flags with Vision at 262,144 tokens and 8 device state slots fit. Single GPU
+(`--tp 1`) should fit a 24 GB+ `sm_120a` board (untested).
 
 ## Measured quality (2026-09-24, this fork at `--tp 2`, flags above, one run per task, T = 0)
 
