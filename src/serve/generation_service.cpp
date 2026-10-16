@@ -355,16 +355,6 @@ GenerationService::GenerationService(ServeOptions options, StartupObserver start
     engine_           = std::make_unique<ninfer::Engine>(std::move(engine_options));
     request_capacity_ = std::make_shared<RequestCapacity>(
         static_cast<std::size_t>(options_.max_concurrency) + options_.max_pending_requests);
-    if (!options_.prefill_miss_dump_dir.empty()) {
-        const ninfer::Engine* engine = engine_.get();
-        prefill_miss_dump_           = std::make_shared<PrefillMissDump>(
-            PrefillMissDumpOptions{.directory  = options_.prefill_miss_dump_dir,
-                                             .min_tokens = options_.prefill_miss_min_tokens,
-                                             .min_match  = options_.prefill_miss_min_match},
-            [engine](std::span<const ninfer::TokenId> tokens) {
-                return engine->detokenize_text(tokens);
-            });
-    }
 }
 
 std::shared_ptr<RequestLifetime>
@@ -461,7 +451,6 @@ PreparedRequest GenerationService::prepare_impl(
             request_options.execution.thinking.budget.reset();
             prepared.thinking_budget.reset();
         }
-<<<<<<< HEAD
         prepared.prompt_tokens           = static_cast<int>(prompt.summary().prompt_tokens);
         prepared.preparation             = prompt.preparation_stats();
         prepared.service_prepare_seconds = std::max(
@@ -471,20 +460,6 @@ PreparedRequest GenerationService::prepare_impl(
             // The prepared prompt ids reach the request log only for the detail log: the 4-gram
             // overlap of the output on the prompt is what separates a copy-style draft's value
             // (prompt lookup over a rewritten file, quoted tool output) from a learned K=7 one's.
-||||||| parent of 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
-        prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
-        prepared.preparation   = prompt.preparation_stats();
-        prepared.prepare_seconds =
-            std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();
-        if (speculation_detail) {
-=======
-        prepared.prompt_tokens = static_cast<int>(prompt.summary().prompt_tokens);
-        prepared.preparation   = prompt.preparation_stats();
-        prepared.prepare_seconds =
-            std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count();
-        if (speculation_detail || (prefill_miss_dump_ != nullptr &&
-                                   cache_participation == CacheParticipation::ReadWrite)) {
->>>>>>> 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
             const std::span<const ninfer::TokenId> prompt_ids = prompt.token_ids();
             prepared.prompt_token_ids.assign(prompt_ids.begin(), prompt_ids.end());
         }
@@ -560,27 +535,9 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     ninfer::GenerationResult result;
     try {
         result = prepared.generation.wait(public_sink, cancellation);
-<<<<<<< HEAD
     } catch (const ninfer::RequestError& exception) {
         throw_request_error(exception, prepared.constraint_param, prepared.tool_schema_params);
     }
-||||||| parent of 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
-    } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
-=======
-    } catch (...) {
-        // A request that ends without a result still leaves its prompt as a context to compare
-        // the next one against.
-        if (prefill_miss_dump_ != nullptr && !prepared.prompt_token_ids.empty()) {
-            (void)prefill_miss_dump_->observe(prepared.prompt_token_ids, {},
-                                              static_cast<std::uint32_t>(
-                                                  prepared.prompt_token_ids.size()),
-                                              "failed");
-        }
-        try {
-            throw;
-        } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
-    }
->>>>>>> 382a8a60 (serve: --prefill-miss-dump writes both contexts of a large re-prefill (#3))
     GenerationOutcome outcome;
     outcome.text                = std::move(result.content);
     outcome.reasoning           = std::move(result.reasoning);
@@ -625,13 +582,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             std::move(result.speculative.accepted_lengths);
         outcome.metrics.prompt_ngram_overlap =
             prompt_ngram_overlap(prepared.prompt_token_ids, result.generated_token_ids);
+        prepared.prompt_token_ids = {};
     }
-    if (prefill_miss_dump_ != nullptr && !prepared.prompt_token_ids.empty()) {
-        outcome.metrics.prefill_miss = prefill_miss_dump_->observe(
-            prepared.prompt_token_ids, result.generated_token_ids, result.reused_prompt_tokens,
-            result.finish_reason == ninfer::FinishReason::Cancelled ? "cancelled" : "finished");
-    }
-    prepared.prompt_token_ids = {};
 
     outcome.tool_calls      = std::move(result.tool_calls);
     outcome.tool_call_parse = result.tool_call_parse;
