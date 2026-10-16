@@ -89,8 +89,10 @@
 > - **No host tier.** `--host-state-slots` and `--host-kv-mib` must be 0 at `--tp 2`: retained
 >   conversations live only in the device state slots. With many conversations in parallel the
 >   oldest idle ones are evicted, and their next turn is prefilled again.
-> - **Vision.** `--vision` is rejected at `--tp 2`: the tower and its encode workspace have no
->   place in the split layout. Run `--tp 1` for image and video input.
+> - **Vision.** `--vision` works at `--tp 2`: the tower and its encode workspace live whole on
+>   one GPU (`--vision-device`, default `A`), which pays for them; each image or video item is
+>   encoded once and the merged embeddings are copied to the other GPU, which holds only the
+>   buffer they land in. Measured in the two-GPU window (not yet on 2x RTX 5060 Ti).
 > - **Speculative decoding.** DFlash2 needs `--lm-head-draft` and a drafter without
 >   full-attention layers (the published drafter has none). `--spec dflash` is not supported.
 > - **KV cache types.** `bf16` and `int8` only; `fp8`, `nvfp4` and `k8v4` are rejected.

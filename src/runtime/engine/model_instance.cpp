@@ -66,7 +66,7 @@ void validate_options(const EngineOptions& options) {
         // Rejected before the artifact is read: the two-device schedule covers text prefill,
         // the ordinary decode round, the MTP round, the DFlash2 round of the dense Text model
         // and causal scoring over its text prefill, only (models/qwen3_5/execution/text.h);
-        // Vision stays single-device in this tree (see the --tp 2 Vision rejection below).
+        // Vision runs on one rank (see the --vision-device placement below).
         if (options.speculative.backend == SpeculativeBackend::DFlash) {
             throw std::invalid_argument("Engine tp 2 does not support DFlash speculative decoding");
         }
@@ -78,9 +78,9 @@ void validate_options(const EngineOptions& options) {
             throw std::invalid_argument(
                 "Engine tp 2 DFlash2 requires the optimized proposal head (--lm-head-draft)");
         }
-        if (options.enable_vision) {
-            throw std::invalid_argument("Engine tp 2 does not support Vision");
-        }
+        // Vision at tp 2: the tower and its encode workspace live whole on one rank
+        // (--vision-device, resolved to load_options.vision_rank); the merged embeddings are
+        // copied to the other rank, which holds only the buffer they land in.
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
             options.kv_cache != KvCacheStorage::Int8Group64) {
             throw std::invalid_argument("Engine tp 2 supports only bf16 and int8 KV caches");

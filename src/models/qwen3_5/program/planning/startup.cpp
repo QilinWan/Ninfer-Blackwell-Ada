@@ -492,11 +492,13 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     const auto& config     = parameters.model.config().text;
     const TextConfig shard = execution::shard_text_config(config, plan.tp);
     // Causal scoring is a supported tp 2 purpose: the plan reserves its score-tile phase below
-    // (both ranks' layouts). Vision stays single-device in this tree and DFlash has no split form.
-    if (plan.features.vision || plan.speculative_backend == SpeculativeBackend::DFlash) {
+    // (both ranks' layouts). Vision is supported too: the tower is held whole by one rank
+    // (load_options' vision_rank) and the plan below sizes the arena for that rank. DFlash has
+    // no split form.
+    if (plan.speculative_backend == SpeculativeBackend::DFlash) {
         throw std::invalid_argument(
-            "tensor-parallel workspace supports ordinary, MTP and DFlash2 text generation and "
-            "causal scoring only");
+            "tensor-parallel workspace supports ordinary, MTP and DFlash2 text generation, causal "
+            "scoring and Vision only");
     }
     const bool mtp = plan.speculative_backend == SpeculativeBackend::Mtp;
     if (mtp && (!parameters.mtp || !shard.attention)) {
@@ -783,6 +785,18 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                                      out.mtp_round, out.dflash_context, out.dflash_round,
                                      out.causal_score});
     out.capacity = out.general_capacity;
+    if (plan.features.vision) {
+        // The tower lives whole on `plan.features.vision_rank`, and a WorkspacePlan is one
+        // arena capacity shared by both ranks: the encode plan is added to the max, so the
+        // rank that pays for it fits and the other is sized no tighter than the text work.
+        // Same formula as the single-device plan below (kMaximumVisionItemTokens cap).
+        const std::uint32_t merged = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(plan.capacity, kMaximumVisionItemTokens));
+        out.vision = execution::VisionContext::plan_workspace(
+            *parameters.model.config().vision, *parameters.vision, merged,
+            out.general_capacity);
+        out.capacity = std::max(out.capacity, out.vision->capacity_bytes);
+    }
     return out;
 }
 
