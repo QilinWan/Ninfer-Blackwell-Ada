@@ -174,3 +174,22 @@ ninfer_add_test(ninfer_qwen3_5_engine_dflash2_tp2_real_test
 set_tests_properties(
   ninfer_qwen3_5_engine_dflash2_tp2_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
+
+# Vision at tp 2: one Engine holds the model across both devices; the tower lives whole on
+# --vision-device. Three legs share one binary: parity (text answer with and without Vision),
+# MTP and DFlash2 speculative runs with Vision. Skips without a second device or an artifact.
+ninfer_add_test(ninfer_qwen3_5_engine_vision_tp2_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_vision_tp2_real.cpp"
+  LIBRARIES ninfer_engine ninfer_core)
+
+add_test(NAME ninfer_qwen3_5_engine_vision_tp2_mtp_real_test
+  COMMAND ninfer_qwen3_5_engine_vision_tp2_real_test mtp)
+
+add_test(NAME ninfer_qwen3_5_engine_vision_tp2_dflash2_real_test
+  COMMAND ninfer_qwen3_5_engine_vision_tp2_real_test dflash2)
+
+set_tests_properties(
+  ninfer_qwen3_5_engine_vision_tp2_real_test
+  ninfer_qwen3_5_engine_vision_tp2_mtp_real_test
+  ninfer_qwen3_5_engine_vision_tp2_dflash2_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)

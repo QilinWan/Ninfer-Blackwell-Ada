@@ -62,9 +62,9 @@ ninfer::EngineOptions engine_options(const char* artifact, bool vision,
     options.prefill_chunk        = 1024;
     options.max_concurrency      = 1;
     options.max_pending_requests = 2;
-    // Rank 1's KV and StateImages have no Host tier.
-    options.context_cache.host_state_slots       = 0;
-    options.context_cache.host_kv_capacity_bytes = 0;
+    // Rank 1's KV and StateImages have no Host tier: this tree's Engine requires the single
+    // consolidated Host capacity to be 0 at --tp 2.
+    options.context_cache.host_capacity_bytes = 0;
     if (vision) {
         options.enable_vision     = true;
         options.vision_device     = vision_device;
@@ -291,7 +291,8 @@ int exercise_speculative(const char* artifact, Mode mode) {
     const auto conversation = [] {
         ninfer::PromptInput input       = image_prompt(image_probes().front().image, "turn.ppm");
         input.context_cache.session_key = "vision-tp2-real";
-        input.context_cache.retention   = ninfer::CacheRetentionHint::LiveSession;
+        // This tree has no per-request cache-retention knob: the session lineage is advanced by
+        // the default update_session_index, which is what keeps the retained prefix resolvable.
         return input;
     };
     const ninfer::GenerationResult first =
