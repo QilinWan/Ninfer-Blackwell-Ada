@@ -90,8 +90,10 @@ int verify_preserved(const GuardedDeviceBuffer& device, std::span<const std::uin
 
 int run_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
     // [5120,3072] is an A16-only linear_add problem in this tree: its A4 route lives in the fork's
-    // W4A4 family, which we do not carry, so it never takes A4 (std::numeric_limits max = no A4).
-    const std::int32_t first_a4 = k == 6144 ? 17 : (k == 3072 ? 1 << 30 : 8);
+    // W4A4 family, which we do not carry. For it first_a4 is the widest T this test runs, so every
+    // AllowA4 invocation resolves to the A16 route (never an A4 band) and stays inside the token
+    // bound that drives the host buffers.
+    const std::int32_t first_a4 = k == 6144 ? 17 : (k == 3072 ? 1025 : 8);
     const std::array invocations{
         Invocation{1, ops::LinearPolicy::A16Only},
         Invocation{4, ops::LinearPolicy::A16Only},
