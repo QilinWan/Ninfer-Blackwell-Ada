@@ -491,10 +491,12 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
     const TextConfig shard = execution::shard_text_config(config, plan.tp);
-    if (plan.causal_scoring || plan.features.vision ||
-        plan.speculative_backend == SpeculativeBackend::DFlash) {
+    // Causal scoring is a supported tp 2 purpose: the plan reserves its score-tile phase below
+    // (both ranks' layouts). Vision stays single-device in this tree and DFlash has no split form.
+    if (plan.features.vision || plan.speculative_backend == SpeculativeBackend::DFlash) {
         throw std::invalid_argument(
-            "tensor-parallel workspace supports ordinary, MTP and DFlash2 text generation only");
+            "tensor-parallel workspace supports ordinary, MTP and DFlash2 text generation and "
+            "causal scoring only");
     }
     const bool mtp = plan.speculative_backend == SpeculativeBackend::Mtp;
     if (mtp && (!parameters.mtp || !shard.attention)) {
