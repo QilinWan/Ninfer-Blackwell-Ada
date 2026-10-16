@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include "ninfer/types.h"
 
 #include <string_view>
@@ -60,12 +61,21 @@ struct LoadOptions {
     return backend == SpeculativeBackend::DFlash || backend == SpeculativeBackend::DFlash2;
 }
 
+// The rank that holds the Vision tower whole: the index of `vision_device` among the tensor-parallel
+// devices (0 for tp 1, where it must equal `device`; product::validate_vision_options enforces that).
+[[nodiscard]] inline int vision_rank(const EngineOptions& options) noexcept {
+    if (!options.vision_device) { return 0; }
+    const auto it = std::find(options.devices.begin(), options.devices.end(), *options.vision_device);
+    return it != options.devices.end() ? static_cast<int>(it - options.devices.begin()) : 0;
+}
+
 [[nodiscard]] inline LoadOptions load_options(const EngineOptions& options) noexcept {
     return {.purpose       = options.purpose,
             .vision        = options.enable_vision,
             .speculative   = options.speculative.backend,
             .proposal_head = options.speculative.proposal_head,
-            .tp            = options.tp};
+            .tp            = options.tp,
+            .vision_rank   = vision_rank(options)};
 }
 
 } // namespace ninfer::models
