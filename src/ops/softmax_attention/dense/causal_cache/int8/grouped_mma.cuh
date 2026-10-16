@@ -117,16 +117,30 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocks) __global__
 
     if (valid_tokens == 0) return; // Merge writes exact zero for masked columns.
     if (pos[0] < 0 || last_pos < 0 || last_pos >= logical_capacity) return;
-    const int window             = last_pos + 1;
-    const int active_split_count = partition.active(window);
-    if (split >= active_split_count) return;
-    const int logical_tiles    = div_up(window, Bc);
-    const int first_owned_tile = split * logical_tiles / active_split_count;
-    const int end_owned_tile   = (split + 1) * logical_tiles / active_split_count;
-    const int split_start      = first_owned_tile * Bc;
-    const int split_end        = min(end_owned_tile * Bc, window);
-    const int first_tile       = split_start;
-    const int key_blocks       = div_up(split_end - first_tile, Bc);
+    const int window = last_pos + 1;
+    // Balanced partition (the plan's contract); a split past the row's work is idle capacity.
+    const auto owned = ParallelQueries ? causal_split_share(partition, window, split)
+                                       : causal_split_run(partition, window, split);
+    if (owned.begin >= window) {
+        // Idle split of this row. Inside the row's bound() the merge reads it: leave an empty
+        // softmax there instead of whatever an earlier call stored.
+        if (split < partition.bound(window)) {
+            for (int row = tid; row < tile_tokens * Geometry::GroupSize; row += Threads) {
+                int q_head = 0;
+                int token  = 0;
+                causal_row_to_qt<Geometry>(row, kv_head, q_head, token);
+                const auto index = causal_stat_index<Geometry>(q_head, partial_begin + token,
+                                                               split, partial_width);
+                partial_m[index] = -CUDART_INF_F;
+                partial_l[index] = 0.0f;
+            }
+        }
+        return;
+    }
+    const int split_start = owned.begin;
+    const int split_end   = owned.end;
+    const int first_tile  = split_start;
+    const int key_blocks  = div_up(split_end - first_tile, Bc);
 
     if constexpr (CacheInput::writes_cache) {
         // Decompose H256 as H4 over four independently transformed H64 groups. The existing

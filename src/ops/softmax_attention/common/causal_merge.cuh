@@ -83,7 +83,10 @@ __launch_bounds__(256) __global__
         partial_m += static_cast<std::int64_t>(batch) * Geometry::QHeads * tokens * split_count;
         partial_l += static_cast<std::int64_t>(batch) * Geometry::QHeads * tokens * split_count;
     }
-    const int active_splits = partition.active(window);
+    // Unbalanced partitions run all bound() splits. A balanced producer marks the bound() splits
+    // it leaves idle with an empty softmax (m = -inf, l = 0) that adds exact zeros here, so the
+    // merge needs no per-thread division for the balanced count.
+    const int active_splits = partition.bound(window);
     __shared__ float weights[256], warp_sums[8], scalars[2];
     const float head_l = causal_merge_natural_statistics<Geometry>(
         partial_m, partial_l, q_head, token, tokens, active_splits, weights, warp_sums, scalars);
