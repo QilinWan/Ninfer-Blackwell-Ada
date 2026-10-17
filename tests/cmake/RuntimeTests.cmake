@@ -35,6 +35,17 @@ ninfer_add_test(ninfer_json_schema_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../text/test_json_schema.cpp"
   LIBRARIES ninfer_grammar ninfer::json)
 
+# The E8 lattice KV oracle is pure numpy (no device, no torch): a mathematical fidelity check of
+# the D=256 KV projection plus needle retrieval. Registered through the runner so a nonzero exit
+# and a missing [PASS] marker both fail the test (ctest with PASS_REGULAR_EXPRESSION alone ignores
+# the return code).
+add_test(NAME ninfer_e8_kv_oracle_test
+  COMMAND ${CMAKE_COMMAND} -DPYTHON="${Python3_EXECUTABLE}"
+          -DORACLE="${PROJECT_SOURCE_DIR}/tools/test_kv/kv_oracle.py"
+          -P "${CMAKE_CURRENT_LIST_DIR}/run_python_oracle.cmake")
+set_tests_properties(ninfer_e8_kv_oracle_test PROPERTIES
+  ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}" TIMEOUT 120)
+
 add_test(NAME ninfer_json_schema_oracle_test
   COMMAND ${CMAKE_COMMAND} -E env
     "NINFER_SCHEMA_PROBE=$<TARGET_FILE:ninfer_json_schema_test>"
