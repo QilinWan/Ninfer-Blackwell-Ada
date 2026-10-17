@@ -40,8 +40,9 @@ ninfer_add_test(ninfer_json_schema_test
 # and a missing [PASS] marker both fail the test (ctest with PASS_REGULAR_EXPRESSION alone ignores
 # the return code).
 add_test(NAME ninfer_e8_kv_oracle_test
-  COMMAND ${CMAKE_COMMAND} -DPYTHON="${Python3_EXECUTABLE}"
-          -DORACLE="${PROJECT_SOURCE_DIR}/tools/test_kv/kv_oracle.py"
+  COMMAND ${CMAKE_COMMAND}
+          -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
+          -DORACLE=${PROJECT_SOURCE_DIR}/tools/test_kv/kv_oracle.py
           -P "${CMAKE_CURRENT_LIST_DIR}/run_python_oracle.cmake")
 set_tests_properties(ninfer_e8_kv_oracle_test PROPERTIES
   ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}" TIMEOUT 120)
