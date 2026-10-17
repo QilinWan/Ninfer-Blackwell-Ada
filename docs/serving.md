@@ -1055,11 +1055,12 @@ the recurrent-state commit run on both ranks, and acceptance and sampling run on
 while the drafter ranks its candidates over one complete head.
 
 Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2 --lm-head-draft`
-with `bf16` or `int8` KV, and serves text requests from a server started with `--vision`: the tower
-sits whole on the first `--devices` id, which carries its weights and encode workspace alone.
+with `bf16`, `int8` or `nvfp4` KV, and serves text requests from a server started with
+`--vision`: the tower sits whole on the first `--devices` id, which carries its weights and encode
+workspace alone.
 `--spec dflash`, `--spec dflash2` without `--lm-head-draft` or with a drafter that has
 full-attention layers, a request that carries media at `--tp 2` (its merged embeddings have no
-rank-to-rank handoff yet), the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8` KV
+rank-to-rank handoff yet), the MoE architecture and the `fp8`, `k8v4` and `rk4v4-e8` KV
 types are rejected.
 
 Serve writes human-readable operational records to stderr using

@@ -1266,9 +1266,10 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                 "tensor-parallel DFlash2 supports only drafters without full-attention layers");
         }
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
-            options.kv_cache != KvCacheStorage::Int8Group64) {
+            options.kv_cache != KvCacheStorage::Int8Group64 &&
+            options.kv_cache != KvCacheStorage::Nvfp4Group16) {
             throw std::invalid_argument(
-                "tensor-parallel attention supports only bf16 and int8 KV caches");
+                "tensor-parallel attention supports only bf16, int8 and nvfp4 KV caches");
         }
         // This tree merges the Host StateImage/KV/in-flight budget into one knob.
         if (options.context_cache.host_capacity_bytes.value_or(0) != 0) {

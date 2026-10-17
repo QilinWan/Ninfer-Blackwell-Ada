@@ -87,8 +87,8 @@ constexpr Geometry kGeometries[] = {
     {"d256-h16-kv2", 16, 2},
 };
 
-// One device's half of d256-h24-kv4 under two-device tensor parallelism. Only the BF16 and INT8
-// caches register it.
+// One device's half of d256-h24-kv4 under two-device tensor parallelism. Only the BF16, INT8-G64
+// and NVFP4-G16 caches register it.
 constexpr Geometry kTensorParallelGeometry{"d256-h12-kv2", 12, 2};
 
 ops::AttentionHeadGeometry op_geometry(const Geometry& geometry) {
@@ -2945,6 +2945,62 @@ int run_small_prefill_cases(DeviceExecutionView execution, KvCacheStorage storag
     return failures;
 }
 
+// The two-device half geometry, run on one device: every split rank addresses [256,12,2], so the
+// route that serves tp 2 is the one qualified here. A cache that does not register the geometry
+// must say so from the sizing query, without launching.
+int run_tensor_parallel_geometry_cases(DeviceExecutionView execution, KvCacheStorage storage) {
+    const Geometry& geometry = kTensorParallelGeometry;
+    int failures             = 0;
+    if (storage != KvCacheStorage::BFloat16 && storage != KvCacheStorage::Int8Group64 &&
+        storage != KvCacheStorage::Nvfp4Group16) {
+        try {
+            (void)ops::causal_softmax_attention_workspace_capacity_bytes(
+                op_geometry(geometry), storage, {1, 64}, 1, 1, 1, execution);
+            std::cerr << "causal_softmax_attention admitted " << geometry.name << " with a "
+                      << cache_name(storage) << " cache\n";
+            ++failures;
+        } catch (const std::invalid_argument&) {}
+        return failures;
+    }
+    failures += run_geometry(execution, geometry, storage);
+    // Grouped, parallel-grouped and tiled family seams of both public entries.
+    for (int width : {7, 8, 9, 16, 17, 256, 257}) {
+        failures += run_a1_case(execution, geometry, storage, {width, 17, 1024, 1600u},
+                                MappingPattern::Fragmented);
+        failures += run_a3_case(execution, geometry, storage, {width, 17, 1024, 1600u},
+                                MappingPattern::Fragmented);
+    }
+    // Long-context decode, chunk-scale prefill with a replayed capture, then decode and verify
+    // batches.
+    failures += run_a3_case(execution, geometry, storage, {1, 16383, 16384, 1606u, false, true},
+                            MappingPattern::Fragmented);
+    failures += run_a1_case(execution, geometry, storage, {16, 1024, 4096, 1607u, false, true},
+                            MappingPattern::Fragmented);
+    const std::array<int, 4> prefill_queries{0, 63, 64, 1023};
+    failures += run_a1_case(execution, geometry, storage, {1024, 8192, 9216, 1608u},
+                            MappingPattern::Fragmented, prefill_queries);
+    failures +=
+        run_a1_case(execution, geometry, storage, {16, 17, 48, 1601u}, MappingPattern::Identity);
+    failures += run_a3_case(execution, geometry, storage, {16, 2041, 2057, 1602u},
+                            MappingPattern::Fragmented);
+    failures += run_batch_case(
+        execution, geometry, storage,
+        {1, {0, 63, 127, 2048}, {1, 1, 1, 1}, {3, 0, 2, 1}, MappingPattern::Fragmented, 1603u});
+    failures += run_batch_case(execution, geometry, storage,
+                               {6, {61, 127}, {6, 3}, {1, 0}, MappingPattern::Fragmented, 1604u});
+    failures += run_batch_case(execution, geometry, storage,
+                               {16, {49, 2041}, {16, 7}, {1, 0}, MappingPattern::Identity, 1605u});
+    failures += run_batch_case(execution, geometry, storage,
+                               {4,
+                                {17, 1025, 64},
+                                {0, 3, 4},
+                                {2, 0, 1},
+                                MappingPattern::Fragmented,
+                                1609u,
+                                true});
+    return failures;
+}
+
 int run_storage_cases(DeviceExecutionView execution, KvCacheStorage storage) {
     int failures = verify_workspace_capacity_contract(execution, storage);
     if (storage == KvCacheStorage::Nvfp4Group16) {
@@ -2976,6 +3032,7 @@ int run_storage_cases(DeviceExecutionView execution, KvCacheStorage storage) {
     failures += run_verify_width_cases(execution, storage);
     failures += run_numerical_profile_cases(execution, storage);
     failures += run_small_prefill_cases(execution, storage);
+    failures += run_tensor_parallel_geometry_cases(execution, storage);
     return failures;
 }
 

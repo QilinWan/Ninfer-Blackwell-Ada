@@ -33,7 +33,8 @@ std::string usage_text() {
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--embedding-host]\n"
            "       [--output <directory>]\n"
            "       [--log-level trace|debug|info|warning|error|critical|off]\n"
-           "--tp 2 --devices A,B scores on two GPUs (rank 0 on A); it needs --kv-dtype bf16|int8.\n";
+           "--tp 2 --devices A,B scores on two GPUs (rank 0 on A); it needs --kv-dtype "
+           "bf16|int8|nvfp4.\n";
 }
 
 Options parse_options(int argc, char** argv) {

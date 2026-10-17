@@ -60,8 +60,8 @@ metric and report are unchanged; the report's `execution` block adds `tp` and `d
 copy on each GPU, with identical scores ([serving guide](serving.md#two-gpus)); the report's
 `execution` block then adds `"embedding_host": true`.
 
-As for every `--tp 2` run, the Main KV types are `bf16` and `int8` only, so the default `fp8` is
-rejected at startup. The split projections sum their halves in a different order and round each
+As for every `--tp 2` run, the Main KV types are `bf16`, `int8` and `nvfp4`, so the default
+`fp8` is rejected at startup. The split projections sum their halves in a different order and round each
 partial to BF16, so a tp 2 perplexity is close to a single-GPU one of the same artifact but not
 bit-identical: compare tp 2 runs with tp 2 runs. The score tile's workspace is about twice the
 single-GPU one, roughly 1 GiB on each GPU for a 248,320-token vocabulary.

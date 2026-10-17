@@ -39,11 +39,12 @@ void require_causal_geometry(AttentionHeadGeometry geometry, KvCacheStorage stor
           (geometry.query_heads == 16 && geometry.kv_heads == 2))) {
         throw std::invalid_argument(std::string(op) + ": unsupported head geometry");
     }
-    // The 12/2 two-device half is instantiated by the BF16 and INT8 cache kernels only.
+    // The 12/2 two-device half is instantiated by the BF16, INT8-G64 and NVFP4-G16 cache kernels.
     if (geometry.query_heads == 12 && storage != KvCacheStorage::BFloat16 &&
-        storage != KvCacheStorage::Int8Group64) {
+        storage != KvCacheStorage::Int8Group64 && storage != KvCacheStorage::Nvfp4Group16) {
         throw std::invalid_argument(std::string(op) +
-                                    ": head geometry 12/2 requires a BF16 or INT8 cache");
+                                    ": head geometry 12/2 requires a BF16, INT8-G64 or NVFP4-G16 "
+                                    "cache");
     }
 }
 

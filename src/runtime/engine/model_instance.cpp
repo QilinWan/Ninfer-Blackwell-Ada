@@ -88,8 +88,10 @@ void validate_options(const EngineOptions& options) {
                 "--devices entry");
         }
         if (options.kv_cache != KvCacheStorage::BFloat16 &&
-            options.kv_cache != KvCacheStorage::Int8Group64) {
-            throw std::invalid_argument("Engine tp 2 supports only bf16 and int8 KV caches");
+            options.kv_cache != KvCacheStorage::Int8Group64 &&
+            options.kv_cache != KvCacheStorage::Nvfp4Group16) {
+            throw std::invalid_argument(
+                "Engine tp 2 supports only bf16, int8 and nvfp4 KV caches");
         }
         if (options.context_cache.host_capacity_bytes.value_or(0) != 0) {
             throw std::invalid_argument(

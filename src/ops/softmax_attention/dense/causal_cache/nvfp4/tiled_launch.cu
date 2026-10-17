@@ -9,6 +9,8 @@ void nvfp4_kv_tiled_attention(const CausalAttentionOperands& p, Nvfp4KvReadView 
                               cudaStream_t stream) {
     if (p.query_heads == 24)
         launch_nvfp4_kv_tiled_mma<CausalD256H24Kv4, Nvfp4KvTiledInstance>(p, cache, stream);
+    else if (p.query_heads == 12)
+        launch_nvfp4_kv_tiled_mma<CausalD256H12Kv2, Nvfp4KvTiledInstance>(p, cache, stream);
     else if (p.query_heads == 16)
         launch_nvfp4_kv_tiled_mma<CausalD256H16Kv2, Nvfp4KvTiledInstance>(p, cache, stream);
     else

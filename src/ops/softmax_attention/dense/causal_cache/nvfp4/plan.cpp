@@ -11,8 +11,8 @@ constexpr int kGroupedPrefillMaxWidth = 192;
 Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
                                             CausalAttentionExecutionEnvelope envelope,
                                             int multiprocessor_count) {
-    if (multiprocessor_count <= 0 || (heads != 24 && heads != 16) || width < 1 || batch < 1 ||
-        batch > 8 || (batch > 1 && width > 16) || envelope.min_visible_keys == 0 ||
+    if (multiprocessor_count <= 0 || (heads != 24 && heads != 16 && heads != 12) || width < 1 ||
+        batch < 1 || batch > 8 || (batch > 1 && width > 16) || envelope.min_visible_keys == 0 ||
         envelope.min_visible_keys > envelope.max_visible_keys ||
         envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys)
         throw std::invalid_argument("NVFP4 attention: invalid plan inputs");
@@ -26,7 +26,8 @@ Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
     const int query_tile        = family == Nvfp4KvFamily::ParallelGrouped && width <= 16
                                       ? (width + 1) / 2
                                       : std::min(width, grouped_limit);
-    const int row_tiles         = (query_tile * (heads == 24 ? 6 : 8) + 15) / 16;
+    // 12/2 is one device's half of 24/4 at tp 2: two KV heads with 24/4's group of six.
+    const int row_tiles         = (query_tile * (heads == 16 ? 8 : 6) + 15) / 16;
     const std::int64_t sms      = multiprocessor_count;
     const auto budget =
         row_tiles <= 2 || causal_query_tiles_underfill_sms(independent_tiles, multiprocessor_count)

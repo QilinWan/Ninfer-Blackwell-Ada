@@ -1498,12 +1498,13 @@ void TextContext::validate_tensor_parallel() {
     if (config_.full_attention_layers != 0) {
         for (int rank = 0; rank < kTensorParallelWidth; ++rank) {
             const PagedKVBatchLayerView view = rank_text_cache(rank).batch_layer_view(0);
-            // The head-local [256,12,2] attention geometry is registered for these two caches
+            // The head-local [256,12,2] attention geometry is registered for these three caches
             // only (softmax_attention.h).
             if (view.storage != KvCacheStorage::BFloat16 &&
-                view.storage != KvCacheStorage::Int8Group64) {
-                throw std::invalid_argument(
-                    "tensor-parallel attention supports only BF16 and INT8-G64 KV caches");
+                view.storage != KvCacheStorage::Int8Group64 &&
+                view.storage != KvCacheStorage::Nvfp4Group16) {
+                throw std::invalid_argument("tensor-parallel attention supports only BF16, "
+                                            "INT8-G64 and NVFP4-G16 KV caches");
             }
             if (view.num_kv_heads != dimension(shard_config_->attention->num_key_value_heads) ||
                 view.head_dim != dimension(shard_config_->attention->head_dim)) {
@@ -1532,9 +1533,10 @@ void TextContext::validate_tensor_parallel_mtp() {
         }
         const PagedKVBatchLayerView view = rank_mtp_cache(rank).batch_layer_view(0);
         if (view.storage != KvCacheStorage::BFloat16 &&
-            view.storage != KvCacheStorage::Int8Group64) {
-            throw std::invalid_argument(
-                "tensor-parallel MTP attention supports only BF16 and INT8-G64 KV caches");
+            view.storage != KvCacheStorage::Int8Group64 &&
+            view.storage != KvCacheStorage::Nvfp4Group16) {
+            throw std::invalid_argument("tensor-parallel MTP attention supports only BF16, "
+                                        "INT8-G64 and NVFP4-G16 KV caches");
         }
         if (view.num_kv_heads != dimension(shard_config_->attention->num_key_value_heads) ||
             view.head_dim != dimension(shard_config_->attention->head_dim)) {

@@ -6,7 +6,8 @@
 > Wael Mansour, natpate, ivanov84 and parallelno; see [NOTICE](NOTICE) for attribution.
 >
 > - **Covered:** ordinary decoding, `--spec mtp`, `--spec dflash2 --lm-head-draft`, prefix
->   reuse, concurrent requests, CUDA Graph decode and causal scoring, with `bf16` or `int8` KV.
+>   reuse, concurrent requests, CUDA Graph decode and causal scoring, with `bf16`, `int8` or
+>   `nvfp4` KV.
 >   `--vision` loads there too, with the tower resident on the first `--devices` entry; a prompt
 >   carrying media needs the layout batch (see the limits below). See
 >   [Two GPUs](docs/cli.md#two-gpus) and [serving](docs/serving.md).
@@ -86,8 +87,10 @@
 >   unchanged). `--log-speculation-detail` adds the per-step accepted draft lengths and the
 >   output/prompt 4-gram overlap to the request log, and each throughput record now carries
 >   per-GPU clocks, power, energy, temperature and clock-event reasons. The upstream claims for
->   `nvfp4` KV, a split DFlash2 drafter and a Vision prompt at `--tp 2` do not apply to this tree:
+>   a split DFlash2 drafter and a Vision media prompt at `--tp 2` do not apply to this tree:
 >   those sit on the layout batch (ledger P1) or on its measurements, and this tree rejects them.
+>   `nvfp4` KV does land here (the 12/2 causal route is instantiated and qualified on one device);
+>   its two-GPU numbers are the donor's until the D window measures them.
 > - **No host tier.** `--host-state-slots` and `--host-kv-mib` must be 0 at `--tp 2`: retained
 >   conversations live only in the device state slots. With many conversations in parallel the
 >   oldest idle ones are evicted, and their next turn is prefilled again.
@@ -99,7 +102,7 @@
 >   Measured in the two-GPU window (not yet on 2x RTX 5060 Ti).
 > - **Speculative decoding.** DFlash2 needs `--lm-head-draft` and a drafter without
 >   full-attention layers (the published drafter has none). `--spec dflash` is not supported.
-> - **KV cache types.** `bf16` and `int8` only; `fp8`, `nvfp4` and `k8v4` are rejected.
+> - **KV cache types.** `bf16`, `int8` and `nvfp4`; `fp8`, `k8v4` and `rk4v4-e8` are rejected.
 > - **Where it pays off.** The gain grows with context: prompt processing is 1.5-2.1x and decode
 >   1.1x at short context to 1.65x at 184K (1.75x with uncapped clocks) against llama.cpp on the same two boards. On short
 >   prose prompts llama.cpp with MTP was about 8% faster. With v0.2.3, uncapped and with `--lm-head-draft`

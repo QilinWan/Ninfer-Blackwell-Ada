@@ -399,8 +399,11 @@ Host 预算旋钮 `host_capacity_bytes`；rank 1 没有 Host 副本，因此 tp 
 prefill step 都在两个 rank 上发布同一个 prefill KV row；ordinary decode 把同一个 host ingress 上传到
 两个 rank 的 frame。CUDA Graph 把 rank 1 的 stream fork/join 进 rank 0 的同一次 capture，launch 前以
 rank 1 已提交的 mirror 工作为 gate。两个 rank 保留相同的 runtime reservation，KV 容量按空闲显存较少
-的 rank 求解。当前只支持 dense 架构的 ordinary 生成与 `bf16`/`int8` KV；speculative、Vision、
-CausalScoring 与 MoE 在启动时拒绝；从 retained hidden 直接采样在 tp 2 抛错。
+的 rank 求解；两个 rank 的 arena 份额各自分配（`WorkspacePlan::peer_general_capacity`/
+`peer_capacity`），reservation 取两 rank 总额的较大者。当前支持 dense 架构的 ordinary/MTP/DFlash2
+生成与 `bf16`/`int8`/`nvfp4` KV，以及 CausalScoring；`--vision` 在 tp 2 常驻 rank 0（带媒体的
+prompt 在双设备路径拒绝）；`--spec dflash`、MoE 与 `fp8`/`k8v4`/`rk4v4-e8` KV 在启动时拒绝；
+从 retained hidden 直接采样在 tp 2 抛错。
 
 | 职责 | 主要位置 |
 |---|---|

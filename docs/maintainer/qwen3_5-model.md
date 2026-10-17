@@ -293,7 +293,7 @@ KV page and row bookkeeping stay on rank 0 and are mirrored to rank 1 at the sam
 
 The split path covers text prefill, ordinary decode, the MTP and DFlash2 rounds and their logits.
 It rejects DFlash, multimodal prefill, the MoE FFN, paired (two-parent) input projections, and KV
-caches other than BF16 and INT8-G64, for which the 12/2-head attention has no route. RoPE has no
+caches other than BF16, INT8-G64 and NVFP4-G16, for which the 12/2-head attention has no route. RoPE has no
 per-rank override.
 
 MTP runs the same pattern over its one layer, with the MTP's own shards and KV pages:

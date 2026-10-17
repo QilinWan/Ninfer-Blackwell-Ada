@@ -393,13 +393,13 @@ checks the mailbox on a machine without loading a model. Both ranks carry the sa
 coefficients, because a tensor-parallel round splits heads, never the rope scaling.
 
 Tensor parallelism covers ordinary decoding, `--spec mtp` and `--spec dflash2` of the dense
-architecture with `bf16` or `int8` KV. The MTP head is split like a Text layer and verification
+architecture with `bf16`, `int8` or `nvfp4` KV. The MTP head is split like a Text layer and verification
 runs on both ranks; `--draft-tokens` and `--lm-head-draft` work as on one GPU (the optimized
 proposal head is loaded on rank 0 only and proposes there alone). The DFlash2 drafter runs on rank
 0 alone and requires `--lm-head-draft`, since the full output head is split by vocabulary across
 the ranks; a drafter with full-attention layers is not supported there (its KV has no rank 1
-mirror). `--spec dflash`, the MoE architecture and the `fp8`, `nvfp4`, `k8v4` and `rk4v4-e8`
-KV types are rejected at startup, as is a nonzero `--host-context-mib`. `--vision` loads at
+mirror). `--spec dflash`, the MoE architecture and the `fp8`, `k8v4` and `rk4v4-e8` KV types
+are rejected at startup, as is a nonzero `--host-context-mib`. `--vision` loads at
 `--tp 2` with the tower whole on the GPU that encodes it: `--vision-device` must name the first
 `--devices` id (default `A`), and that GPU carries the tower's weights and its encode workspace
 alone, the other rank keeping the capacity its own text phases need. Text-only prompts generate on
