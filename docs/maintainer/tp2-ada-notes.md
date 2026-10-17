@@ -44,17 +44,32 @@ The layer is additive over the width-1 product, and `--tp 1` is meant to stay up
 single-device path is wrong, not partial. Run the drill in a scratch worktree with its own build
 directory, never in a tree that carries a gate run.
 
+The layer's boundary in this fork's own history, measured (not inherited from a note): the
+oldest face is `03726c08 feat(ops): register tensor-parallel shard shapes for fp8, nvfp4 and bf16
+linear` (the half-shape registration), and everything from its parent to `HEAD` is the layer and
+its follow-up = **197 commits**. The `v-tp2-skeleton` tag is **not an ancestor of `HEAD`** (the
+layer arrived through the replayed donor steps, whose history is not linear), so the peel base is
+that parent, not the tag.
+
 ```bash
 git worktree add ../peel-drill HEAD              # isolated tree, own build dir
 cd ../peel-drill
-git revert --no-commit <newest>~..<segment-oldest>   # peel the newest whole segment first
+# Stage 1: peel a bounded newest segment (25 commits) to measure the method and the conflicts.
+git revert --no-commit HEAD~25..HEAD
+git commit -m "drill: strip a bounded tp 2 segment"
+JOBS=14 nice -n 12 bash scripts/build-ada.sh 120a --tests      # criterion: rc=0
+# Stage 2: peel the whole layer.
+git revert --no-commit 03726c08~..HEAD
 git commit -m "drill: strip the tensor-parallel layer"
-JOBS=14 nice -n 12 bash scripts/build-ada.sh 120a --tests     # criterion: rc=0
+bash scripts/build-ada.sh 120a --tests            # criterion: rc=0
 git grep -n "tensor_parallel\|TpExecution\|PeerRuntime\|peer_mailbox"   # criterion: 0 hits
 ```
 
-Judged by the build and by the grep, not by the tests. Two traps this fork measured, which a peel
-hits first:
+Judged by the build and by the grep, not by the tests. Expect the full-range peel to stop for hand
+work: the layer touches files this fork also edits for its own product face (`README.md`,
+`docs/cli.md`, `docs/serving.md`, `apps/*/options.cpp`, `tests/cmake/*.cmake`), and a revert of a
+197-commit range conflicts there first. Record every hand edit in the ledger; the drill is the
+measurement, not a cleanup. Two traps this fork measured, which a peel hits first:
 
 - **A removed definition still referenced by kept code.** Retire symbol by symbol, not file by
   file: `git grep <type>` for the consumers before deleting, because whole-file reversion strips
