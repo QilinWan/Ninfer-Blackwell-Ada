@@ -124,8 +124,10 @@ remaining hunks fall into these kinds; each file's hunks are small unless noted.
 **Before taking upstream's side of a conflict**, check what else of ours the file carries:
 `git log --no-merges <upstream>..<ours> -- <file>`. Not every fork change in an upstream file is tp2
 plumbing; some are bit-identical performance work that the gate only sees as ms/round (it happened
-during this refactor: the 70-SM sliced-K schedules of `91582814` in `nvfp4_linear_swiglu_small_t.cu`
-went missing, texts stayed identical, the 60 greedy prompts measured +2.8 % ms/round).
+during this refactor: the donor's 70-SM sliced-K schedules (donor commit `91582814`, which this
+fork skipped as replay step 142 — see the maintenance ledger) in
+`nvfp4_linear_swiglu_small_t.cu` went missing, texts stayed identical, the 60 greedy prompts
+measured +2.8 % ms/round).
 
 Tests: the tp2 cases added to upstream test files (`test_decode_graph.cpp`, `test_kv_cache.cpp`,
 `test_serve_options.cpp`, `test_cli_options.cpp`, ...) are still inline.

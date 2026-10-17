@@ -9,7 +9,9 @@ in [Op development](op-development.md#26-tensor-parallel-forms), the KV mirror i
 [Paged KV context store](paged-kv-cache.md#56-tensor-parallel-mirror), parent slicing in
 [Artifact container](artifact-container.md), and DFlash2 at width 2 in
 [DFlash and DFlash2](dflash.md#tensor-parallel-execution). This document links them and owns the
-contracts that cut across them. It was checked against the tree at `a0369376`; the file layout
+contracts that cut across them. It was checked against this fork's tree (the gate faces tagged
+`v-tp2-*`; the maintenance ledger records each face), not against the donor line, whose commits are
+not ancestors here; the file layout
 (§12) follows the isolation of `refactor/tp2-isolation`, and [Merging upstream](upstream-merge.md)
 says where the two-GPU code lives relative to upstream's files and how to merge. Points where the
 code, its comments and the development history disagree are collected in
@@ -94,8 +96,8 @@ own registered problem. A format has a two-device route only where its shard sha
   `gdn_input_proj` column-parallel), `[5120,3072]` and `[5120,8704]` for `linear_add`,
   `[17408,5120]` for `linear_swiglu`, and the vocabulary half `[124160,5120]`
   ([`linear.h`](../../include/ninfer/ops/linear.h), [`linear_add.h`](../../include/ninfer/ops/linear_add.h)).
-- **NVFP4**: the same projection shards (the attention and GDN input ones since `b14be3d5` and
-  `7a740326`), but no vocabulary half. The MTP layer calls the plain `linear` on its halves, so
+- **NVFP4**: the same projection shards (the attention and GDN input ones, registered in the
+  replayed steps the maintenance ledger records per sha), but no vocabulary half. The MTP layer calls the plain `linear` on its halves, so
   `[17408,5120]`, `[5120,8704]` and `[5120,3072]` also take its MLP and attention output when a
   recipe stores them NVFP4 (`_mtp_nvfp4_layer`, A16); its packed attention input `[7168,5120]` has
   no NVFP4 `linear` half (the target's goes through `attn_input_proj`) and stays Q8.
@@ -161,8 +163,8 @@ rank 1 records `inputs_ready(1)`; rank 0 waits on it, pulls rank 1's contiguous 
 into rank-0 staging with one D2D copy, and `ops::detail::concat_rows_bf16_launch`
 ([`concat_rows.cu`](../../src/ops/launcher/concat_rows.cu)) interleaves both halves column by column
 into the `[V, C]` logits; rank 1's stream waits on `pull_done(0)` before it may overwrite its
-partial. The interleave used to be two `cudaMemcpy2DAsync` copies. `07f76beb` replaced them with the
-kernel because a captured 2D memcpy node cannot be updated in place when its column count or buffers
+partial. The interleave used to be two `cudaMemcpy2DAsync` copies; the donor line replaced them
+with the kernel because a captured 2D memcpy node cannot be updated in place when its column count or buffers
 change between CUDA Graph profiles of one class (§5). The same gather serves prefill, ordinary
 decode, verification, the MTP proposals, the zero-suffix head and the score tiles of causal
 scoring (`ProgramImpl::project_score_tile_split`); rank 1 keeps no logits, and the arena is
@@ -346,8 +348,8 @@ staged pulls, whose parameters update freely, and the mailbox kernel nodes. The 
 not be updated was the 2D memcpy of the old logits interleave. Its column count and buffers differ
 between profiles of one class, and the update failed with `ParametersChanged` only when a swap
 crossed such profiles, hence late and intermittently. The fork first absorbed the rejection with a
-re-instantiate fallback (`440481b2`, `f3846fcb`, narrowed to tp 2 in `f695d347`). Once
-`concat_rows` removed the cause, `fa8c9e39` dropped the fallback again. A rejected update now throws
+re-instantiate fallback (donor line), then narrowed it to tp 2. Once
+`concat_rows` removed the cause, the fallback went away. A rejected update now throws
 at both widths, as upstream, and `update()` keeps a diagnostic that names the update result and the
 rejected node.
 
@@ -433,10 +435,10 @@ prefix at tp 2 carries:
 - under DFlash2, the drafter's rings in rank 0's StateImages only.
 
 The current code declines no reuse plan at tp 2. The donor line briefly made admission decline
-zero-suffix and speculative reuse at tp 2 and turned unmaterializable checkpoints into misses
-(`815615e6`, then `4534b7bf` restoring the upstream `logic_error` in its `ProgramImpl::inspect_lane`
-at `c29ccc46` and following); those are donor commits, not ancestors of this tree, which has no
-`inspect_lane`. Here the same promise is structural: a resumed lane is rebuilt from its own snapshot
+zero-suffix and speculative reuse at tp 2 and turned unmaterializable checkpoints into misses,
+restoring upstream's `logic_error` in a `ProgramImpl::inspect_lane` that this tree never had. Those
+are donor commits, not ancestors of this tree; the shas are in the donor history, and the ledger
+records what this fork replayed. Here the same promise is structural: a resumed lane is rebuilt from its own snapshot
 by `advance_replay` and `install_resume_sampling`
 ([`transactions/`](../../src/models/qwen3_5/program/transactions/replay.cpp)), and no reuse path
 asks for a two-device carve-out. Only reuse that needs a Host replica is unavailable.
@@ -549,8 +551,8 @@ parent is Replicated and the layout is byte-identical to upstream's. `TextContex
 constants, the private-capture reclaim is off, only batch 1 is warmed before capture, and a
 rejected `cudaGraphExecUpdate` throws (§5).
 
-Some deliberate differences remain at tp 1: the per-prefill-step KV row publication (`c0f88d56`, a
-fix for a multi-lane forced-token bug that upstream `bace20dc` also has); `FuncAttrPerDevice`
+Some deliberate differences remain at tp 1: the per-prefill-step KV row publication (a fix for a
+multi-lane forced-token bug that upstream `bace20dc` also has); `FuncAttrPerDevice`
 ([`kernel_attr_once.h`](../../src/ops/launcher/kernel_attr_once.h)), which costs one `cudaGetDevice`
 per eager launch of an attribute-carrying kernel; a device synchronization and free-memory queries
 around `prepare_graphs` for the graph observation; and new fields in the public `EngineOptions`,
@@ -566,9 +568,10 @@ fits one 16 GB board, so the model is the synthetic two-layer Qwen3.5 of
 [`test_text_context_tp2.cpp`](../../tests/models/qwen3_5/test_text_context_tp2.cpp) (one GDN and one
 full-attention block, FP8 projections, BF16 norms, a byte-level tokenizer), written by the `write`
 mode of the `ninfer_qwen3_5_text_context_tp2_test` executable that
-[`tests.cmake`](../../tests/models/qwen3_5/tests.cmake) registers. The recorded runs found fork
-`2e7f7d3a` and upstream `bace20dc` (`recorded/2026-09-25`), and fork `b3f93dd6`, the merge of
-upstream `e31bc99b`, and upstream `e31bc99b` (`recorded/2026-09-27`), identical on all three cases.
+[`tests.cmake`](../../tests/models/qwen3_5/tests.cmake) registers. The recorded runs found the donor fork face and upstream
+`bace20dc` (`recorded/2026-09-25`), and the donor merge face plus upstream `e31bc99b`
+(`recorded/2026-09-27`), identical on all three cases. `bace20dc` and `e31bc99b` are ancestors of
+this tree; the donor faces are not, and their shas are recorded in the maintenance ledger.
 
 The gate covers the Engine, scheduler, prefill and decode programs, attention, GDN, and the FP8 and
 BF16 Ops on one device. It does not cover the NVFP4 and INT-quantized GEMMs, MTP, DFlash/DFlash2,
@@ -654,7 +657,8 @@ short DFlash2 run. It is the gate of every upstream merge and every change to th
   cut 5.0 % / 4.7 % of the MTP3 round at 0 / 16K, but change the numerics (4-bit activations in the T=4
   verify step): GSM8K on 500 questions fell from 0.974 to 0.962 (7 lost, 1 gained, McNemar p = 0.07), while
   perplexity at 1024-token chunks was bit-identical and could not see it. Only the neutral change is in the
-  tree (`2a596191`: the `[7168,5120]` attention shard keeps the 128-token TMA tile up to T=1024, −6.4 %).
+  tree (the donor's `[7168,5120]` attention shard keeps the 128-token TMA tile up to T=1024,
+  −6.4 % on a 70-SM device; this fork skipped that tuning step and measures its own bound on 36 SM).
   Procedure for another board: `bench/ops` sweeps on each half and its parent at T=1,4,8,16,32,512,1024
   ([Linear tuning](linear-tuning.md) §2-3), then GSM8K on the candidate, not perplexity alone.
 
@@ -705,16 +709,15 @@ lists. The `tp2/` directories below are ours throughout.
    among the replicated weights; the current rules split it by Q/K/V channel sections and split
    `gdn/{a_projection,b_projection,a_log,dt_bias}` by value heads, and only norms and
    `text/token_embedding` are replicated. The same notes list a `test_engine_yarn_real`: no YaRN code
-   or test exists in this tree (both belong to the pre-v3 line, `cfc8f749` and `b40d17ac`, which are
-   not ancestors of `main`). This document follows the code.
+   or test exists in this tree (both belong to the pre-v3 line, whose objects are not in this
+   repository at all). This document follows the code.
 5. **Notes that describe earlier code.** Declined reuse plans at tp 2, the `cudaGraphExecUpdate`
    re-instantiate fallback and explicit peer-lease releases in `release_*_strict` appear in the
-   development notes. The first two were removed (`4534b7bf`, `fa8c9e39`); the last describes the pre-v3
+   development notes. The first two were removed on the donor line; the last describes the pre-v3
    fork, and the current lease rides inside `KVExecutionTablePool::mirror_rows_`.
-6. **Golden gate re-recorded after the upstream merge.** `839fdea0` and `a0369376` changed
-   `ProgramImpl` construction and turned `prepare_graphs`, which tp 1 also runs, into the retry
-   loop after the first record (`2e7f7d3a`); the second record (`b3f93dd6`, after merging upstream
-   `e31bc99b`) covers them. The gate still does not cover NVFP4, the format upstream rewrote most.
+6. **Golden gate re-recorded after the upstream merge.** Two donor steps changed `ProgramImpl`
+   construction and turned `prepare_graphs`, which tp 1 also runs, into the retry loop after the
+   first record; the second record (after merging upstream `e31bc99b`) covers them. The gate still does not cover NVFP4, the format upstream rewrote most.
 7. ~~One-way launch gate.~~ Audited on 2026-09-27: at each of the three gated launch sites
    (ordinary, MTP, DFlash2 rounds in `decode.cpp`) the host issues nothing on rank 1's stream
    between the launch and the round's `synchronize_devices()`, on the success and the failure path;
