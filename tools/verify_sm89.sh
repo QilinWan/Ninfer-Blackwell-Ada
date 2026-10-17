@@ -69,7 +69,9 @@ stage_env() {
 stage_build() {
     log build "configuring sm_$ARCH into $BUILD_DIR"
     local vision=ON
-    pkg-config --exists 'libavcodec>=60' 2>/dev/null || vision=OFF
+    # pkg-config 0.29 (Ubuntu 22.04) only parses a version constraint when the operator is a
+    # separate word; 'libavcodec>=60' is read as one module name and always fails.
+    pkg-config --exists 'libavcodec >= 60' 2>/dev/null || vision=OFF
     [[ $vision == OFF ]] && log build "FFmpeg >= 6 not found; configuring with vision OFF"
     cmake -S "$REPO" -B "$BUILD_DIR" -G "Unix Makefiles" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="$ARCH" \

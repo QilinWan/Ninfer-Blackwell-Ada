@@ -34,8 +34,10 @@ if(NINFER_SM89_BUILD)
     ninfer_linear_nvfp4_a4_test
     ninfer_linear_add_nvfp4_test
     ninfer_linear_swiglu_nvfp4_test
-    ninfer_softmax_attention_nvfp4_test
-    ninfer_softmax_attention_k8v4_test
+    # The causal-attention cases are one binary with --kv-dtype now; it skips the formats a build
+    # cannot execute through kv_storage_supported (tests/ops/attention_criteria.h), so the old
+    # per-format names must not be listed here - they no longer exist, and naming them failed the
+    # whole sm_89 configure with "names an unregistered test".
     ninfer_kv_cache_append_nvfp4_test
     ninfer_kv_cache_append_k8v4_test)
   foreach(_ninfer_test IN LISTS _ninfer_sm89_disabled)
