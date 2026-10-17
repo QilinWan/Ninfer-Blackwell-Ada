@@ -357,17 +357,27 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                 const auto verify_view_rank1 = verify_view(*peer, tp->replay_records);
                 target_verify_forward(state.execution, card, verify_view_rank0, verify_view_rank1,
                                       envelopes.target_verify);
-                target_accept(state.execution, state.continuation_hidden_store, verify_view_rank0,
-                              verify_view_rank1, *state.peer_continuation_hidden_store);
             } else {
                 target_verify_forward(state.execution, card,
                                       verify_view(round, state.execution.replay_records),
                                       envelopes.target_verify);
             }
-            return;
+            // The Forward graph ends after the target verification; acceptance, the next draft and
+            // the host egress copy belong to the Finish graph. This guard has to stand here: the
+            // tensor-parallel merge left it as an unguarded return after the block, so the Finish
+            // phase returned before target_accept and drafted nothing (observed as zero licensed
+            // counts in every round).
+            if (phase == SpeculativePhase::Forward) { return; }
         }
-        target_accept(state.execution, state.continuation_hidden_store,
-                      verify_view(round, state.execution.replay_records));
+        if (peer) {
+            const auto verify_view_rank0 = verify_view(round, state.execution.replay_records);
+            const auto verify_view_rank1 = verify_view(*peer, tp->replay_records);
+            target_accept(state.execution, state.continuation_hidden_store, verify_view_rank0,
+                          verify_view_rank1, *state.peer_continuation_hidden_store);
+        } else {
+            target_accept(state.execution, state.continuation_hidden_store,
+                          verify_view(round, state.execution.replay_records));
+        }
 
         {
             nvtx::ScopedRange draft_range(nvtx::Name::DecodeMtpDraft, nvtx::Category::Mtp,
