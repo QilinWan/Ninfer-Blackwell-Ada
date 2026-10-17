@@ -390,12 +390,13 @@ rank 0's without the masked drafter's state, with KV heads, GDN channels and val
 
 **Bound KV rows.** Prefill and forced-token continuation read the sequence's execution row from
 Program-wide scalars (`io.text_kv_table_row`, `io.backend_kv_table_row`, and rank 1's
-`TpExecution::text_kv_table_row`). `ProgramImpl::publish_kv_rows`
-([`context.cpp`](../../src/models/qwen3_5/program/storage/context.cpp)) writes both ranks'
-scalars, checking that rank 1's mirrored row index equals rank 0's, at every `bind_sequence_kv`,
-every staged prefill step and every forced-token prefill. Writing only at bind let another lane's
-bind repoint the scalar, so forced tokens prefilled into the wrong lane's pages; the republication
-(`c0f88d56`) also applies at tp 1 (§9). Decode rounds read their rows from the uploaded ingress.
+`TpExecution::text_kv_table_row`). `ProgramImpl::publish_peer_kv_rows`
+([`program_impl.cpp`](../../src/models/qwen3_5/program/program_impl.cpp)) writes both ranks'
+scalars, checking that rank 1's mirrored row index equals rank 0's, from each of its three call
+sites: `advance_prefill` (every staged prefill step), `append_forced_tokens` (every forced-token
+prefill) and `advance_replay`. Writing only at bind let another lane's bind repoint the scalar, so
+forced tokens prefilled into the wrong lane's pages; the republication also applies at tp 1 (§9).
+Decode rounds read their rows from the uploaded ingress.
 
 **Rank 1's execution-row leases.** Rank 1 never calls `acquire`. `KVExecutionTablePool::acquire`
 takes the mirror's lease on the same row first (so a failure changes neither pool) and keeps it in
@@ -429,12 +430,14 @@ prefix at tp 2 carries:
   [`prefill.cpp`](../../src/models/qwen3_5/program/prefill.cpp)), for every backend;
 - under DFlash2, the drafter's rings in rank 0's StateImages only.
 
-The current code declines no reuse plan at tp 2. `815615e6` briefly made admission decline
-zero-suffix and speculative reuse at tp 2 and turned unmaterializable checkpoints into misses; once
-MTP and DFlash2 resume existed (`c29ccc46` and following), `4534b7bf` restored the upstream
-`logic_error` in `ProgramImpl::inspect_lane`
-([`request_plan.cpp`](../../src/models/qwen3_5/program/planning/request_plan.cpp)). Only reuse that
-needs a Host replica is unavailable.
+The current code declines no reuse plan at tp 2. The donor line briefly made admission decline
+zero-suffix and speculative reuse at tp 2 and turned unmaterializable checkpoints into misses
+(`815615e6`, then `4534b7bf` restoring the upstream `logic_error` in its `ProgramImpl::inspect_lane`
+at `c29ccc46` and following); those are donor commits, not ancestors of this tree, which has no
+`inspect_lane`. Here the same promise is structural: a resumed lane is rebuilt from its own snapshot
+by `advance_replay` and `install_resume_sampling`
+([`transactions/`](../../src/models/qwen3_5/program/transactions/replay.cpp)), and no reuse path
+asks for a two-device carve-out. Only reuse that needs a Host replica is unavailable.
 
 **`--kv-capacity auto`.** Both ranks address the same pages, so they must agree on one page count.
 `construct_model_on` takes each rank's free memory (`rank_free_bytes`), credits a rank with the
@@ -500,7 +503,7 @@ tp 2: candidate ranking (`linear_topk`) is registered only for one complete head
 head is split by vocabulary, and only the optimized head, whole on rank 0, can serve the rank-0
 drafter. The Engine, `plan_load` and the planner each reject the other case. A drafter with
 full-attention layers is also rejected, since its paged KV would have no rank 1 mirror while
-`publish_kv_rows` requires one; the published drafter has none. The full contract is in
+`publish_peer_kv_rows` requires one; the published drafter has none. The full contract is in
 [DFlash and DFlash2](dflash.md#tensor-parallel-execution).
 
 ## 8. Vision at tp 2
@@ -595,7 +598,7 @@ in [`tests/ops/tests.cmake`](../../tests/ops/tests.cmake), `tests/artifact/tests
 | `ninfer_qwen3_5_engine_tp2_real_test` | Engine with graphs, context cache and two lanes: single and concurrent answers (rank 1 must prefill through each lane's own row), prefix reuse, ≥ 80% reuse of a ~6k-token prefix with 4 and 1 lanes, reuse after a one-shot flood |
 | `ninfer_qwen3_5_engine_mtp_tp2_real_test` (+ `_optimized_real`) | MTP K=3 against the same model without speculation (answers right, common prefixes, half identical), acceptance floor, two-lane rounds, repeated binds (leaked rank 1 row), ~9k-token prefix resume through the bridge, zero-suffix repeat |
 | `ninfer_qwen3_5_engine_dflash2_tp2_real_test` | DFlash2 K=4 `--lm-head-draft`: token ids identical to plain tp 2 on three prompts, ≥ 30% acceptance, two-lane rounds, prefix reuse |
-| `ninfer_qwen3_5_engine_vision_tp2_real_test` (+ `_mtp_real`, `_dflash2_real`) | `vision_device` outside `devices` rejected, text identical with and without Vision, colors of synthetic images with the tower on device 0, same token ids with it on device 1, second turn resumed |
+| `ninfer_qwen3_5_engine_vision_tp2_real_test` (+ `_mtp_real`, `_dflash2_real`) | `vision_device` outside `devices` and a tower on rank 1 rejected before the artifact is read; text identical with and without the resident tower; each synthetic image prompt refused by the two-device schedule; under MTP and DFlash2 a text answer runs speculative rounds and its second turn resumes the retained prefix |
 | `ninfer_serve_engine_failure_real_test` | a thrown decode-round failure (injected by wrapping `cudaStreamSynchronize`) stops the server with `engine_failed()` set, so it exits 2 |
 
 A real artifact does not fit one board, so the real tests are semantic and do not compare with
