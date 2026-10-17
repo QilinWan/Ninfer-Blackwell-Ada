@@ -1,4 +1,5 @@
 #include "options.h"
+#include "product/tensor_parallel_options.h"
 
 #include <functional>
 #include <iostream>
@@ -189,5 +190,39 @@ int main() {
                                        "--max-vision-tokens", "1024"});
                       }),
                       "--max-vision-tokens was accepted without --vision");
+
+    // S6 capability gate: the pure verdicts behind a `--tp 2` startup rejection, asserted without a
+    // CUDA device. CC 12.0 passes; every other capability, Ada's 8.9 (sm_89) included, answers with
+    // a reason naming the requirement, the observed capability and the single-device route. The
+    // Engine calls these same functions once it owns the two rank DeviceContexts, so the CPU verdict
+    // and the startup message cannot drift apart.
+    failures += check(!ninfer::product::tensor_parallel_capability_verdict(12, 0),
+                      "CC 12.0 was not accepted for --tp 2");
+    const auto ada = ninfer::product::tensor_parallel_capability_verdict(8, 9);
+    failures += check(ada.has_value() && ada->find("sm_120") != std::string::npos &&
+                          ada->find("8.9") != std::string::npos &&
+                          ada->find("--tp 1") != std::string::npos,
+                      "Ada (CC 8.9) --tp 2 rejection is not a readable reason");
+    failures += check(ninfer::product::tensor_parallel_capability_verdict(12, 1).has_value(),
+                      "a CC other than 12.0 was accepted for --tp 2");
+
+    // The three KV storages with a two-device route pass: bf16, int8-G64 and nvfp4-G16 (the
+    // head-local 12/2 geometry is instantiated for those kernels, softmax_attention.h).
+    failures += check(!ninfer::product::tensor_parallel_kv_verdict(ninfer::KvCacheStorage::BFloat16) &&
+                          !ninfer::product::tensor_parallel_kv_verdict(
+                              ninfer::KvCacheStorage::Int8Group64) &&
+                          !ninfer::product::tensor_parallel_kv_verdict(
+                              ninfer::KvCacheStorage::Nvfp4Group16),
+                      "a KV storage with a tensor-parallel route was rejected for --tp 2");
+    const auto e8 = ninfer::product::tensor_parallel_kv_verdict(ninfer::KvCacheStorage::RK4V4E8);
+    failures += check(e8.has_value() && e8->find("rk4v4-e8") != std::string::npos &&
+                          e8->find("--tp 1") != std::string::npos,
+                      "rk4v4-e8 KV passed the --tp 2 gate without naming the storage");
+    for (const ninfer::KvCacheStorage storage : {ninfer::KvCacheStorage::Fp8E4M3Row256,
+                                                 ninfer::KvCacheStorage::Fp8KeyNvfp4Value,
+                                                 ninfer::KvCacheStorage::RK4V4E8}) {
+        failures += check(ninfer::product::tensor_parallel_kv_verdict(storage).has_value(),
+                          "an FP8 or 4-bit KV storage passed the --tp 2 gate");
+    }
     return failures == 0 ? 0 : 1;
 }

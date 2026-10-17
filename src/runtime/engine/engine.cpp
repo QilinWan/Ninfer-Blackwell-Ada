@@ -7,6 +7,7 @@
 #include "runtime/contract/sampling.h"
 #include "runtime/contract/request.h"
 #include "runtime/engine/causal_score_core.h"
+#include "product/tensor_parallel_options.h"
 #include "runtime/engine/engine_core.h"
 #include "runtime/engine/model_instance.h"
 
@@ -27,6 +28,19 @@ namespace {
 ExecutionContext initialize_execution(const EngineOptions& options, bool& peer_access) {
     StartupPhaseScope phase(options.startup_observer, StartupPhase::CudaInitialize);
     ExecutionContext execution(options.devices);
+    if (execution.tp == 2) {
+        // The capability gate runs on the devices themselves, before the artifact is read: the
+        // tensor-parallel layer is qualified on CC 12.0 only, and the verdict is the pure product
+        // face (zero CUDA in it), so the same strings a CPU test asserts are the startup messages.
+        for (int rank = 0; rank < execution.tp; ++rank) {
+            const DeviceContext& rank_device = *execution.dev[static_cast<std::size_t>(rank)];
+            const int capability             = rank_device.compute_capability();
+            if (const auto verdict = product::tensor_parallel_capability_verdict(capability / 10,
+                                                                                capability % 10)) {
+                throw std::invalid_argument(*verdict);
+            }
+        }
+    }
     peer_access = execution.tp == 2 && ops::enable_peer_access(execution);
     phase.complete();
     return execution;

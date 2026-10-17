@@ -1265,12 +1265,10 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 "tensor-parallel DFlash2 supports only drafters without full-attention layers");
         }
-        if (options.kv_cache != KvCacheStorage::BFloat16 &&
-            options.kv_cache != KvCacheStorage::Int8Group64 &&
-            options.kv_cache != KvCacheStorage::Nvfp4Group16) {
-            throw std::invalid_argument(
-                "tensor-parallel attention supports only bf16, int8 and nvfp4 KV caches");
-        }
+        // The KV storage route is not checked here: the Engine answers it from the pure product
+        // verdict (runtime/engine/model_instance.cpp → product/tensor_parallel_options.h, S6)
+        // before any planning, and TextContext validates the head-local geometry's registered
+        // caches at construction (execution/text.cpp). One authority per fact.
         // This tree merges the Host StateImage/KV/in-flight budget into one knob.
         if (options.context_cache.host_capacity_bytes.value_or(0) != 0) {
             throw std::invalid_argument("tensor-parallel execution requires a Host context budget "

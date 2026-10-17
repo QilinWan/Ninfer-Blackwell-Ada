@@ -5,6 +5,7 @@
 #include "core/startup.h"
 #include "models/qwen3_5/load.h"
 #include "models/qwen3_5/measurement.h"
+#include "product/tensor_parallel_options.h" // the pure tp 2 KV verdict (S6)
 
 #include <algorithm>
 #include <chrono>
@@ -87,11 +88,8 @@ void validate_options(const EngineOptions& options) {
                 "Engine tp 2 encodes Vision on rank 0: --vision-device must name the first "
                 "--devices entry");
         }
-        if (options.kv_cache != KvCacheStorage::BFloat16 &&
-            options.kv_cache != KvCacheStorage::Int8Group64 &&
-            options.kv_cache != KvCacheStorage::Nvfp4Group16) {
-            throw std::invalid_argument(
-                "Engine tp 2 supports only bf16, int8 and nvfp4 KV caches");
+        if (const auto verdict = product::tensor_parallel_kv_verdict(options.kv_cache)) {
+            throw std::invalid_argument(*verdict);
         }
         if (options.context_cache.host_capacity_bytes.value_or(0) != 0) {
             throw std::invalid_argument(

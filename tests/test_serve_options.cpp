@@ -1,5 +1,6 @@
 #include "serve/serve_options.h"
 #include "serve/translate.h"
+#include "product/tensor_parallel_options.h"
 
 #include <iostream>
 #include <limits>
@@ -558,6 +559,18 @@ int main() {
             rejects({"ninfer-serve", "model.ninfer", "--vision", "--max-vision-tokens", "16385"}) &&
             !rejects({"ninfer-serve", "model.ninfer", "--vision", "--max-vision-tokens", "64"}),
         "--max-vision-tokens accepted a value outside [64,16384]");
+
+    // The serving route's KV selection meets the same pure tensor-parallel verdict the Engine
+    // consults at startup, so `--kv-dtype` cannot promise a route startup then refuses.
+    const ServeOptions tp2_e8 =
+        parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1", "--kv-dtype",
+               "rk4v4-e8"});
+    failures += check(ninfer::product::tensor_parallel_kv_verdict(tp2_e8.kv_cache).has_value(),
+                      "the serving route's rk4v4-e8 KV is not rejected at --tp 2");
+    failures += check(!ninfer::product::tensor_parallel_kv_verdict(
+                          parse({"ninfer-serve", "model.ninfer", "--tp", "2", "--devices", "0,1"})
+                              .kv_cache),
+                      "the serving route's default bf16 KV was rejected at --tp 2");
 
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;

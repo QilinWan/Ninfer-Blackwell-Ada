@@ -49,7 +49,8 @@ What the mode rejects, and where the first check sits:
 | `--spec dflash` | `validate_options` in `model_instance.cpp`, before the artifact is read; again in the planner and `ProgramImpl` |
 | `--spec dflash2` without `--lm-head-draft` | `validate_options`; `validate_tensor_parallel` in [`load.cpp`](../../src/models/qwen3_5/load.cpp); planner |
 | DFlash2 drafter with full-attention layers | planner (`startup.cpp`): that drafter KV pool would have no rank 1 mirror |
-| KV storage other than `bf16`, `int8` and `nvfp4` | `validate_options`; `TextContext`: the head-local `[256,12,2]` attention geometry is registered for BF16, INT8-G64 and NVFP4-G16 only |
+| KV storage other than `bf16`, `int8` and `nvfp4` | `validate_options`, which answers from the pure product verdict `tensor_parallel_kv_verdict` ([`tensor_parallel_options.h`](../../src/product/tensor_parallel_options.h), S6: zero CUDA, asserted on CPU by `test_cli_options`/`test_serve_options`); `TextContext`: the head-local `[256,12,2]` attention geometry is registered for BF16, INT8-G64 and NVFP4-G16 only |
+| a device that is not compute capability 12.0 (Ada's `sm_89`) | `initialize_execution` in [`engine.cpp`](../../src/runtime/engine/engine.cpp), before the artifact is read, answers from the pure `tensor_parallel_capability_verdict` (S6): a readable reason naming sm_120, the observed capability and the `--tp 1` route. Ada keeps this interface, not an implementation |
 | nonzero Host State slots or Host KV bytes | `validate_options`; `ninfer-serve` turns omitted values into 0 and rejects explicit nonzero ones ([`serve_options.cpp`](../../src/serve/serve_options.cpp)) |
 | MoE architecture | `validate_tensor_parallel(config)` in `load.cpp`; also `shard_text_config` and the shard rules |
 | paired (two-parent) Q4/Q5 input projections | `TextContext` constructor ([`text.cpp`](../../src/models/qwen3_5/execution/text.cpp)); split routes in `attention.cpp` and `gdn.cpp` |
