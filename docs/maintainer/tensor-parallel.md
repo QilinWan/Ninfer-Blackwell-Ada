@@ -57,7 +57,7 @@ What the mode rejects, and where the first check sits:
 tiles, split-K partial capacity and the causal head geometry from one rank's multiprocessor
 count, so a mixed pair (5090 plus 5080) quotes a route the other rank does not run. Same
 compute capability is required for the same reason (§2)
-| a device that is not compute capability 12.0 (Ada's `sm_89`) | `initialize_execution` in [`engine.cpp`](../../src/runtime/engine/engine.cpp), before the artifact is read, answers from the pure `tensor_parallel_capability_verdict` (S6): a readable reason naming sm_120, the observed capability and the `--tp 1` route. Ada keeps this interface, not an implementation |
+| a device that is not compute capability 12.0 (an Ada card) | `initialize_execution` in [`engine.cpp`](../../src/runtime/engine/engine.cpp), before the artifact is read, answers from the pure `tensor_parallel_capability_verdict` (S6): a readable reason naming sm_120, the observed capability and the `--tp 1` route. the Blackwell-only build keeps this interface, not an implementation |
 | nonzero Host State slots or Host KV bytes | `validate_options`; `ninfer-serve` turns omitted values into 0 and rejects explicit nonzero ones ([`serve_options.cpp`](../../src/serve/serve_options.cpp)) |
 | MoE architecture | `validate_tensor_parallel(config)` in `load.cpp`; also `shard_text_config` and the shard rules |
 | paired (two-parent) Q4/Q5 input projections | `TextContext` constructor ([`text.cpp`](../../src/models/qwen3_5/execution/text.cpp)); split routes in `attention.cpp` and `gdn.cpp` |

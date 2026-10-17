@@ -1,16 +1,13 @@
 # NInfer documentation
 
 Start with the [project README](../README.md) to build NInfer, download a published artifact, and
-run the CLI or HTTP server. This repository additionally maintains an Ada build; see
-[NInfer on Ada (sm_89)](sm89.md) for what changes, what is unsupported there, and how each claim is
-verified.
+run the CLI or HTTP server. This branch builds only Blackwell (`sm_120a`); the Ada (`sm_89`) port
+this fork carried earlier was removed, and its record is in [`research/`](../research/README.md).
 
 ## User guides
 
 | Document | Purpose |
 |---|---|
-| [NInfer on Ada (sm_89)](sm89.md) | supported SKUs and artifacts, the four architecture deltas, unsupported Blackwell routes, build and verification status |
-| [NInfer 于 Ada (sm_89) · 中文](sm89.zh-CN.md) | 中文版：支持矩阵、构建步骤、实测踩坑清单、权重获取与吞吐采样 |
 | [CLI](cli.md) | text, chat-history, image/video input, output streams, sampling, MTP, and common runtime options |
 | [HTTP serving](serving.md) | OpenAI Responses/Chat Completions, Anthropic Messages, state, streaming, token counting, authentication, and tool calls |
 | [Performance](performance.md) | RTX 5090 measurement coverage, per-model serving results, methodology, and publication rules |
@@ -62,7 +59,7 @@ other references own narrower contracts:
 | [Token embedding in host memory](maintainer/embedding-host.md) | `--embedding-host`: the HostMapped placement, its mapped pinned allocation, CUDA Graph rules, cost and reporting |
 | [Two-GPU tensor parallelism](maintainer/tensor-parallel.md) | `--tp 2` weight sharding, rank roles, all-reduce transports, two-device CUDA Graphs, mirrored state, tests and limits |
 | [Merging upstream](maintainer/upstream-merge.md) | where the two-GPU layer lives, the hooks it keeps in upstream's files, typical conflicts, the mandatory gate, adding a GPU or a model |
-| [TP2 strip drill and Ada notes](maintainer/tp2-ada-notes.md) | the layer's faces in this fork, the peel drill and its traps, the placeholder register to measure on 36 SM, the deferred layout batch, Ada's follow-up |
+| [TP2 strip drill notes](maintainer/tp2-notes.md) | the layer's faces in this fork, the peel drill and its traps, the placeholder register to measure on 36 SM, the deferred layout batch |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
 | [Operational logging](maintainer/logging.md) | log ownership, presentation, severity and data policy |

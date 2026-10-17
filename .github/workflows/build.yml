@@ -26,15 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: sm89-cuda13-text-only
-            image: nvidia/cuda:13.1.2-devel-ubuntu24.04
-            arch: "89"
-            vision: "OFF"
-          # 12.8 is the floor for the Ada build: <cuda_fp4.h> arrives with CUDA 12.8.
-          - name: sm89-cuda12-full
-            image: nvidia/cuda:12.8.1-devel-ubuntu24.04
-            arch: "89"
-            vision: "ON"
           - name: sm120a-cuda13-upstream-path
             image: nvidia/cuda:13.1.2-devel-ubuntu24.04
             arch: "120a"
@@ -72,11 +63,3 @@ jobs:
 
       - name: Report the built architecture
         run: cuobjdump --list-elf build/src/ops/libninfer_ops.a | head -5
-
-  container:
-    name: Dockerfile.sm89
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build the reproducible Ada image
-        run: docker build -f Dockerfile.sm89 --build-arg CUDA_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04 .

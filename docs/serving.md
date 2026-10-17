@@ -1392,8 +1392,8 @@ The implementation follows Qwen's published `rope_parameters` and Hugging Face T
 theta 10,000,000, rotary dimension 64 of a 256-dimensional head, beta_fast 32, beta_slow 1,
 floor/ceil frequency-ramp boundaries, and cos/sin amplitude `1 + 0.1 * ln(F)`. Main Text, MTP and
 three-axis MRoPE use the same immutable per-Engine coefficients; the Vision tower's independent 2-D
-RoPE stays native. No model conversion or weight download is needed. Both the Ada (`sm_89`) and
-Blackwell (`sm_120a`) builds carry the identical coefficient table.
+RoPE stays native. No model conversion or weight download is needed. The Blackwell (`sm_120a`)
+build carries this coefficient table.
 
 Coefficients are passed by value into each CUDA launch and captured graph rather than installed as
 process-global mutable device symbols. Engine-owned context and KV state never crosses Engine

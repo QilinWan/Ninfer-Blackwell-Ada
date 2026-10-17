@@ -319,7 +319,7 @@ it does not override individual CUDA event creation flags.
 The official artifacts have a native context limit of 262,144 tokens. The practical allocation
 on one RTX 5090 depends on the selected artifact, media workload, output budget, and KV-cache type.
 The artifact describes its model configuration and weight representations;
-`--kv-dtype` independently selects runtime KV storage. `rk4v4-e8` is the Ada-only E8 Conway-Sloane lattice 4-bit route: E8-projected key codes plus 4-bit value codes, each with one per-token FP16 scale; on `sm_120a` builds the native `nvfp4`/`k8v4` routes apply instead and `rk4v4-e8` answers with an explicit unsupported error. The prepared prompt must fit
+`--kv-dtype` independently selects runtime KV storage. `rk4v4-e8` is an Ada-era E8 Conway-Sloane lattice 4-bit route that this Blackwell-only build drops: the native `nvfp4`/`k8v4` routes apply instead and `rk4v4-e8` answers with an explicit unsupported error. The prepared prompt must fit
 `--max-context`; generation stops at the remaining context capacity when necessary.
 `--kv-capacity N` controls the shared physical Main Text KV pool independently and is rounded up to
 the 64-token page size. `--kv-capacity auto` loads the selected weights, measures the remaining GPU
@@ -355,8 +355,8 @@ The implementation follows Qwen's published `rope_parameters` and Hugging Face T
 theta 10,000,000, rotary dimension 64 of a 256-dimensional head, beta_fast 32, beta_slow 1,
 floor/ceil frequency-ramp boundaries, and cos/sin amplitude `1 + 0.1 * ln(F)`. Main Text, MTP and
 three-axis MRoPE use the same immutable per-Engine coefficients; the Vision tower's independent 2-D
-RoPE stays native. No model conversion or weight download is needed. Both the Ada (`sm_89`) and
-Blackwell (`sm_120a`) builds carry the identical coefficient table.
+RoPE stays native. No model conversion or weight download is needed. The Blackwell (`sm_120a`)
+build carries this coefficient table.
 
 Coefficients are passed by value into each CUDA launch and captured graph rather than installed as
 process-global mutable device symbols. Engine-owned context and KV state never crosses Engine

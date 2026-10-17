@@ -1,20 +1,15 @@
 cmake_minimum_required(VERSION 3.28)
 
-# Upstream NInfer compiles exactly one architecture: sm_120a (Blackwell). This
-# repository additionally targets Ada (sm_89: RTX 4090 / 4090D / 4080 SUPER /
-# 4070 family). Set and validate the architecture before CUDA compiler detection
-# so CMake never injects a generic host-toolchain default or accepts an
+# This fork builds exactly one architecture: sm_120a (Blackwell). The Ada (sm_89) port this
+# repository carried earlier has been removed. Set and validate the architecture before CUDA
+# compiler detection so CMake never injects a generic host-toolchain default or accepts an
 # unsupported target.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architecture to build: 120a or 89")
+  set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architecture to build: 120a (Blackwell)")
 endif()
-set(NINFER_SM89_BUILD OFF)
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
-  set(NINFER_SM89_BUILD ON)
-  add_compile_definitions(NINFER_SM89=1)
-elseif(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
+if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a")
   message(FATAL_ERROR
-    "NInfer supports CMAKE_CUDA_ARCHITECTURES=120a (upstream, Blackwell) or 89 (Ada); got "
+    "This fork builds only CMAKE_CUDA_ARCHITECTURES=120a (Blackwell); got "
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
 

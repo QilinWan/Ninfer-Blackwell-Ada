@@ -1,5 +1,11 @@
 # NInfer — two-GPU tensor-parallel fork
 
+> **Branch note (`blackwell-only`, 2026-10-18):** this branch removes the Ada (`sm_89`) build, its
+> compatibility layer, its tooling and its documentation; it builds only `sm_120a`. The Ada-era
+> tree, its measurements and the two-GPU research record are preserved in the `tp2/raw` branch and
+> in [`research/`](research/README.md). Sections below that describe the removed Ada port are
+> historical context.
+
 > **This is a fork of [Neroued/ninfer](https://github.com/Neroued/ninfer)** that adds an
 > experimental two-GPU tensor-parallel mode (`--tp 2 --devices A,B`), so that Qwen3.8-27B NVFP4,
 > which does not fit one 16 GB board, runs split across two. It builds on earlier TP2 forks by
@@ -146,10 +152,8 @@ Upstream [Neroued/ninfer](https://github.com/Neroued/ninfer) compiles for exactl
 **v3 `.ninfer` artifacts** — the v3 switch is a container and manifest change, not a requantization,
 so no re-download or re-conversion is needed.
 
-What Ada does and does not support, why, and how each claim is checked:
-**[docs/sm89.md](docs/sm89.md)**. Everything else on this page is upstream's product documentation.
-
-> 中文构建指南、支持矩阵与踩坑清单见 **[docs/sm89.zh-CN.md](docs/sm89.zh-CN.md)**。
+The Ada port those sections describe was removed from this branch; its record, the measurements
+and the reasons are in [`research/README.md`](research/README.md).
 
 **中文版首页：[README.zh-CN.md](README.zh-CN.md)**
 
@@ -182,17 +186,12 @@ kernel had to change.
 The 1M rejection is the VRAM budget check, not a software limit; it needs a 48 GB class GPU.
 
 Full detail, including the r2 fix list (r1's E8 emitted garbage for want of an output
-un-rotation) and the `nf4`/DFlash2 selector-format limitation:
-**[docs/FEATURES-4bit-kv-and-yarn.md](docs/FEATURES-4bit-kv-and-yarn.md)**.
+un-rotation) and the `nf4`/DFlash2 selector-format limitation, is in the `tp2/raw` branch history
+and in [`research/`](research/README.md).
 
-| | Ada (`-DCMAKE_CUDA_ARCHITECTURES=89`) | Blackwell (`120a`, upstream default) |
-|---|---|---|
-| Artifact format | v3 only | v3 only |
-| Weight recipes | `groupwise-int` (Q4/Q5/Q6/Q8 + Q8 vocab) | groupwise-int, `nvfp4` |
-| Speculation | MTP, DFlash, DFlash2 | MTP, DFlash, DFlash2 |
-| KV cache | INT8, FP8, BF16, RK4V4E8 (Ada only) | plus NVFP4, K8V4 |
-| Vision, CLI, HTTP serving | yes | yes |
-| Static YaRN context extension | yes | yes |
+This branch builds one configuration: `sm_120a` with groupwise-int and `nvfp4` weights, MTP /
+DFlash / DFlash2 speculation, INT8 / FP8 / BF16 / NVFP4 / K8V4 KV, vision, CLI and HTTP serving,
+and static YaRN context extension.
 
 One caveat in this build: the offline `ninfer` and `ninfer-perplexity` argument parsers accept only
 `bf16|int8|fp8|nvfp4|k8v4` for `--kv-dtype`, so `rk4v4-e8` is reachable through serving
@@ -264,7 +263,6 @@ plus one of:
 | Target | GPU | CUDA toolkit | Extra dependencies | Build flag |
 |---|---|---|---|---|
 | `sm_120a` (upstream) | RTX 5090; two 16 GB `sm_120` boards for this fork's `--tp 2` | **>= 13.0** (13.1 built and run here; every 12.x fails) | FFmpeg dev (`libavformat`, `libavcodec`, `libavutil`, `libswscale`), `libcurl >= 7.85` | default |
-| `sm_89` (this fork) | RTX 40 series | **>= 12.8** (12.8 + 13.2 validated) | same; FFmpeg optional with `-DNINFER_ENABLE_VISION=OFF` | `-DCMAKE_CUDA_ARCHITECTURES=89` |
 
 The Blackwell floor is not cosmetic. Outside the tiled wide-column schedules the Q8 k-split and NVFP4
 routes keep their staging union in a plain `__shared__` declaration
@@ -397,8 +395,8 @@ reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multim
 Blackwell measurements use an RTX 5090. The [performance index](docs/performance.md) links to
 per-model run records and the [measurement rules](docs/performance/methodology.md). The tables
 below are excerpts from those detailed results. Qwen3.8 uses FP8 E4M3 row-256 KV;
-Qwen3.6 uses INT8 group-64 KV. Tuned Ada measurements (RTX 4080 SUPER 32 GB) are at the end of
-this section; see [NInfer on Ada](docs/sm89.md#measured-throughput) for the full sweep records.
+Qwen3.6 uses INT8 group-64 KV. The Ada (RTX 4080 SUPER 32 GB) sweep records that once sat at the
+end of this section are in the `tp2/raw` branch and in [`research/`](research/README.md).
 
 ### Concurrent MTP3 decode
 

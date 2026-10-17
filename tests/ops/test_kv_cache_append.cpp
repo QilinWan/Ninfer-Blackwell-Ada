@@ -374,11 +374,7 @@ void encode_full_group(const std::vector<float>& source, std::size_t source_base
 // layout this build cannot execute reports itself as not applicable instead of reaching a route that
 // cannot exist here. Every sweep in this file goes through this one entry point.
 [[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
-#ifdef NINFER_SM89
-    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
-#else
     return storage != KvCacheStorage::RK4V4E8;
-#endif
 }
 
 int full_append_case(int kv_heads, KvCacheStorage storage, int tokens = 3) {

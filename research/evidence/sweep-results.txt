@@ -1,0 +1,7 @@
+== mtp-k2-nvfp4 kv=nvfp4 k=2
+60/60 answered; decode 45.10 t/s, acceptance 80.69 %, ms/round median 57.376 (n=60)
+== mtp-k4-nvfp4 kv=nvfp4 k=4
+60/60 answered; decode 54.85 t/s, acceptance 64.76 %, ms/round median 64.252 (n=60)
+== mtp-k5-nvfp4 kv=nvfp4 k=5
+60/60 answered; decode 56.96 t/s, acceptance 57.09 %, ms/round median 65.767 (n=60)
+done

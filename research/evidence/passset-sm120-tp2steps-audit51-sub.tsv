@@ -1,0 +1,31 @@
+# 权威设备分母 · sm_120a @ GPU1 (RTX 5060 Ti, CC 12.0, 36 SM)
+# steps audit51 family subset
+# 列: 编号	用例名	状态	秒
+1	ninfer_scatter_bf16_batch_test	Passed	7.27
+2	ninfer_linear_split_test	Skipped	0.12
+3	ninfer_linear_swiglu_split_test	Skipped	0.12
+4	ninfer_linear_add_split_test	Skipped	0.12
+5	ninfer_linear_topk_test	Passed	6.05
+6	ninfer_kv_cache_append_nvfp4_test	Passed	2.49
+7	ninfer_linear_dynamic_grouped_conv_add_test	Passed	3.72
+8	ninfer_linear_q4_a16_test	Passed	24.09
+9	ninfer_linear_q5_a16_test	Passed	11.45
+10	ninfer_linear_q6_a16_test	Passed	9.68
+11	ninfer_linear_q8_a16_test	Passed	27.34
+12	ninfer_linear_nvfp4_a16_test	Passed	6.81
+13	ninfer_linear_nvfp4_a4_test	Passed	12.87
+14	ninfer_linear_fp8_a16_test	Passed	15.67
+15	ninfer_linear_fp8_a8_test	Passed	9.20
+16	ninfer_linear_bf16_a16_test	Passed	210.93
+17	ninfer_linear_add_q4_a16_test	Passed	3.27
+18	ninfer_linear_add_q5_a16_test	Passed	27.47
+19	ninfer_linear_add_bf16_a16_test	Passed	2.77
+20	ninfer_linear_add_q8_a16_test	Passed	6.72
+21	ninfer_linear_add_nvfp4_test	Passed	3.09
+22	ninfer_linear_add_fp8_test	Passed	5.47
+23	ninfer_linear_add_residual_rounding_test	Passed	3.98
+24	ninfer_linear_pair_q8_a16_test	Passed	2.85
+25	ninfer_linear_swiglu_q4_a16_test	Passed	4.49
+26	ninfer_linear_swiglu_q8_a16_test	Passed	4.67
+27	ninfer_linear_swiglu_nvfp4_test	Passed	4.99
+28	ninfer_linear_swiglu_fp8_test	Passed	8.16

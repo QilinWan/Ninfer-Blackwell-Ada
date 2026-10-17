@@ -1,7 +1,7 @@
 # E8 4-bit KV port — conflict surface inventory
 
 Baseline `pre-e8-baseline` @76e7f2e; lineage official → Don-Chad → UDP (E8 codec source) → sergiuszm
-(sm_89 retune + E8) → xkeyc (host prefix cache + YaRN). Local v3 history was rewritten, so there is
+(Ada-era retune + E8) → xkeyc (host prefix cache + YaRN). Local v3 history was rewritten, so there is
 **no common ancestor** — every classification is a tree diff. Refs: xkeyc `93419f4d`, sergiuszm `aeeba414`, FORK `981b685e`.
 
 ## ① Patch surface (line counts = `git diff --stat`)

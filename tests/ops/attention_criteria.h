@@ -59,17 +59,12 @@ constexpr ReductionCriterion kAttentionE8Criterion{
     /*gross_relative_to_max_reference*/ 1.1e-2,
 };
 
-// A build only runs the KV routes its architecture implements: an Ada build contains no FP4 kernel
-// route at all (cmake/Sm89Compat.cmake), and rk4v4-e8 is an Ada-only lattice codec that a
-// Blackwell build refuses at the capability gate (cmake/Sm120Compat.cmake). Suites skip the
-// formats this build cannot execute, so `ctest` stays a real gate on both architectures instead of
-// asking for a route that does not exist and aborting in an exception.
+// A build only runs the KV routes its architecture implements: this fork is Blackwell-only, and
+// rk4v4-e8 is an Ada-era lattice codec that the build drops and the capability gate refuses
+// (cmake/Sm120Compat.cmake). Suites skip the formats this build cannot execute, so `ctest` stays a
+// real gate instead of asking for a route that does not exist and aborting in an exception.
 [[nodiscard]] constexpr bool kv_storage_supported(KvCacheStorage storage) noexcept {
-#ifdef NINFER_SM89
-    return storage != KvCacheStorage::Nvfp4Group16 && storage != KvCacheStorage::Fp8KeyNvfp4Value;
-#else
     return storage != KvCacheStorage::RK4V4E8;
-#endif
 }
 
 inline ReductionCriterion attention_criterion(KvCacheStorage storage) {

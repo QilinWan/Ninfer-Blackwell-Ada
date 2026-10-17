@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# build-ada.sh — 本树（Blackwell sm_120a + Ada sm_89 双架构）的可复现构建入口。
+# build-ada.sh — 本树（Blackwell sm_120a，单架构）的可复现构建入口。
+# 文件名是历史名（本仓库曾支持 Ada sm_89；该架构已于 2026-10-18 移除），只构建 120a。
 #
 # 为什么要有这个脚本：本机环境有三个静默坑，踩过一次就要花半天再踩回来 ——
 #   1) PATH 里 /usr/bin/cmake 是 3.22.1，而 CMakeLists 要求 >=3.28，真正的 4.4.3 在 ~/.local/bin；
@@ -10,15 +11,19 @@
 # CMAKE_CUDA_ARCHITECTURES=120a 与已删除路径的 CMAKE_HOME_DIRECTORY，会静默覆盖命令行）。
 #
 # 用法：
-#   scripts/build-ada.sh 89            # Ada，文本引擎（默认）
-#   scripts/build-ada.sh 120a          # Blackwell
-#   scripts/build-ada.sh 89 --vision   # 需要 FFmpeg>=6 的完整功能（本机通常不满足）
-#   scripts/build-ada.sh 89 --tests    # 附带 tests/bench（BUILD_TESTING/NINFER_BUILD_BENCHMARKS）
-#   scripts/build-ada.sh 89 --clean    # 先删构建目录
+#   scripts/build-ada.sh               # Blackwell，文本引擎
+#   scripts/build-ada.sh --vision      # 需要 FFmpeg>=6 的完整功能（本机在 ../deps-ada）
+#   scripts/build-ada.sh --tests       # 附带 tests/bench（BUILD_TESTING/NINFER_BUILD_BENCHMARKS）
+#   scripts/build-ada.sh --clean       # 先删构建目录
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-ARCH="${1:-89}"; shift || true
+ARCH=120a
+case "${1:-}" in
+  120a) shift ;;
+  ''|--*) : ;;
+  *) echo "本树只构建 sm_120a；忽略/拒绝架构参数 '$1'" >&2; exit 2 ;;
+esac
 VISION=OFF; TESTS=OFF; CLEAN=0
 for a in "$@"; do
   case "$a" in
@@ -52,15 +57,6 @@ else
   echo "          -DBUILD_CURL_EXE=OFF -DCURL_USE_OPENSSL=OFF -DCURL_USE_LIBPSL=OFF -DBUILD_TESTING=OFF \\"
   echo "     && cmake --build . -j && cmake --install ."
   exit 1
-fi
-
-# --- Ada 剔除表自检（静默失配是跟随主线的首要风险）---
-python3 scripts/check-sm89-exclusions.py >/tmp/exclusions.txt 2>&1 || { cat /tmp/exclusions.txt >&2; exit 1; }
-grep -q "✅" /tmp/exclusions.txt || { cat /tmp/exclusions.txt >&2; exit 1; }
-if [ "$ARCH" = "89" ]; then
-  sed -n '1,12p' /tmp/exclusions.txt
-else
-  echo "剔除表自检：18 TU / 3 stub（sm_120a 构建不剔除，仅确认可解析）"
 fi
 
 BUILD="build-${ARCH}-cu${CUDA_V%.*}"

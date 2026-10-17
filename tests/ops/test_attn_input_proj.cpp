@@ -627,9 +627,7 @@ int run_weight_inputs() {
             }
         }
     }
-#ifndef NINFER_SM89
     failures += run_nvfp4_target();
-#endif
     failures += run_q8_dflash2();
     return failures;
 }
@@ -653,9 +651,7 @@ int main(int argc, char** argv) {
     if (!dflash2_only) {
         failures += run_q4_q5();
         failures += run_bf16_target();
-    #ifndef NINFER_SM89
-    failures += run_nvfp4_target();
-#endif
+        failures += run_nvfp4_target();
         failures += run_fp8_target();
         failures += run_q8_target();
         failures += run_q8_companion();
