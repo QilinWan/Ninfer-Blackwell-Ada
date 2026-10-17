@@ -619,6 +619,19 @@ def build_result_record(
         raise CampaignError("HTTP response usage does not match request_done token counts")
 
     decode_tokens = max(completion_tokens - 1, 0)
+    # The telemetry faces the replayed steps added to the request log: the per-step accepted draft
+    # lengths and their histogram (203/206), the output/prompt 4-gram overlap (207) and the
+    # per-GPU clocks, memory clocks, power, temperature, energy and clock-event reasons (205).
+    # All optional: a reference recorded before those keys exist must still parse, and the absent
+    # key is carried as None rather than failing the campaign.
+    accepted_lengths = speculative.get("accepted_lengths")
+    accepted_length_histogram = speculative.get("accepted_length_histogram")
+    prompt_ngram_overlap = result.get("prompt_ngram_overlap")
+    gpu_samples = server_event.get("gpus")
+    accepted_lengths_mean = (
+        sum(accepted_lengths) / len(accepted_lengths) if accepted_lengths else None
+    )
+
     metrics = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -640,6 +653,13 @@ def build_result_record(
             1.0 + accepted_tokens / speculative_rounds if speculative_rounds > 0 else None
         ),
         "fallback_steps": fallback_steps,
+        "accepted_lengths_mean": accepted_lengths_mean,
+        "accepted_lengths_steps": len(accepted_lengths) if accepted_lengths else 0,
+        "accepted_lengths_max": max(accepted_lengths) if accepted_lengths else None,
+        "accepted_lengths_truncated": speculative.get("accepted_lengths_truncated"),
+        "accepted_length_histogram": accepted_length_histogram,
+        "prompt_ngram_overlap": prompt_ngram_overlap,
+        "gpus": gpu_samples,
         # Request values are latency exposure, not worker cost. They are valid for distribution
         # and per-request normalization but must not be summed across concurrent requests.
         "queue_wait_seconds": queue_wait_seconds,
