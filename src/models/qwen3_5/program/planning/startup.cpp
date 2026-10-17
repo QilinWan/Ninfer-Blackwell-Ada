@@ -6,6 +6,7 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/planning/startup.h"
+#include "models/qwen3_5/program/planning/rank_bounds.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/execution/workspace.h"
 #include "core/device.h"
@@ -1279,6 +1280,17 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     }
 }
 
+std::size_t bound_rank_sequence_bytes(std::size_t rank0_persistent_bytes,
+                                     std::size_t rank0_arena_bytes,
+                                     std::size_t rank1_persistent_bytes,
+                                     std::size_t rank1_arena_bytes) {
+    const std::size_t rank0 =
+        checked_add(rank0_persistent_bytes, rank0_arena_bytes, "rank 0 memory plan");
+    if (rank1_persistent_bytes == 0 && rank1_arena_bytes == 0) { return rank0; }
+    return std::max(rank0, checked_add(rank1_persistent_bytes, rank1_arena_bytes,
+                                       "rank 1 memory plan"));
+}
+
 std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlanningInputs& inputs,
                                                            std::uint32_t main_page_groups) {
     if (main_page_groups == 0) {
@@ -1371,21 +1383,19 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
         }
     }
 
-    // Each rank reserves its own persistent layout plus its own arena share, and one KV page count
-    // drives both ranks' pools, so every device is budgeted for the tighter rank's total.  Rank 0's
-    // layout bounds rank 1's, which omits the drafter's state, and the Vision encode workspace is
-    // carried by the rank that encodes alone (the plan splits the arena per rank).
-    std::size_t sequence_bytes =
-        checked_add(impl->persistent.bytes, impl->workspace.capacity, "sequence memory plan");
-    if (impl->tp != 1 && impl->peer_persistent) {
-        const std::size_t peer_arena = impl->workspace.peer_capacity != 0
-                                           ? impl->workspace.peer_capacity
-                                           : impl->workspace.capacity;
-        sequence_bytes = std::max(sequence_bytes, checked_add(impl->peer_persistent->bytes,
-                                                              peer_arena, "rank 1 memory plan"));
-    }
-    impl->device_reservation_bytes =
-        checked_add(sequence_bytes, impl->graph_allowance_bytes, "sequence graph allowance");
+    // Rank 0's layout bounds rank 1's (the drafter's state is rank 0's alone) and the Vision
+    // encode workspace is carried by the rank that encodes alone; the shared pure bound above
+    // states the rule, which one KV page count then prices on every device.
+    const std::size_t peer_persistent = impl->peer_persistent ? impl->peer_persistent->bytes : 0;
+    const std::size_t peer_arena =
+        impl->peer_persistent
+            ? (impl->workspace.peer_capacity != 0 ? impl->workspace.peer_capacity
+                                                 : impl->workspace.capacity)
+            : 0;
+    impl->device_reservation_bytes = checked_add(
+        bound_rank_sequence_bytes(impl->persistent.bytes, impl->workspace.capacity, peer_persistent,
+                                  peer_arena),
+        impl->graph_allowance_bytes, "sequence graph allowance");
     return impl;
 }
 

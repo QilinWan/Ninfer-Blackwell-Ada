@@ -3,6 +3,7 @@
 #include "models/qwen3_5/program/speculative/mtp_alignment.h"
 #include "models/qwen3_5/program/round_buffers.h"
 #include "models/qwen3_5/program/vision_control.h"
+#include "models/qwen3_5/program/planning/rank_bounds.h"
 
 #include "models/qwen3_5/program/prefix_identity.h"
 #include "runtime/contract/timing.h"
@@ -488,6 +489,27 @@ void test_regular_prefix_identity() {
 
 } // namespace
 
+// The per-rank memory plan, as the pure sum the planner prices with (no device, no artifact):
+// each rank reserves its own persistent layout plus its own arena share, and the device budget is
+// the larger of the two totals, because one KV page count drives both ranks' pools.
+void test_rank_reservation_bounds() {
+    using ninfer::models::qwen3_5::detail::bound_rank_sequence_bytes;
+    // A single-device plan: rank 1 is not present, so rank 0's total is the whole reservation.
+    expect(bound_rank_sequence_bytes(4000U, 1000U, 0U, 0U) == 5000U,
+           "single-device plan lost its own reservation to an absent rank 1");
+    // Rank 1 carries less (no drafter state) on the same arena: rank 0 bounds it, as today.
+    expect(bound_rank_sequence_bytes(4000U, 1000U, 3000U, 1000U) == 5000U,
+           "rank 0 did not bound a rank 1 that omits the drafter state");
+    // The per-rank arena split: the tower rank carries the encode workspace, the receiver does
+    // not, so the receiver's share is its own text arena and the bound follows rank 0.
+    expect(bound_rank_sequence_bytes(4000U, 1200U, 3000U, 1000U) == 5200U,
+           "the encoding rank's arena share did not bound the plan");
+    // The forward-looking case: a rank 1 that encodes (the receiver-side handoff batch) must
+    // raise the reservation, so the KV pool is never sized against a rank that needs more.
+    expect(bound_rank_sequence_bytes(4000U, 1000U, 3000U, 900000U) == 903000U,
+           "a rank 1 with the larger arena did not become the binding reservation");
+}
+
 int main() {
     test_execution_timing_domains();
     test_decoder_layout();
@@ -495,6 +517,7 @@ int main() {
     test_mtp_alignment();
     test_vision_control();
     test_prefix_identity();
+    test_rank_reservation_bounds();
     test_regular_prefix_identity();
     if (failures != 0) {
         std::cerr << failures << " Qwen3.6 runtime mechanism checks failed\n";
