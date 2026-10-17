@@ -71,6 +71,23 @@ summary=$out/summary.txt; : > "$summary"
 failed=0
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$summary"; }
+# The recorded reference directory holds only *.ids (plus RESULT.md), while record.sh writes
+# *.ids, *.out and *.log side by side: a recursive diff reports "Only in" for every run and fails
+# a face that is numerically identical. Compare the ids files case by case and say so explicitly.
+ids_only_equal() { # reference_dir run_dir report_file
+    local ref=$1 run=$2 rep=$3 st=0 f b
+    : > "$rep"
+    for f in "$ref"/*.ids; do
+        b=$(basename "$f")
+        if [ ! -f "$run/$b" ]; then echo "missing in run: $b" >> "$rep"; st=1; continue; fi
+        if ! diff "$f" "$run/$b" >> "$rep" 2>&1; then st=1; fi
+    done
+    for f in "$run"/*.ids; do
+        b=$(basename "$f"); [ -f "$ref/$b" ] || { echo "new in run: $b" >> "$rep"; st=1; }
+    done
+    return $st
+}
+
 verdict() { # stage status detail
     say "$(printf '%-8s %-5s %s' "$1" "$2" "$3")"
     [ "$2" = FAIL ] && failed=1
@@ -120,8 +137,8 @@ if has golden; then
     g=$out/golden; rm -rf "$g"
     if CUDA_VISIBLE_DEVICES=${DEVICES%%,*} GOLDEN_FLAGS=$EXTRA_FLAGS "$src/tools/golden/record.sh" "$build/apps/ninfer-tp1-golden" "$GOLDEN_MODEL" "$g" > "$out/golden.log" 2>&1; then
         if [ $record = 1 ]; then verdict golden REC "$(tr '\n' ' ' < "$out/golden.log")"
-        elif diff -r "$ref/golden" "$g" > "$out/golden.diff" 2>&1; then
-            verdict golden PASS "3/3 identical ($(cat "$g"/*.ids | md5sum | cut -c1-8))"
+        elif ids_only_equal "$ref/golden" "$g" "$out/golden.diff"; then
+            verdict golden PASS "3/3 ids identical ($(cat "$g"/*.ids | md5sum | cut -c1-8))"
         else verdict golden FAIL "ids differ, see $out/golden.diff"; fi
     else verdict golden FAIL "runner failed, see $out/golden.log"; fi
 fi
