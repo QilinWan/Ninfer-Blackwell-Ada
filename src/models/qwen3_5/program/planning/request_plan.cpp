@@ -111,6 +111,7 @@ RequestBasePlan ProgramImpl::plan_request(PreparedPromptData&& prompt,
                                                ? FinishReason::OutputLimit
                                                : FinishReason::ContextCapacity;
     base->sampling                       = translate_sampling(options.sampling);
+    base->accepted_length_steps          = options.accepted_length_steps;
     base->allow_prefix_reuse             = options.allow_prefix_reuse && prompt.identity.reusable;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;

@@ -69,6 +69,10 @@ struct RequestBasePlanImpl {
     runtime::RequestPlanSummary summary;
     qwen3_5::PreparedContextCache context_cache;
     ops::SamplingConfig sampling;
+    // Publication bound of SpeculativeStats::accepted_lengths, carried from
+    // ResolvedExecutionOptions::accepted_length_steps. A publication value, never an execution
+    // input; 0 records nothing.
+    std::uint32_t accepted_length_steps = 0;
     std::shared_ptr<const VisionControlPlan> vision_control_plan;
     std::vector<CaptureGroup> capture_groups;
     std::shared_ptr<const PreparedCaptureBacking> capture_backing;

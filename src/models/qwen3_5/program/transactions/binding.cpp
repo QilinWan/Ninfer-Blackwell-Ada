@@ -416,10 +416,13 @@ void ProgramImpl::install_binding(ContextTransaction& tx) {
         state.tail_hidden_valid       = tx.source_tail_hidden;
         request.lifecycle             = Lifecycle::Prefilling;
         request.publish_continuation  = tx.base->summary.publish_continuation;
-        // The binding path installs sampling before any per-step length recording is asked
-        // for: the bound is 0 here, so the recorder is a no-op (0 records nothing). The serve
-        // path passes the request's --log-speculation-detail bound at its own install site.
-        install_sampling(state, request, tx.base->sampling, 0U, 0U);
+        // One install site for both product paths: the serve request's --log-speculation-detail
+        // bound arrives with the base plan (planning/request_plan.cpp), and every decode step
+        // commits at least one output token, so install_sampling caps the recorder by the request's
+        // effective output token count. A 0 bound - the CLI default, and every round without a
+        // speculative backend - records nothing.
+        install_sampling(state, request, tx.base->sampling, tx.base->accepted_length_steps,
+                         tx.base->summary.effective_output_tokens);
     }
     refresh_state_views(state);
     request.permit   = tx.first_unit;
