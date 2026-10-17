@@ -66,10 +66,18 @@ git grep -n "tensor_parallel\|TpExecution\|PeerRuntime\|peer_mailbox"   # criter
 ```
 
 Judged by the build and by the grep, not by the tests. Expect the full-range peel to stop for hand
-work: the layer touches files this fork also edits for its own product face (`README.md`,
-`docs/cli.md`, `docs/serving.md`, `apps/*/options.cpp`, `tests/cmake/*.cmake`), and a revert of a
-197-commit range conflicts there first. Record every hand edit in the ledger; the drill is the
-measurement, not a cleanup. Two traps this fork measured, which a peel hits first:
+work, and expect the hand work mostly **in code**, not in the product prose this fork also edits:
+measured on `340bd4c0` by reverting each of the 197 layer commits one at a time on a clean tip in a
+scratch worktree (every step reset hard, so each verdict states whether *that* commit peels alone) -
+**76 peel cleanly, 135 need hand work**, and the files that collide are, in order, `README.md` 16,
+`docs/serving.md` 14, `docs/cli.md` 14, `planning/startup.cpp` 13, `tensor-parallel.md` 12,
+`serve_options.cpp` 11, `model_instance.cpp` 11, `execution/text.cpp` 10, `program/graphs.cpp` 8,
+**`include/ninfer/types.h` 8** (`KvCacheStorage`/`EngineOptions` carry the layer's enums),
+`qwen3_5-model.md` 8, `tools/tp2/README.md` 7. The bounded stage is cheap and clean: peeling the
+newest 25 commits takes **no** manual edit at all (48 files, -1231/+213), and it leaves the deep
+symbols (`TpExecution` 11 files, `allreduce_sum` 14, `peer_mailbox` 9) still referenced exactly as
+expected - so `git grep` = 0 is a stage-2 criterion only. Record every hand edit in the ledger; the
+drill is the measurement, not a cleanup. Two traps this fork measured, which a peel hits first:
 
 - **A removed definition still referenced by kept code.** Retire symbol by symbol, not file by
   file: `git grep <type>` for the consumers before deleting, because whole-file reversion strips
