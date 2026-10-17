@@ -1291,24 +1291,6 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     }
 }
 
-RankGeneralCapacity split_general_capacity(std::size_t shared_capacity,
-                                           std::size_t rank0_only_capacity,
-                                           std::size_t rank1_only_capacity) noexcept {
-    return {std::max(shared_capacity, rank0_only_capacity),
-            std::max(shared_capacity, rank1_only_capacity)};
-}
-
-std::size_t bound_rank_sequence_bytes(std::size_t rank0_persistent_bytes,
-                                     std::size_t rank0_arena_bytes,
-                                     std::size_t rank1_persistent_bytes,
-                                     std::size_t rank1_arena_bytes) {
-    const std::size_t rank0 =
-        checked_add(rank0_persistent_bytes, rank0_arena_bytes, "rank 0 memory plan");
-    if (rank1_persistent_bytes == 0 && rank1_arena_bytes == 0) { return rank0; }
-    return std::max(rank0, checked_add(rank1_persistent_bytes, rank1_arena_bytes,
-                                       "rank 1 memory plan"));
-}
-
 std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlanningInputs& inputs,
                                                            std::uint32_t main_page_groups) {
     if (main_page_groups == 0) {
@@ -1418,6 +1400,29 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
 }
 
 } // namespace
+
+// Defined at the layer's namespace scope, not inside the anonymous one above: the header declares
+// these two rules for the tests to reach, and an anonymous-namespace definition here would be a
+// distinct internal-linkage function, leaving the declared ones undefined at link time.  The
+// planner calls them from the anonymous namespace above, where the header's declarations are
+// visible; checked_add stays reachable in this translation unit.
+RankGeneralCapacity split_general_capacity(std::size_t shared_capacity,
+                                           std::size_t rank0_only_capacity,
+                                           std::size_t rank1_only_capacity) noexcept {
+    return {std::max(shared_capacity, rank0_only_capacity),
+            std::max(shared_capacity, rank1_only_capacity)};
+}
+
+std::size_t bound_rank_sequence_bytes(std::size_t rank0_persistent_bytes,
+                                      std::size_t rank0_arena_bytes,
+                                      std::size_t rank1_persistent_bytes,
+                                      std::size_t rank1_arena_bytes) {
+    const std::size_t rank0 =
+        checked_add(rank0_persistent_bytes, rank0_arena_bytes, "rank 0 memory plan");
+    if (rank1_persistent_bytes == 0 && rank1_arena_bytes == 0) { return rank0; }
+    return std::max(rank0, checked_add(rank1_persistent_bytes, rank1_arena_bytes,
+                                       "rank 1 memory plan"));
+}
 
 std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
 make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
