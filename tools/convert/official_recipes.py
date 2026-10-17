@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from .methods import cast_direct, fp8_row_maxabs, grouped_absmax, import_encoded
+from .methods import (
+    cast_direct,
+    fp8_row_maxabs,
+    grouped_absmax,
+    import_encoded,
+    nvfp4_mse,
+)
 
 Q4 = "q4_g64_fp16"
 Q5 = "q5_g64_fp16"
