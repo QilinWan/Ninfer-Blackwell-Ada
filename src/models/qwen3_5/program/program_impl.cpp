@@ -154,9 +154,16 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             throw std::invalid_argument(
                 "tensor-parallel Program requires a Host context capacity of 0");
         }
-        if (speculative_backend == SpeculativeBackend::DFlash || vision_enabled || causal_scoring) {
+        // Only DFlash has no two-device schedule. Vision is admitted with the tower whole on the
+        // rank that encodes it (planning/startup.cpp:validate_target_options admits that
+        // placement), and a prompt that actually carries media is rejected where it would be
+        // prefilled (execution/text.cpp: multimodal prefill). Causal scoring runs TextContext's
+        // split prefill on both ranks and gathers each score tile over the vocabulary-split head
+        // (project_score_tile_split); the plan reserves its phase for both ranks.
+        if (speculative_backend == SpeculativeBackend::DFlash) {
             throw std::invalid_argument("tensor-parallel Program supports ordinary, MTP and "
-                                        "DFlash2 text generation only");
+                                        "DFlash2 text generation, causal scoring and a resident "
+                                        "Vision tower (no DFlash)");
         }
         execution_context = execution_in;
         peer_parameters   = peer_parameters_in;

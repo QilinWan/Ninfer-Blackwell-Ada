@@ -1,23 +1,22 @@
-// Two-device tensor-parallel (tp 2) Engine with Vision on NINFER_TEST_ARTIFACT, through the public
-// generation route ninfer-serve uses. The Vision tower lives on one rank only (--vision-device);
-// that rank encodes each image and the merged embeddings are copied to the other rank, whose text
-// prefill scatters its own copy. Qwen3.8 27B does not fit one 16 GB device, so every reference is
-// the same model at tp 2. The images are synthetic solid-color PPMs; the per-item Vision extent is
-// 256 tokens (--max-vision-tokens), so the 768x768 images are resized to 512x512 before encoding.
+// Two-device tensor-parallel (tp 2) Engine with a resident Vision tower on NINFER_TEST_ARTIFACT,
+// through the public generation route ninfer-serve uses. This tree holds the tower whole on rank 0
+// (--vision-device must name the first --devices entry) and sizes rank 0's arena with the encode
+// workspace alone; it has no rank 1 receiver for the merged embeddings (that is the deferred layout
+// batch), so the two-device schedule rejects a prompt that carries media. Qwen3.8 27B does not fit
+// one 16 GB device, so every reference is the same model at tp 2. The images are synthetic
+// solid-color PPMs; the per-item Vision extent is 256 tokens (--max-vision-tokens).
 //
 // Default mode:
-//   * rejections: a vision_device outside devices, a vision_device or max_vision_tokens without
-//     Vision and a max_vision_tokens below 64 fail before the artifact is read.
+//   * rejections before the artifact is read: a vision_device outside devices, a tower on rank 1 at
+//     tp 2, a vision_device or max_vision_tokens without Vision, and a max_vision_tokens below 64.
 //   * text invariance: a text prompt answers with the same token ids on the tp 2 Engine without
-//     Vision and on the Vision Engine.
-//   * encoding: with the tower on device 0, a red and a blue image are named by their color, the
-//     encoder runs, and the prompt counts at most 256 Vision tokens.
-//   * copy parity: with the tower on device 1 (the embeddings now copied from rank 1 to rank 0)
-//     the same image and text prompts produce identical token ids. Both ranks run the same
-//     kernels on the same bytes, so a late, missing or misplaced copy changes the answer.
-// `mtp` and `dflash2` modes serve the image prompts with MTP (K=3) or DFlash2 (K=4, optimized
-// proposal head) and the tower on device 1: the colors must be right, speculative rounds must
-// run, and a second turn of the image conversation must resume its retained prefix.
+//     Vision and on the Vision Engine, whose arena carries the extra Vision phase.
+//   * media: with the tower resident on rank 0, each image prompt is refused by the two-device
+//     schedule (execution/text.cpp: multimodal prefill) and produces no answer; the text prompt
+//     still answers correctly afterwards.
+// `mtp` and `dflash2` modes run a text conversation with MTP (K=3) or DFlash2 (K=4, optimized
+// proposal head) on the Vision Engine: speculative rounds must run, and a second turn must resume
+// its retained prefix through the bridge.
 //
 // Returns 77 without the artifact or below two CUDA devices.
 
@@ -163,22 +162,30 @@ std::vector<ImageProbe> image_probes() {
 
 constexpr const char* kTextPrompt = "What is 17*23? Answer with the number only.";
 
-// The image probes, each checked for its color and an encoder run.
-int run_images(ninfer::Engine& engine, std::vector<ninfer::GenerationResult>& results,
-               const std::string& engine_label) {
+// The image probes, each refused by the two-device schedule: this tree has no rank 1 receiver for
+// the merged embeddings, so the prefill entry rejects a prompt that carries media.
+int expect_media_rejected(ninfer::Engine& engine, const std::string& engine_label) {
     int failures = 0;
     for (const ImageProbe& probe : image_probes()) {
-        const std::string label         = engine_label + " " + probe.label;
-        ninfer::GenerationResult result = engine.generate(
-            engine.prepare(image_prompt(probe.image, "probe.ppm")), greedy(kAnswerTokens));
-        std::cout << label << ": \"" << result.content << "\" (vision "
-                  << result.timings.vision_seconds << " s)\n";
-        failures += check_answer(result, probe.expected, label);
-        if (!(result.timings.vision_seconds > 0.0)) {
-            std::cerr << label << ": the Vision encoder did not run\n";
+        const std::string label = engine_label + " " + probe.label;
+        bool refused            = false;
+        try {
+            const ninfer::GenerationResult result = engine.generate(
+                engine.prepare(image_prompt(probe.image, "probe.ppm")), greedy(kAnswerTokens));
+            std::cerr << label << ": a media prompt ran at tp 2 and answered \"" << result.content
+                      << "\"\n";
             ++failures;
+        } catch (const std::exception& error) {
+            refused            = true;
+            const std::string what(error.what());
+            std::cout << label << ": refused with \"" << what << "\"\n";
+            if (what.find("multimodal prefill") == std::string::npos &&
+                what.find("tensor-parallel width 2") == std::string::npos) {
+                std::cerr << label << ": refused by something other than the split schedule\n";
+                ++failures;
+            }
         }
-        results.push_back(std::move(result));
+        if (!refused) { ++failures; }
     }
     return failures;
 }
@@ -213,6 +220,11 @@ int exercise_rejections(const char* artifact) {
     };
     expect(rejected([](ninfer::EngineOptions& o) { o.vision_device = 2; }, artifact),
            "a vision_device outside devices was accepted");
+    // This tree encodes on rank 0 alone (planning/startup.cpp:validate_target_options,
+    // runtime/engine/model_instance.cpp): the tower needs the rank whose arena carries its encode
+    // phase and whose Parameters hold the tower.
+    expect(rejected([](ninfer::EngineOptions& o) { o.vision_device = 1; }, artifact),
+           "a Vision tower on rank 1 was accepted at tp 2");
     expect(rejected(
                [](ninfer::EngineOptions& o) {
                    o.enable_vision     = false;
@@ -236,7 +248,6 @@ int exercise_parity(const char* artifact) {
     }
     failures += check_answer(text_reference, "391", "text without Vision");
 
-    std::vector<ninfer::GenerationResult> rank0_images;
     ninfer::GenerationResult rank0_text;
     {
         ninfer::Engine engine(engine_options(artifact, true, 0, Mode::Parity));
@@ -249,23 +260,12 @@ int exercise_parity(const char* artifact) {
                       << " image was not resized to the per-item Vision extent\n";
             ++failures;
         }
-        failures += run_images(engine, rank0_images, "tower on device 0");
+        // A refused media request ends the Engine (the same failure route a decode round takes),
+        // so the text prompt that must answer runs first: it is what shows that a resident tower
+        // and its rank-0 encode phase change nothing about the text schedule.
         rank0_text = engine.generate(engine.prepare(text_prompt(kTextPrompt)), greedy(32));
         failures += compare_ids(rank0_text, text_reference, "text with Vision vs without");
-    }
-
-    {
-        ninfer::Engine engine(engine_options(artifact, true, 1, Mode::Parity));
-        std::vector<ninfer::GenerationResult> rank1_images;
-        failures += run_images(engine, rank1_images, "tower on device 1");
-        const auto probes = image_probes();
-        for (std::size_t index = 0; index < probes.size(); ++index) {
-            failures += compare_ids(rank1_images[index], rank0_images[index],
-                                    std::string("copy parity ") + probes[index].label);
-        }
-        const ninfer::GenerationResult text =
-            engine.generate(engine.prepare(text_prompt(kTextPrompt)), greedy(32));
-        failures += compare_ids(text, rank0_text, "copy parity text");
+        failures += expect_media_rejected(engine, "tower on rank 0");
     }
     return failures;
 }
@@ -273,23 +273,29 @@ int exercise_parity(const char* artifact) {
 int exercise_speculative(const char* artifact, Mode mode) {
     const bool mtp = mode == Mode::Mtp;
     const std::string label(mtp ? "MTP" : "DFlash2");
-    ninfer::Engine engine(engine_options(artifact, true, 1, mode));
+    // The tower sits on rank 0, the rank that may encode (the admission above rejects any other
+    // placement), and the prompts are text: a media prompt has no two-device schedule here.
+    ninfer::Engine engine(engine_options(artifact, true, 0, mode));
     const ninfer::SpeculativeBackend backend =
         mtp ? ninfer::SpeculativeBackend::Mtp : ninfer::SpeculativeBackend::DFlash2;
     int failures = 0;
-    std::vector<ninfer::GenerationResult> results;
-    failures += run_images(engine, results, label);
-    for (const ninfer::GenerationResult& result : results) {
-        if (result.speculative.backend != backend || result.speculative.rounds == 0) {
-            std::cerr << label << ": an image answer ran no speculative round\n";
-            ++failures;
-        }
+    const ninfer::GenerationResult answer =
+        engine.generate(engine.prepare(text_prompt(kTextPrompt)), greedy(32));
+    std::cout << label << " answer: \"" << answer.content << "\" in " << answer.timings.total_seconds
+              << " s\n";
+    failures += check_answer(answer, "391", label + " text answer");
+    if (answer.speculative.backend != backend || answer.speculative.rounds == 0) {
+        std::cerr << label << ": the answer ran no speculative round (backend "
+                  << static_cast<int>(answer.speculative.backend) << ", rounds "
+                  << answer.speculative.rounds << ")\n";
+        ++failures;
     }
 
-    // A second turn of the red-image conversation resumes its retained prefix (the MTP bridge
-    // under MTP, the drafter's rings under DFlash2) and still sees the image.
+    // A second turn of the same conversation resumes its retained prefix (the MTP bridge under
+    // MTP, the drafter's rings under DFlash2) on the two-device schedule.
+    constexpr const char* kFirstTurn = "What is 17*23? Answer with the number only.";
     const auto conversation = [] {
-        ninfer::PromptInput input       = image_prompt(image_probes().front().image, "turn.ppm");
+        ninfer::PromptInput input       = text_prompt(kFirstTurn);
         input.context_cache.session_key = "vision-tp2-real";
         // This tree has no per-request cache-retention knob: the session lineage is advanced by
         // the default update_session_index, which is what keeps the retained prefix resolvable.
@@ -297,7 +303,7 @@ int exercise_speculative(const char* artifact, Mode mode) {
     };
     const ninfer::GenerationResult first =
         engine.generate(engine.prepare(conversation()), greedy(kAnswerTokens, true));
-    failures += check_answer(first, "red", label + " first turn");
+    failures += check_answer(first, "391", label + " first turn");
     ninfer::PromptInput followup = conversation();
     ninfer::ChatMessage assistant;
     assistant.role = ninfer::ChatRole::Assistant;
@@ -305,14 +311,13 @@ int exercise_speculative(const char* artifact, Mode mode) {
     followup.messages.push_back(std::move(assistant));
     ninfer::ChatMessage question;
     question.role = ninfer::ChatRole::User;
-    question.parts.push_back(
-        text_part("Repeat the color of the image in lowercase, one word only."));
+    question.parts.push_back(text_part("Write that number again, digits only."));
     followup.messages.push_back(std::move(question));
     const ninfer::GenerationResult second =
         engine.generate(engine.prepare(std::move(followup)), greedy(kAnswerTokens, true));
     std::cout << label << " second turn: \"" << second.content << "\", reused "
               << second.reused_prompt_tokens << " prompt tokens\n";
-    failures += check_answer(second, "red", label + " second turn");
+    failures += check_answer(second, "391", label + " second turn");
     if (second.reused_prompt_tokens == 0 ||
         second.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
         std::cerr << label << " second turn reused no prompt tokens\n";
