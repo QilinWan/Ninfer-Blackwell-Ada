@@ -66,14 +66,19 @@ struct WorkspacePlan {
     std::size_t dflash_context   = 0;
     std::size_t dflash_round     = 0;
     std::size_t causal_score     = 0;
+    // Rank 1's own score-tile total.  A score tile is not a shared phase: rank 0 gathers the
+    // vocabulary-wide logits, the targets, the logprobs and rank 1's staging, while rank 1 runs
+    // only its head half, so the general capacity is taken per rank and never from rank 0's max.
+    std::size_t peer_causal_score = 0;
     std::size_t general_capacity = 0;
     std::optional<VisionWorkspacePlan> vision;
     std::size_t capacity = 0;
-    // Rank 1's share of the two sizes above at tensor-parallel width 2.  A plan that does not
-    // split per rank leaves them 0, meaning "rank 1 uses rank 0's value", so tp 1 and every
-    // unsplit plan keep one arena for both ranks.  The Vision tower is held whole by one rank and
-    // encodes there, so only that rank's arena carries its encode workspace and the receiving rank
-    // is sized by its own text phases: ProgramImpl allocates each rank's arena from its share.
+    // Rank 1's share of the two sizes above at tensor-parallel width 2.  The tensor-parallel plan
+    // sets them for every phase; a plan that does not split leaves them 0, meaning "rank 1 uses
+    // rank 0's value", so tp 1 keeps one arena for both ranks.  Two phases differ per rank: the
+    // Vision tower, held whole by the rank that encodes, and the causal score tile, whose gather
+    // is rank 0's alone.  ProgramImpl allocates each rank's arena from its own share, and
+    // bound_rank_sequence_bytes prices one KV page count against the larger rank total.
     std::size_t peer_general_capacity = 0;
     std::size_t peer_capacity         = 0;
 };

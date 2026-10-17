@@ -165,7 +165,9 @@ partial. The interleave used to be two `cudaMemcpy2DAsync` copies. `07f76beb` re
 kernel because a captured 2D memcpy node cannot be updated in place when its column count or buffers
 change between CUDA Graph profiles of one class (§5). The same gather serves prefill, ordinary
 decode, verification, the MTP proposals, the zero-suffix head and the score tiles of causal
-scoring (`ProgramImpl::project_score_tile_split`); rank 1 keeps no logits.
+scoring (`ProgramImpl::project_score_tile_split`); rank 1 keeps no logits, and the arena is
+sized per rank to match (`WorkspacePlan::peer_causal_score`, `peer_general_capacity`,
+`peer_capacity`): rank 1's arena carries its own head half, not rank 0's gather.
 `ops::allgather_rows` ([`allreduce.h`](../../include/ninfer/ops/allreduce.h)) is used only by tests.
 
 **After the gather.** In an ordinary round ([`decode.cpp`](../../src/models/qwen3_5/program/decode.cpp))

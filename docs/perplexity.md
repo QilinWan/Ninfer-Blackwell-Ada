@@ -63,8 +63,12 @@ copy on each GPU, with identical scores ([serving guide](serving.md#two-gpus)); 
 As for every `--tp 2` run, the Main KV types are `bf16`, `int8` and `nvfp4`, so the default
 `fp8` is rejected at startup. The split projections sum their halves in a different order and round each
 partial to BF16, so a tp 2 perplexity is close to a single-GPU one of the same artifact but not
-bit-identical: compare tp 2 runs with tp 2 runs. The score tile's workspace is about twice the
-single-GPU one, roughly 1 GiB on each GPU for a 248,320-token vocabulary.
+bit-identical: compare tp 2 runs with tp 2 runs. A score tile's workspace is not symmetric: rank 0
+gathers the vocabulary-wide logits, the targets, the logprobs and rank 1's staging (about 970 MiB
+for a 248,320-token vocabulary at the 1,024-column tile: 485 MiB of logits plus two 242 MiB head
+halves), while rank 1 runs its own head half and scratch (about 240 MiB). Each rank's arena carries
+its own share and the Engine's runtime reservation is the larger of the two totals, so the binding
+rank at scoring is rank 0 (measured in the two-GPU window).
 
 ## Metric
 

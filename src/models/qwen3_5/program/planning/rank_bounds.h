@@ -12,4 +12,17 @@ namespace ninfer::models::qwen3_5::detail {
                                                     std::size_t rank1_persistent_bytes,
                                                     std::size_t rank1_arena_bytes);
 
+// The per-rank general workspace: the phases both ranks run contribute the same maximum, while a
+// phase only one rank runs contributes to that rank alone.  Returning both shares is what keeps
+// rank 1 from being sized by rank 0's gather (the causal score tile) and from carrying the Vision
+// encode workspace it never touches.
+struct RankGeneralCapacity {
+    std::size_t rank0 = 0;
+    std::size_t rank1 = 0;
+};
+
+[[nodiscard]] RankGeneralCapacity split_general_capacity(std::size_t shared_capacity,
+                                                          std::size_t rank0_only_capacity,
+                                                          std::size_t rank1_only_capacity) noexcept;
+
 } // namespace ninfer::models::qwen3_5::detail

@@ -508,7 +508,17 @@ void test_rank_reservation_bounds() {
     // raise the reservation, so the KV pool is never sized against a rank that needs more.
     expect(bound_rank_sequence_bytes(4000U, 1000U, 3000U, 900000U) == 903000U,
            "a rank 1 with the larger arena did not become the binding reservation");
+
+    // The per-rank general workspace: a phase only rank 0 runs must not size rank 1's arena,
+    // and equal phase sets keep the two shares equal (the plan states rank 1 explicitly).
+    const auto scoring = ninfer::models::qwen3_5::detail::split_general_capacity(900U, 998U, 242U);
+    expect(scoring.rank0 == 998U && scoring.rank1 == 900U,
+           "rank 1's arena was sized by rank 0's score-tile gather");
+    const auto plain = ninfer::models::qwen3_5::detail::split_general_capacity(900U, 0U, 0U);
+    expect(plain.rank0 == 900U && plain.rank1 == 900U,
+           "a plan with no rank-only phase did not give both ranks the same share");
 }
+
 
 int main() {
     test_execution_timing_domains();

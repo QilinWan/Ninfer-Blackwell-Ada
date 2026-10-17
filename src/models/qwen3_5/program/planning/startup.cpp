@@ -719,7 +719,13 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         WorkspaceLayoutBuilder rank1;
         (void)workspace::tp_logits(rank1, rows1, head.weight.n, tile, false);
         reserve_scratch(rank1, head_scratch);
-        out.causal_score = std::max(finish(rank0), finish(rank1));
+        const std::size_t score0 = finish(rank0);
+        const std::size_t score1 = finish(rank1);
+        // The field states that the phase exists at all (ProgramImpl gates causal scoring on it
+        // being nonzero, for both ranks); rank 1's own total goes to peer_causal_score, so its
+        // arena is never sized by the gather that only rank 0 runs.
+        out.causal_score      = std::max(score0, score1);
+        out.peer_causal_score = score1;
     } else if (plan.speculative_backend == SpeculativeBackend::None) {
         for (std::int32_t batch = 1; batch <= static_cast<std::int32_t>(plan.max_concurrency);
              ++batch) {
@@ -782,10 +788,16 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                                          dflash_proposal_workspace(plan, verify, batch)});
         }
     }
-    out.general_capacity = std::max({out.text_prefill, out.ordinary_round, out.mtp_prefill,
-                                     out.mtp_round, out.dflash_context, out.dflash_round,
-                                     out.causal_score});
-    out.capacity = out.general_capacity;
+    // Phases both ranks run are shared; the causal score tile is not.  Take each rank's maximum
+    // over its own phase set, and state rank 1's share explicitly even where it equals rank 0's.
+    const std::size_t shared = std::max({out.text_prefill, out.ordinary_round, out.mtp_prefill,
+                                         out.mtp_round, out.dflash_context, out.dflash_round});
+    const auto shares            = split_general_capacity(shared, out.causal_score,
+                                          out.peer_causal_score);
+    out.general_capacity         = shares.rank0;
+    out.peer_general_capacity    = shares.rank1;
+    out.capacity              = out.general_capacity;
+    out.peer_capacity         = out.peer_general_capacity;
     if (plan.features.vision) {
         // One capacity per rank.  The tower is held whole by one rank and encodes there, and the
         // session that encodes is rank 0's (transactions/binding.cpp builds VisionPrefillSession
@@ -798,9 +810,8 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
         out.vision = execution::VisionContext::plan_workspace(
             *parameters.model.config().vision, *parameters.vision, merged,
             out.general_capacity);
-        out.capacity              = std::max(out.general_capacity, out.vision->capacity_bytes);
-        out.peer_general_capacity = out.general_capacity;
-        out.peer_capacity         = out.general_capacity;
+        out.capacity      = std::max(out.general_capacity, out.vision->capacity_bytes);
+        out.peer_capacity = out.peer_general_capacity;
     }
     return out;
 }
@@ -1278,6 +1289,13 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         // Rejects the MoE FFN and extents the width does not divide.
         (void)execution::shard_text_config(parameters.model.config().text, options.tp);
     }
+}
+
+RankGeneralCapacity split_general_capacity(std::size_t shared_capacity,
+                                           std::size_t rank0_only_capacity,
+                                           std::size_t rank1_only_capacity) noexcept {
+    return {std::max(shared_capacity, rank0_only_capacity),
+            std::max(shared_capacity, rank1_only_capacity)};
 }
 
 std::size_t bound_rank_sequence_bytes(std::size_t rank0_persistent_bytes,
