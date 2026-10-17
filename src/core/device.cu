@@ -98,6 +98,17 @@ ExecutionContext::ExecutionContext(const std::vector<int>& device_ids) {
                 std::to_string(p0.minor) + ", device " + std::to_string(dev[1]->device) +
                 " is sm_" + std::to_string(p1.major) + std::to_string(p1.minor) + ")");
         }
+        if (p0.multiProcessorCount != p1.multiProcessorCount) {
+            throw std::runtime_error(
+                "ExecutionContext requires both tensor-parallel devices to share their SM count: "
+                "the plan prices shard TMA tiles, split-K partial capacity and the causal head "
+                "geometry from one rank's multiprocessor count (planning/startup.cpp), so a pair "
+                "with different SM counts quotes a route the other rank does not run (device " +
+                std::to_string(dev[0]->device) + " has " +
+                std::to_string(p0.multiProcessorCount) + " SMs, device " +
+                std::to_string(dev[1]->device) + " has " +
+                std::to_string(p1.multiProcessorCount) + ")");
+        }
     }
     // POSTCONDITION: rank 0 is the current device. Constructing the contexts in order leaves the
     // LAST one current, so at tp == 2 an ExecutionContext would hand its caller a thread bound to
