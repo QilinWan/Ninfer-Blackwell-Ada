@@ -676,13 +676,15 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
                                             plan.features.vision ? chunk : 0);
         (void)workspace::tp_call_roots(layout, config, chunk);
         (void)layout.alloc(DType::I32, {1});
-        target_body(layout, 1, chunk, TextPhase::Prefill, false, 1, 1, chunk);
-        reserve_matrix(layout, DType::BF16, hidden, 1);
         if (plan.features.vision) {
             // Rank 1's copy of the active Vision item's rows for this chunk (sized for the chunk,
-            // the most a chunk can carry).
+            // the most a chunk can carry).  It lives through the layer pass, so it must be
+            // reserved before `target_body`: after it, the block no longer raises the phase peak
+            // the arena is sized from, and a multimodal DFlash prefill then ran out of workspace.
             reserve_matrix(layout, DType::BF16, hidden, chunk);
         }
+        target_body(layout, 1, chunk, TextPhase::Prefill, false, 1, 1, chunk);
+        reserve_matrix(layout, DType::BF16, hidden, 1);
         split_logits(layout, 1);
         reserve_scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, 1, 1));
     };
