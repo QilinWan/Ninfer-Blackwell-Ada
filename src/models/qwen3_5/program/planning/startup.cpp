@@ -669,12 +669,20 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
     // The text prefill chunk up to its sampled token; the MTP prompt alignment continues from it.
     const auto text_prefill = [&](WorkspaceLayoutBuilder& layout) {
         // A text chunk continuing a multimodal prefix carries a one-axis RoPE offset; rank 1
-        // holds its own copy of the delta.
-        (void)workspace::text_prefill_roots(layout, config, chunk, 1, 0);
+        // holds its own copy of the delta. A multimodal chunk carries the prompt's three M-RoPE
+        // axes and its visual rows, which rank 1 receives in one pitched copy into its own arena.
+        (void)workspace::text_prefill_roots(layout, config, chunk,
+                                            plan.features.vision ? 3 : 1,
+                                            plan.features.vision ? chunk : 0);
         (void)workspace::tp_call_roots(layout, config, chunk);
         (void)layout.alloc(DType::I32, {1});
         target_body(layout, 1, chunk, TextPhase::Prefill, false, 1, 1, chunk);
         reserve_matrix(layout, DType::BF16, hidden, 1);
+        if (plan.features.vision) {
+            // Rank 1's copy of the active Vision item's rows for this chunk (sized for the chunk,
+            // the most a chunk can carry).
+            reserve_matrix(layout, DType::BF16, hidden, chunk);
+        }
         split_logits(layout, 1);
         reserve_scratch(layout, ops::sampling_workspace_capacity_bytes(public_tokens, 1, 1));
     };
@@ -744,6 +752,12 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             WorkspaceLayoutBuilder layout;
             text_prefill(layout);
             reserve_matrix(layout, DType::I32, 1, chunk);
+            if (plan.features.vision) {
+                // Rank 0's composed MTP input embedding (the shifted ids plus the item's shifted
+                // visual rows) and the generic scatter indices that compose it.
+                reserve_matrix(layout, DType::BF16, hidden, chunk);
+                (void)workspace::visual_scatter_indices(layout, chunk);
+            }
             {
                 auto final_chunk = layout.scope();
                 mtp_prefill_chunk(layout, chunk, true);
@@ -1247,10 +1261,10 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                                         "DFlash2 text generation and causal scoring (no DFlash)");
         }
         // The Vision encode session belongs to rank 0: transactions/binding.cpp builds it with
-        // rank 0's device, Parameters and arena, and rank 1 has no merged-embedding handoff to
-        // receive what it encodes (execution/text.cpp rejects a multimodal prefill at tp 2). The
-        // tower's weights go SingleDevice to vision_rank (load/sharding.cpp), so a tower placed on
-        // rank 1 leaves rank 0 without the Vision Parameters it encodes with.
+        // rank 0's device, Parameters and arena, and rank 1 receives the encoded rows through the
+        // prefill handoff (execution/text.cpp: prefill_impl_tp2). The tower's weights go
+        // SingleDevice to vision_rank (load/sharding.cpp), so a tower placed on rank 1 leaves
+        // rank 0 without the Vision Parameters it encodes with.
         if (options.enable_vision && parameters.model.options().vision_rank != 0) {
             throw std::invalid_argument(
                 "tensor-parallel Vision encodes on rank 0: --vision-device must name the first "

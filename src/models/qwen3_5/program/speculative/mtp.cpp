@@ -132,7 +132,7 @@ void prepare_next_round(const MtpRoundView& view, std::int32_t max_context, cuda
 void mtp_bridge_and_propose_tp2(PrefillContext& state, const Tensor& next_token,
                                 const Tensor& previous_hidden, const Tensor& peer_previous_hidden,
                                 std::int32_t position, std::span<const std::int32_t> rope_position,
-                                bool build_proposal) {
+                                bool build_proposal, const Tensor* next_embedding) {
     const TpExecution& tp = *state.execution.tp;
     if (!tp.mtp_complete() || !tp.mtp_kv.valid()) {
         throw std::logic_error("tensor-parallel MTP bridge requires rank 1's MTP storage");
@@ -171,9 +171,11 @@ void mtp_bridge_and_propose_tp2(PrefillContext& state, const Tensor& next_token,
     Tensor draft0             = frame.draft_tokens.slice(0, 0, 1);
     const auto bridge_visible = static_cast<std::uint32_t>(position + 1);
     const ops::CausalAttentionExecutionEnvelope bridge_envelope{bridge_visible, bridge_visible};
+    // A composed (visual) embedding belongs to rank 0's packed-input half alone: rank 1 contracts
+    // the hidden, so only rank 0 substitutes the embedding it was handed.
     card.mtp_forward_batch(next_token, hidden, positions, rope_positions, bridge_envelope,
                            mtp_hidden, build_proposal ? 0 : -1, build_proposal ? &logits : nullptr,
-                           build_proposal ? &draft0 : nullptr);
+                           build_proposal ? &draft0 : nullptr, next_embedding);
     if (!build_proposal) { return; }
 
     if (state.mtp_proposal_extent == 0 ||
@@ -225,13 +227,10 @@ void mtp_bridge_and_propose(PrefillContext& state, const Tensor& next_token,
         throw std::logic_error("MTP bridge needs rank 1's retained hidden exactly at tp 2");
     }
     if (state.execution.tp != nullptr) {
-        // Multimodal prefill, the only source of composed embeddings, is single-device.
-        if (next_embedding != nullptr) {
-            throw std::invalid_argument(
-                "the MTP bridge takes no composed embedding at tensor-parallel width 2");
-        }
+        // The composed embedding is rank 0's alone (multimodal prefill encodes on rank 0); rank 1
+        // never embeds, so the bridge needs no handoff for it.
         mtp_bridge_and_propose_tp2(state, next_token, previous_hidden, *peer_previous_hidden,
-                                   position, rope_position, build_proposal);
+                                   position, rope_position, build_proposal, next_embedding);
         return;
     }
     state.execution.work.reset();

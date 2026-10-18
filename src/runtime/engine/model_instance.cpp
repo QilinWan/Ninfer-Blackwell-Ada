@@ -81,8 +81,9 @@ void validate_options(const EngineOptions& options) {
         }
         // Vision at tp 2: the tower is held whole by one rank and encodes there, on rank 0.  Its
         // encode workspace is charged to that rank's arena alone (the plan splits the arena per
-        // rank), and a prompt that carries media is rejected on the two-device schedule
-        // (execution/text.cpp: multimodal prefill), so `--vision-device` names rank 0.
+        // rank); a prompt that carries media runs the split schedule, with rank 0's encoded rows
+        // handed to rank 1 before both ranks scatter them (execution/text.cpp:
+        // prefill_impl_tp2), so `--vision-device` names rank 0.
         if (options.enable_vision && models::load_options(options).vision_rank != 0) {
             throw std::invalid_argument(
                 "Engine tp 2 encodes Vision on rank 0: --vision-device must name the first "

@@ -59,6 +59,7 @@ other references own narrower contracts:
 | [Token embedding in host memory](maintainer/embedding-host.md) | `--embedding-host`: the HostMapped placement, its mapped pinned allocation, CUDA Graph rules, cost and reporting |
 | [Two-GPU tensor parallelism](maintainer/tensor-parallel.md) | `--tp 2` weight sharding, rank roles, all-reduce transports, two-device CUDA Graphs, mirrored state, tests and limits |
 | [Merging upstream](maintainer/upstream-merge.md) | where the two-GPU layer lives, the hooks it keeps in upstream's files, typical conflicts, the mandatory gate, adding a GPU or a model |
+| [S11 multimodal at two GPUs](maintainer/s11-notes.md) | the rank-0 encode and rank-1 handoff mechanism, its measurements and its limits |
 | [TP2 strip drill notes](maintainer/tp2-notes.md) | the layer's faces in this fork, the peel drill and its traps, the placeholder register to measure on 36 SM, the deferred layout batch |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |

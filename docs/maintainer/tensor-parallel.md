@@ -536,14 +536,25 @@ pools, so `SequencePlanImpl::device_reservation_bytes` is the larger of the two 
 encoding rank pays for the tower alone, so the board with more free memory goes first in
 `--devices`.
 
-The merged embeddings a chunk encodes are scattered into rank 0's residual on rank 0's schedule.
-The receiver's side of that exchange, an event-synchronized copy of the `[H, V]` block into the
-other rank's own buffer, is not in this tree: `TextContext::prefill_chunk` with a Vision session
-calls `require_single_device("multimodal prefill")`, so a prompt carrying media fails loudly on the
-two-device path instead of reading a block the other rank cannot see. That mechanism, with the
-`WorkspacePlan::vision_receiver` form the upstream notes describe, is part of the tp 2 layout batch
-this tree defers (ledger P1); the suite registered for it
-(`tests/models/qwen3_5/test_engine_vision_tp2_real.cpp`) skips on one device.
+The merged embeddings a chunk encodes are handed to the other rank, not shared: rank 0's
+`VisionPrefillSession` encodes the active item into the handoff region of its own arena
+(`VisionWorkspacePlan::handoff_offset_bytes`, above the general capacity), and
+`TextContext::prefill_impl_tp2` then copies the chunk's `[H, V_chunk]` columns into rank 1's own
+arenas with one `cudaMemcpy2DAsync` over UVA, ordered by a `PeerEvents::inputs_ready(0)` event.
+The copy is a plain device-to-device transfer, so it needs no peer access (it is the same form the
+vocabulary-split head uses for its one pull). Both ranks then scatter the same rows into their own
+replicated residual at the chunk's M-RoPE positions, which both ranks read from the prepared
+prompt; the item's rows are never re-encoded on rank 1, whose Parameters do not hold the tower.
+The prefill plan reserves the receiver's `[hidden, chunk]` block and a scatter-index vector per
+rank, and the MTP prompt alignment reserves rank 0's composed `[hidden, chunk]` embedding, which
+carries the shifted visual rows; the split MTP stem then substitutes that embedding for rank 0's
+token embedding, while rank 1 still contracts the final hidden. A chunk is capped at the active
+item's end, so `--prefill-chunk` never splits an item across two encodes.
+
+The same mechanism answers the MTP bridge's composed embedding: that embedding is rank 0's packed
+input half alone, so `mtp_bridge_and_propose_tp2` passes it to rank 0 and rank 1 keeps reading the
+retained hidden; a bridge whose frontier position is an image token still requires one-axis text
+RoPE, so resuming a prefix that ends *inside* an item remains a single-device case.
 
 ## 9. tp 1 identity
 

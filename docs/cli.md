@@ -402,9 +402,11 @@ mirror). `--spec dflash`, the MoE architecture and the `fp8`, `k8v4` and `rk4v4-
 are rejected at startup, as is a nonzero `--host-context-mib`. `--vision` loads at
 `--tp 2` with the tower whole on the GPU that encodes it: `--vision-device` must name the first
 `--devices` id (default `A`), and that GPU carries the tower's weights and its encode workspace
-alone, the other rank keeping the capacity its own text phases need. Text-only prompts generate on
-that pair; a prompt carrying an image or video is rejected there until the two-device schedule gets
-its merged-embedding handoff.
+alone, the other rank keeping the capacity its own text phases need. A prompt carrying an image or
+video runs the split schedule: rank 0 encodes the active item, copies that chunk's rows to rank 1,
+and both ranks scatter them into their own residual, so image and video prompts generate on the
+pair exactly as text does (the three-axis M-RoPE positions come from the prepared prompt on both
+ranks).
 `ninfer-perplexity` takes the same `--tp 2 --devices A,B` ([Perplexity](perplexity.md#two-gpus)).
 The split attention and Gated DeltaNet projections take FP8 or NVFP4 weights and the split MLP
 FP8 or NVFP4, so both the official mixed artifact (FP8 attention and GDN, NVFP4 MLP) and an

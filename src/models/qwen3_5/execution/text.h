@@ -72,8 +72,10 @@ class VisionPrefillSession;
 // text prefill chunk (with its MTP prompt alignment or DFlash feature capture), ordinary decode,
 // speculative target verification (with or without DFlash feature capture), the MTP decode-round
 // forwards and proposals, the MTP bridge and their logits run split through the rank-array
-// overloads below; the single-rank MTP and verification entries and multimodal prefill are
-// rejected with std::invalid_argument. The constructor rejects the MoE FFN, paired
+// overloads below; the single-rank MTP and verification entries are rejected with
+// std::invalid_argument. A multimodal prefill runs split too: rank 0 encodes the active item and
+// hands its rows to rank 1 (one pitched copy), so both ranks scatter the same merged embeddings.
+// The constructor rejects the MoE FFN, paired
 // input projections, KV caches the head-local attention does not support (only BF16 and INT8-G64)
 // and incomplete MTP bindings.
 class TextContext {
@@ -222,7 +224,7 @@ public:
                            const RankTensors& positions, const RankTensors& rope_positions,
                            ops::CausalAttentionExecutionEnvelope envelope,
                            const RankTensors& mtp_hidden, int logits_column, Tensor* logits,
-                           Tensor* draft_token);
+                           Tensor* draft_token, const Tensor* input_embeddings = nullptr);
     // One prompt proposal step through each rank's prefill MTP KV row; rank 0 alone gathers the
     // proposal logits.
     void mtp_forward_ar_step(const Tensor& token, const RankTensors& previous_hidden,
@@ -299,7 +301,8 @@ private:
     // down projection) leave the replicated residual identical on the two ranks, as in the text
     // layers. The attention runs over each rank's half of the heads and its own MTP KV pages.
     void mtp_forward_stem_tp2(const Tensor& ids, const RankTensors& hidden, RankTensors& x,
-                              RankTensors& ah, const RankTensors& staging);
+                              RankTensors& ah, const RankTensors& staging,
+                              const Tensor* input_embeddings);
     void mtp_forward_tail_tp2(RankTensors& x, const RankTensors& ah, const RankTensors& positions,
                               const RankTensors& rope_positions,
                               ops::CausalAttentionExecutionEnvelope envelope,
@@ -307,12 +310,12 @@ private:
     void mtp_forward_core_tp2(const Tensor& ids, const RankTensors& hidden,
                               const RankTensors& positions, const RankTensors& rope_positions,
                               ops::CausalAttentionExecutionEnvelope envelope,
-                              const RankTensors& mtp_hidden);
+                              const RankTensors& mtp_hidden, const Tensor* input_embeddings);
     void mtp_prefill_chunk_tp2(const Tensor& ids, const RankTensors& hidden,
                                const RankTensors& positions, const RankTensors& rope_positions,
                                ops::CausalAttentionExecutionEnvelope envelope, bool final_chunk,
-                               const RankTensors* final_hidden, Tensor* logits,
-                               Tensor* draft_token);
+                               const RankTensors* final_hidden, Tensor* logits, Tensor* draft_token,
+                               const Tensor* input_embeddings = nullptr);
     // The optimized proposal head proposes on rank 0 alone when PrimaryOnly, or on both ranks when
     // split by vocabulary (execution::proposal_argmax_split, rank 0 combining the two argmaxes);
     // the full head is the vocabulary-split output head, gathered before rank 0's argmax.
@@ -372,10 +375,13 @@ private:
     [[nodiscard]] PrefillChunkResult
     prefill_impl(std::span<const int> ids, const TextPrefill* text_prefill,
                  const MultimodalPrefill* multimodal, Tap& tap, bool finalize_at_end);
-    // Text-only tp2 prefill of one chunk. A DFlash feature tap reads rank 0's replicated residual.
+    // tp2 prefill of one chunk, text or multimodal. Vision encodes on rank 0 and hands the
+    // item's chunk rows to rank 1, which scatters the same rows into its own residual. Only a
+    // text chunk may carry a DFlash feature tap (it reads rank 0's replicated residual).
     template <class Tap>
     [[nodiscard]] PrefillChunkResult prefill_impl_tp2(std::span<const int> ids,
-                                                      const TextPrefill& text_prefill, Tap& tap,
+                                                      const TextPrefill* text_prefill,
+                                                      const MultimodalPrefill* multimodal, Tap& tap,
                                                       bool finalize_at_end);
     DeviceContext& ctx_;
     const Parameters& parameters_;

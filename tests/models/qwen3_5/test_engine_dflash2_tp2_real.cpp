@@ -266,6 +266,10 @@ int main() {
         failures += exercise_prefix_reuse(engine);
         if (failures != 0) { return 1; }
     } catch (const std::exception& error) {
+        if (std::string(error.what()).find("missing component dflash2") != std::string::npos) {
+            std::cout << "skip: the artifact has no DFlash2 component\n";
+            return 77;
+        }
         std::cerr << "tp 2 DFlash2 Engine failed: " << error.what() << '\n';
         return 1;
     }

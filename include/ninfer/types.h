@@ -196,10 +196,9 @@ struct EngineOptions {
     std::uint32_t media_preprocess_threads = 0;
     bool enable_vision                     = false;
     // CUDA device that holds the Vision tower and runs its encoder; empty selects `device`. It
-    // must be one of `devices` and requires `enable_vision`. This tree rejects `--tp 2` together
-    // with Vision: the rank split that lets one rank encode while the other receives each item's
-    // merged embeddings is not implemented here (see the ledger's Vision-at-tp 2 task), so the
-    // selector only moves the tower between devices of a single-rank Engine.
+    // must be one of `devices` and requires `enable_vision`. With `tp == 2` the tower must live on
+    // rank 0 (the first `devices` entry): rank 0 encodes each item and hands the chunk's rows to
+    // rank 1, so a prompt carrying media runs the split schedule.
     std::optional<int> vision_device;
     // Merged-token ceiling of one image or video item, in [kMinimumMaxVisionTokens,
     // kMaximumMaxVisionTokens]; empty keeps the maximum. Larger images and videos are resized to
