@@ -49,7 +49,7 @@ Hardware: 2x RTX 5060 Ti 16 GB (sm_120a, no P2P), CUDA 13.2, artifact
 | tp 2 ctest set (`ctest -R tp2`, this run) | n/a | 8 passed, 0 failed, 2 skipped (DFlash2 not in artifact) of 10 |
 
 Commands and logs: `notes/W1-repro.md`, `W3-regression.md`, `W5-handoff.md`, `W7-multi.md`,
-`W9-mtp-vision.md`, `W11-suites.md` (workspace `/data/s11/notes`).
+`W9-mtp-vision.md`, `W11-suites.md` (archived under `research/s11/notes`).
 
 ## Pre-existing gaps this task did not change
 
