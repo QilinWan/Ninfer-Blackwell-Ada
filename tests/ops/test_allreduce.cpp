@@ -805,10 +805,12 @@ int run_split_lane_case(const ExecutionContext& ec, const ops::PeerEvents& event
     buffer_1.copy_from_host(b_bits.data(), bytes);
     retire_staging(ec);
     ops::allreduce_sum_begin(half_buffer, half_staging, ec, events, 0);
-    const std::array<Tensor, 2> half2_buffer{half_buffer[0].slice(1, cols / 2, cols / 2),
-                                             half_buffer[1].slice(1, cols / 2, cols / 2)};
-    const std::array<Tensor, 2> half2_staging{half_staging[0].slice(1, cols / 2, cols / 2),
-                                              half_staging[1].slice(1, cols / 2, cols / 2)};
+    // The second half is a column window of the SAME [hidden, cols] operands the production
+    // overlap passes (the first half is the leading window, already contiguous at offset 0).
+    const std::array<Tensor, 2> half2_buffer{buffer[0].slice(1, cols / 2, cols / 2),
+                                             buffer[1].slice(1, cols / 2, cols / 2)};
+    const std::array<Tensor, 2> half2_staging{staging[0].slice(1, cols / 2, cols / 2),
+                                              staging[1].slice(1, cols / 2, cols / 2)};
     ops::allreduce_sum_begin(half2_buffer, half2_staging, ec, events, 1);
     ops::allreduce_sum_finish(ec, events, 0);
     ops::allreduce_sum_finish(ec, events, 1);
