@@ -70,6 +70,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "core/pdl.cuh" // pdl::wait_for_dependencies (PDL launch of the exchange)
+
 namespace ninfer::ops::detail {
 
 // Probes of __nanosleep(100) polling before the poller gives up and reports. One probe costs about
@@ -307,6 +309,11 @@ struct PeerPipelinedTuning {
     unsigned long long* stamps = nullptr; // kTimed only: kPeerStampCount words per warp
     // Weight ranges the blocks after the exchange's own prefetch into L2 (L2 PREFETCH above).
     PeerL2Prefetch prefetch{};
+    // PDL: this launch carries cudaLaunchAttributeProgrammaticStreamSerialization, so a CTA may
+    // start before the producer (the kernel that wrote `partial`) has retired; every CTA retires
+    // its grid dependency (wait_for_dependencies) at entry, before reading exchange state.
+    // Off (false) the launch is a plain <<<>>> and the wait is skipped.
+    bool pdl_wait = false;
 };
 
 // kTimed stamps, per warp (lane 0): globaltimer at entry, clock64 at entry, after the publish
@@ -339,6 +346,12 @@ __global__ __launch_bounds__(256) void peer_exchange_pipelined_kernel(
     const PeerVecBf16* peer_payload, std::uint32_t* peer_flags, std::uint32_t* epochs,
     std::uint32_t* hang, int vecs, PeerPipelinedTuning tuning) {
     using SystemWord = cuda::atomic_ref<std::uint32_t, cuda::thread_scope_system>;
+
+    // PDL: the immediate producer (the kernel that wrote `partial`) may not have retired yet;
+    // retire the grid dependency before any exchange-state read. Older writes (the previous
+    // exchange's epochs, flags) already completed before that producer started. No-op when the
+    // launch carried no programmatic dependency.
+    if (tuning.pdl_wait) { pdl::wait_for_dependencies(); }
 
     if (tuning.prefetch.ranges > 0 && static_cast<int>(blockIdx.x) >= tuning.prefetch.first_block) {
         peer_prefetch_l2(tuning.prefetch); // block-uniform: a prefetching block exchanges nothing

@@ -24,15 +24,31 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace ninfer::ops {
 
 namespace {
 
 constexpr std::size_t kSlotAlignment = 256;
+
+// PDL on the pipelined exchange launch (default on, NINFER_TP_PDL_EXCHANGE=0 falls back to a plain
+// launch): the exchange's CTAs may start before the producer (the kernel that wrote the partial)
+// has retired and retire the grid dependency at entry before any exchange-state read. The
+// attribute is captured into decode graphs like every other launch attribute, and the wait is a
+// no-op without a pending dependency, so the epoch/flag protocol and the result bits are
+// unchanged. The Legacy kernel keeps its plain launch (it is the A/B fallback).
+bool pdl_exchange_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NINFER_TP_PDL_EXCHANGE");
+        return value == nullptr || std::string_view(value) != "0";
+    }();
+    return enabled;
+}
 
 std::size_t aligned(std::size_t bytes) {
     return (bytes + kSlotAlignment - 1) & ~(kSlotAlignment - 1);
@@ -245,11 +261,24 @@ void PeerMailbox::enqueue_exchange_sum(int rank, int slot, void* data, std::size
         tuning.prefetch.first_block = exchange_blocks;
         const int prefetch_blocks   = detail::peer_prefetch_blocks(tuning.prefetch, kThreads);
         last_prefetch_[static_cast<std::size_t>(rank)] = prefetch_blocks;
-        detail::peer_exchange_pipelined_kernel<kVecsPerLane>
-            <<<exchange_blocks + prefetch_blocks, kThreads, 0, stream>>>(
+        const int grid                                 = exchange_blocks + prefetch_blocks;
+        if (pdl_exchange_enabled()) {
+            // Programmatic dependent of the producer kernel in this stream (see pdl.cuh): the
+            // kernel's CTAs retire the dependency at entry before any exchange-state read, so
+            // the bits are the plain launch's; the attribute is captured into graphs unchanged.
+            tuning.pdl_wait = true;
+            const pdl::LaunchConfig launch{dim3(grid), dim3(kThreads), 0, stream};
+            CUDA_CHECK(pdl::launch_dependent(
+                launch, detail::peer_exchange_pipelined_kernel<kVecsPerLane>, partial, mine_payload,
+                flags_[rank] + flag_slot, peer_payload, flags_[1 - rank] + flag_slot,
+                words + lane_base, hang_, static_cast<int>(vecs), tuning));
+        } else {
+            tuning.pdl_wait = false;
+            detail::peer_exchange_pipelined_kernel<kVecsPerLane><<<grid, kThreads, 0, stream>>>(
                 partial, mine_payload, flags_[rank] + flag_slot, peer_payload,
                 flags_[1 - rank] + flag_slot, words + lane_base, hang_, static_cast<int>(vecs),
                 tuning);
+        }
     }
     CUDA_CHECK(cudaGetLastError());
 }
