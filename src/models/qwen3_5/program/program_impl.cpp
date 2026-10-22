@@ -214,11 +214,14 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                     // L2 prefetch budget of one captured decode exchange (P5.2): how many bytes
                     // of the weight the following GEMM streams the exchange's own blocks pull
                     // into L2 while it waits on PCIe. NINFER_TP_EXCHANGE_PREFETCH_KIB overrides
-                    // the conservative default (128 KiB, pending board-level measurement); 0
-                    // disables the hints. NINFER_TP_PREFETCH=0 disables them from the forward.
+                    // the default; 0 disables the hints. NINFER_TP_PREFETCH=0 disables them from
+                    // the forward. The default is the 2x RTX 5060 Ti measurement (2026-10-23):
+                    // 128 KiB/512 KiB/2 MiB/8 MiB/16 MiB/32 MiB/64 MiB gave 105.0/105.5/106.3/
+                    // 106.9/107.3/107.6/107.6 tok/s on the 34k agent prompt, so 32 MiB is the
+                    // measured plateau (+2.5%); the 105k prompt gains +2.3%.
                     const char* prefetch_env = std::getenv("NINFER_TP_EXCHANGE_PREFETCH_KIB");
                     const std::size_t prefetch_kib =
-                        prefetch_env != nullptr ? std::strtoul(prefetch_env, nullptr, 10) : 128;
+                        prefetch_env != nullptr ? std::strtoul(prefetch_env, nullptr, 10) : 32768;
                     peer_mailbox->set_l2_prefetch_budget(prefetch_kib * 1024);
                     tp_transport_status.exchange_kernel = ops::peer_exchange_kernel_name(kernel);
                     probe_peer_mailbox();
