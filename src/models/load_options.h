@@ -70,12 +70,13 @@ struct LoadOptions {
 }
 
 [[nodiscard]] inline LoadOptions load_options(const EngineOptions& options) noexcept {
-    return {.purpose       = options.purpose,
-            .vision        = options.enable_vision,
-            .speculative   = options.speculative.backend,
-            .proposal_head = options.speculative.proposal_head,
-            .tp            = options.tp,
-            .vision_rank   = vision_rank(options)};
+    return {.purpose        = options.purpose,
+            .vision         = options.enable_vision,
+            .speculative    = options.speculative.backend,
+            .proposal_head  = options.speculative.proposal_head,
+            .tp             = options.tp,
+            .vision_rank    = vision_rank(options),
+            .embedding_host = options.embedding_host};
 }
 
 } // namespace ninfer::models
