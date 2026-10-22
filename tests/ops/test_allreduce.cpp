@@ -619,6 +619,117 @@ int run_transport_identity_case(const char* label, std::int32_t ne0, std::int32_
     return failures;
 }
 
+// L2 PREFETCH (P5.1). A capture-path hint on the first of three exchanges must not change a
+// single result bit (the oracle is the same pure sum the hinted-less transports satisfy), must be
+// CONSUME-ONCE (the next exchange of the same capture launches no prefetch block), must treat an
+// explicit empty hint as a no-op, and must leave the prefetched device memory bit-for-bit intact
+// (the prefetching blocks only issue read prefetches: no epoch, flag, payload or partial).
+// kRangeBytes x 4 ranges are 64 prefetch chunks each (256 total); at 64 threads per block the
+// launcher expects ceil(256 / 64) = 4 blocks after the exchange's own.
+int run_prefetch_case(const ExecutionContext& ec, const ops::PeerEvents& events,
+                      ops::PeerMailbox& mailbox) {
+    constexpr std::int32_t ne0            = 5120;
+    constexpr int kReplays                = 3;
+    constexpr std::size_t kRangeBytes     = 256u * 1024;
+    constexpr int kExpectedPrefetchBlocks = 4;
+    const std::size_t count               = static_cast<std::size_t>(ne0);
+    const std::size_t bytes               = count * sizeof(std::uint16_t);
+
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(bytes), staging_0(bytes);
+    staging_0.fill(0);
+    GuardedDeviceBuffer weights_0(4 * kRangeBytes);
+    weights_0.fill(0xab);
+    set_device(ec, 1);
+    GuardedDeviceBuffer buffer_1(bytes), staging_1(bytes);
+    staging_1.fill(0);
+    GuardedDeviceBuffer weights_1(4 * kRangeBytes);
+    weights_1.fill(0xcd);
+
+    const std::array<Tensor, 2> buffer{Tensor(buffer_0.data(), DType::BF16, {ne0}),
+                                       Tensor(buffer_1.data(), DType::BF16, {ne0})};
+    const std::array<Tensor, 2> staging{Tensor(staging_0.data(), DType::BF16, {ne0}),
+                                        Tensor(staging_1.data(), DType::BF16, {ne0})};
+
+    const auto make_hint = [](GuardedDeviceBuffer& weights) {
+        std::vector<ops::PeerL2Range> hint;
+        for (int range = 0; range < 4; ++range) {
+            hint.push_back({static_cast<std::uint8_t*>(weights.data()) +
+                                static_cast<std::size_t>(range) * kRangeBytes,
+                            kRangeBytes});
+        }
+        return hint;
+    };
+    const auto hint_0 = make_hint(weights_0);
+    const auto hint_1 = make_hint(weights_1);
+
+    // The capture body reads the launcher's last grid back to the host while capturing (plain
+    // ints, no CUDA calls): site 1 carries the hint, site 2 none (consume-once), site 3 an empty
+    // span (no-op). All three sites run on one mailbox and must agree bit for bit.
+    std::array<int, 3> observed{{-1, -1, -1}};
+    const DecodeGraphPeerBridge bridge(ec.dev[0]->device, ec.dev[1]->device);
+    DecodeGraphDefinition definition;
+    capture_two_devices(ec, bridge, definition, [&] {
+        mailbox.set_l2_prefetch(0, {hint_0.data(), hint_0.size()});
+        mailbox.set_l2_prefetch(1, {hint_1.data(), hint_1.size()});
+        ops::allreduce_sum(buffer, staging, ec, events);
+        observed[0] = mailbox.last_prefetch_blocks(0);
+        ops::allreduce_sum(buffer, staging, ec, events);
+        observed[1] = mailbox.last_prefetch_blocks(0);
+        mailbox.set_l2_prefetch(0, {});
+        ops::allreduce_sum(buffer, staging, ec, events);
+        observed[2] = mailbox.last_prefetch_blocks(0);
+    });
+    int failures = 0;
+    for (int site = 0; site < 3; ++site) {
+        if (site == 0 ? observed[site] != kExpectedPrefetchBlocks : observed[site] != 0) {
+            std::cerr << "prefetch: site " << site + 1 << " launched " << observed[site]
+                      << " prefetch blocks, expected " << (site == 0 ? kExpectedPrefetchBlocks : 0)
+                      << "\n";
+            ++failures;
+        }
+    }
+    DecodeGraphExecutable executable;
+    executable.instantiate(definition);
+    const double scale = 4.0; // two doublings of the first site's sum
+    for (int replay = 0; replay < kReplays; ++replay) {
+        const std::uint32_t seed = 501u + 2u * static_cast<std::uint32_t>(replay);
+        std::vector<float> a(count), b(count);
+        fill_uniform(a, seed, -8.0f, 8.0f);
+        fill_uniform(b, seed + 1, -8.0f, 8.0f);
+        round_to_bf16(a);
+        round_to_bf16(b);
+        const auto sum = allreduce_sum_oracle(a, b);
+        std::vector<double> expected(count);
+        for (std::size_t i = 0; i < count; ++i) { expected[i] = scale * sum[i]; }
+        const auto a_bits = encode_bf16(a);
+        const auto b_bits = encode_bf16(b);
+        set_device(ec, 0);
+        buffer_0.copy_from_host(a_bits.data(), bytes);
+        set_device(ec, 1);
+        buffer_1.copy_from_host(b_bits.data(), bytes);
+        retire_staging(ec);
+        launch_two_devices(ec, executable);
+        const std::string label = "prefetch replay " + std::to_string(replay);
+        set_device(ec, 0);
+        const auto bits_0 = from_device<std::uint16_t>(buffer_0.data(), count);
+        failures += verify_pointwise((label + " device 0").c_str(),
+                                     from_device_bf16(buffer_0.data(), count), expected,
+                                     allreduce_sum_bf16_criterion());
+        set_device(ec, 1);
+        failures += verify_exact((label + " device 1 equals device 0").c_str(),
+                                 from_device<std::uint16_t>(buffer_1.data(), count), bits_0);
+        // The prefetched memory is read-only input: untouched.
+        failures += weights_0.verify_guards((label + " weights device 0").c_str());
+        failures += weights_1.verify_guards((label + " weights device 1").c_str());
+    }
+    if (mailbox.hang_reported()) {
+        std::cerr << "prefetch: a mailbox exchange reported a hang\n";
+        ++failures;
+    }
+    return failures;
+}
+
 // A peer that never arrives: only rank 0 enqueues its half. The poller must give up, report the
 // hang and return before a display watchdog (about 2 s on Windows WDDM) would reset the device.
 int run_mailbox_hang_case(const ExecutionContext& ec, ops::PeerExchangeKernel kernel) {
@@ -735,6 +846,9 @@ int main() {
                                             legacy_events, mailbox_events);
     failures += run_transport_identity_case("identity [8,1]", 8, 1, 407u, ec, events,
                                             legacy_events, mailbox_events);
+
+    // L2 prefetch hints on the capture path: bit identity, consume-once, empty-hint no-op.
+    failures += run_prefetch_case(ec, mailbox_events, mailbox);
 
     failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Pipelined);
     failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Legacy);

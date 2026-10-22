@@ -179,6 +179,26 @@ int PeerMailbox::take_capture_slot() noexcept {
     return slot;
 }
 
+void PeerMailbox::set_l2_prefetch(int rank, std::span<const PeerL2Range> ranges) {
+    if (rank < 0 || rank > 1) { throw std::invalid_argument("PeerMailbox: rank out of range"); }
+    // Host-side only (no allocation, no device traffic): the hint is a one-shot argument of the
+    // next launch, so it is safe on the capture path, where it is set before the exchange's
+    // enqueue. Each range is shrunk to whole 16-byte units (the prefetch's vector contract) and
+    // empty ones dropped; at most kL2PrefetchRanges are kept.
+    L2Hint& hint = l2_hint_[static_cast<std::size_t>(rank)];
+    hint.count   = 0;
+    for (const PeerL2Range& range : ranges) {
+        if (hint.count >= kL2PrefetchRanges) { break; }
+        const std::size_t bytes = (range.bytes / 16) * 16;
+        if (range.data == nullptr || bytes == 0) { continue; }
+        hint.ranges[static_cast<std::size_t>(hint.count++)] = PeerL2Range{range.data, bytes};
+    }
+}
+
+int PeerMailbox::last_prefetch_blocks(int rank) const noexcept {
+    return rank >= 0 && rank < 2 ? last_prefetch_[static_cast<std::size_t>(rank)] : 0;
+}
+
 void PeerMailbox::enqueue_exchange_sum(int rank, int slot, void* data, std::size_t bytes,
                                        cudaStream_t stream) const {
     if (rank < 0 || rank > 1 || slot < 0 || slot >= slots_) {
@@ -198,7 +218,20 @@ void PeerMailbox::enqueue_exchange_sum(int rank, int slot, void* data, std::size
     auto* mine_payload          = reinterpret_cast<detail::PeerVecBf16*>(payload_[rank] + offset);
     const auto* peer_payload =
         reinterpret_cast<const detail::PeerVecBf16*>(payload_[1 - rank] + offset);
+    // Consume this rank's pending L2 hint (set_l2_prefetch): the next launch prefetches it, and a
+    // hint never leaks into a later exchange. The Legacy kernel ignores it (and consumes it).
+    detail::PeerL2Prefetch prefetch{};
+    {
+        L2Hint& hint    = l2_hint_[static_cast<std::size_t>(rank)];
+        prefetch.ranges = hint.count;
+        for (int i = 0; i < hint.count; ++i) {
+            prefetch.data[i]  = hint.ranges[i].data;
+            prefetch.bytes[i] = static_cast<std::uint32_t>(hint.ranges[i].bytes);
+        }
+        hint.count = 0;
+    }
     if (kernel_ == PeerExchangeKernel::Legacy) {
+        last_prefetch_[static_cast<std::size_t>(rank)] = 0;
         detail::peer_exchange_sum_kernel<<<detail::peer_exchange_blocks(bytes), 256, 0, stream>>>(
             partial, mine_payload, flags_[rank] + flag_slot, peer_payload,
             flags_[1 - rank] + flag_slot, words + slots_ + slot, words + slot, hang_,
@@ -206,11 +239,17 @@ void PeerMailbox::enqueue_exchange_sum(int rank, int slot, void* data, std::size
     } else {
         constexpr int kVecsPerLane = detail::kPeerPipelinedVecsPerLane;
         constexpr int kThreads     = detail::kPeerPipelinedThreads;
+        detail::PeerPipelinedTuning tuning;
+        tuning.prefetch             = prefetch;
+        const int exchange_blocks   = detail::peer_pipelined_blocks(vecs, kVecsPerLane, kThreads);
+        tuning.prefetch.first_block = exchange_blocks;
+        const int prefetch_blocks   = detail::peer_prefetch_blocks(tuning.prefetch, kThreads);
+        last_prefetch_[static_cast<std::size_t>(rank)] = prefetch_blocks;
         detail::peer_exchange_pipelined_kernel<kVecsPerLane>
-            <<<detail::peer_pipelined_blocks(vecs, kVecsPerLane, kThreads), kThreads, 0, stream>>>(
+            <<<exchange_blocks + prefetch_blocks, kThreads, 0, stream>>>(
                 partial, mine_payload, flags_[rank] + flag_slot, peer_payload,
                 flags_[1 - rank] + flag_slot, words + lane_base, hang_, static_cast<int>(vecs),
-                detail::PeerPipelinedTuning{});
+                tuning);
     }
     CUDA_CHECK(cudaGetLastError());
 }

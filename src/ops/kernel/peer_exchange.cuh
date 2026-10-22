@@ -250,12 +250,63 @@ inline constexpr std::uint32_t kPeerPollSleepNs = 100u;
 inline constexpr int kPeerPipelinedVecsPerLane = 2;
 inline constexpr int kPeerPipelinedThreads     = 64;
 
+// L2 PREFETCH. A decode exchange keeps the DRAM of its device idle for its whole PCIe round trip
+// (both ranks arrived, ~5 us; 140 exchanges per 27B decode round), and the kernel that follows it
+// (after an RMSNorm) is a weight-streaming GEMM whose weights depend on nothing the exchange
+// produces. The owner may therefore name up to kPeerPrefetchRanges byte ranges of those weights
+// (PeerMailbox::set_l2_prefetch); the exchange launch then carries extra blocks after its own,
+// which do nothing but issue bulk L2 prefetches of the ranges (cp.async.bulk.prefetch.L2, one
+// kPeerPrefetchChunk per thread and pass) and exit. They touch no exchange state: no epoch, flag,
+// payload or partial, so the protocol, its lockstep and its arithmetic are unchanged and the
+// prefetch cannot change a result bit -- only which weight lines the next GEMM finds in L2.
+inline constexpr int kPeerPrefetchRanges          = 4;
+inline constexpr std::uint32_t kPeerPrefetchChunk = 4096u;
+inline constexpr int kPeerPrefetchMaxBlocks       = 32;
+
+struct PeerL2Prefetch {
+    const void* data[kPeerPrefetchRanges]    = {};
+    std::uint32_t bytes[kPeerPrefetchRanges] = {}; // multiples of 16, data 16-byte aligned
+    int ranges                               = 0;
+    int first_block = 0; // blocks [first_block, gridDim.x) prefetch; the exchange's come first
+};
+
+// The prefetching blocks' whole body: worker w issues chunks w, w + workers, ... of every range.
+__device__ __forceinline__ void peer_prefetch_l2(const PeerL2Prefetch& prefetch) {
+    const auto first   = static_cast<std::uint64_t>(prefetch.first_block);
+    const auto worker  = (blockIdx.x - first) * blockDim.x + threadIdx.x;
+    const auto workers = (gridDim.x - first) * blockDim.x;
+    for (int r = 0; r < prefetch.ranges; ++r) {
+        const auto* base = static_cast<const std::uint8_t*>(prefetch.data[r]);
+        for (std::uint64_t offset = worker * kPeerPrefetchChunk; offset < prefetch.bytes[r];
+             offset += workers * kPeerPrefetchChunk) {
+            const auto bytes = static_cast<std::uint32_t>(
+                min(static_cast<std::uint64_t>(kPeerPrefetchChunk), prefetch.bytes[r] - offset));
+            asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::"l"(base + offset),
+                         "r"(bytes)
+                         : "memory");
+        }
+    }
+}
+
+// Blocks of `threads` that prefetch `prefetch`'s ranges: one chunk per thread, at most
+// kPeerPrefetchMaxBlocks (each thread then loops). 0 without ranges.
+inline int peer_prefetch_blocks(const PeerL2Prefetch& prefetch, int threads) {
+    std::uint64_t chunks = 0;
+    for (int r = 0; r < prefetch.ranges; ++r) {
+        chunks += (prefetch.bytes[r] + kPeerPrefetchChunk - 1) / kPeerPrefetchChunk;
+    }
+    const std::uint64_t blocks = (chunks + threads - 1) / threads;
+    return static_cast<int>(blocks < kPeerPrefetchMaxBlocks ? blocks : kPeerPrefetchMaxBlocks);
+}
+
 // Launch knobs of one pipelined exchange. Production passes the defaults; the standalone probe
 // varies them and, with kTimed, collects every warp's phase timestamps.
 struct PeerPipelinedTuning {
     std::uint32_t spin_limit   = kPeerSpinLimit;
     std::uint32_t sleep_ns     = kPeerPollSleepNs;
     unsigned long long* stamps = nullptr; // kTimed only: kPeerStampCount words per warp
+    // Weight ranges the blocks after the exchange's own prefetch into L2 (L2 PREFETCH above).
+    PeerL2Prefetch prefetch{};
 };
 
 // kTimed stamps, per warp (lane 0): globaltimer at entry, clock64 at entry, after the publish
@@ -289,6 +340,10 @@ __global__ __launch_bounds__(256) void peer_exchange_pipelined_kernel(
     std::uint32_t* hang, int vecs, PeerPipelinedTuning tuning) {
     using SystemWord = cuda::atomic_ref<std::uint32_t, cuda::thread_scope_system>;
 
+    if (tuning.prefetch.ranges > 0 && static_cast<int>(blockIdx.x) >= tuning.prefetch.first_block) {
+        peer_prefetch_l2(tuning.prefetch); // block-uniform: a prefetching block exchanges nothing
+        return;
+    }
     const int lane = static_cast<int>(threadIdx.x & 31u);
     const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
     const int base = warp * (32 * G) + lane;

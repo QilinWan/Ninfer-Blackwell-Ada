@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace ninfer::ops {
 
@@ -49,6 +50,14 @@ enum class PeerExchangeKernel {
 
 // "pipelined" or "legacy", for logs.
 [[nodiscard]] const char* peer_exchange_kernel_name(PeerExchangeKernel kernel) noexcept;
+
+// One byte range of device memory for an exchange to prefetch into L2 (PeerMailbox::
+// set_l2_prefetch). `data` must be 16-byte aligned; `bytes` is shrunk to whole 16-byte units
+// (empty ranges are dropped).
+struct PeerL2Range {
+    const void* data  = nullptr;
+    std::size_t bytes = 0;
+};
 
 class PeerMailbox {
 public:
@@ -87,6 +96,27 @@ public:
     void enqueue_exchange_sum(int rank, int slot, void* data, std::size_t bytes,
                               cudaStream_t stream) const;
 
+    // L2 PREFETCH. The next pipelined exchange enqueued for `rank` also prefetches `ranges` --
+    // rank `rank`'s device memory, at most kL2PrefetchRanges of them, e.g. the leading rows of the
+    // weight the kernel after the exchange streams -- into that device's L2 from blocks of its
+    // own, while the exchange waits on the peer. The ranges are consumed by that one launch (a
+    // later exchange prefetches nothing unless set again); each is shrunk to whole 16-byte units
+    // and empty ones dropped. A hint never changes a result bit. A Legacy mailbox ignores hints
+    // (it still consumes them). Host-side only: no allocation or memcpy, so it is safe on the
+    // capture path, where it must be issued before the exchange's enqueue_exchange_sum().
+    static constexpr int kL2PrefetchRanges = 4;
+    void set_l2_prefetch(int rank, std::span<const PeerL2Range> ranges);
+
+    // Bytes per exchange the owner's hints should cover (0: the owner sets none). The Program
+    // sets it once; the mailbox only stores it for the forward code to read.
+    void set_l2_prefetch_budget(std::size_t bytes) noexcept { l2_prefetch_budget_ = bytes; }
+
+    [[nodiscard]] std::size_t l2_prefetch_budget() const noexcept { return l2_prefetch_budget_; }
+
+    // Test aid: the number of L2-prefetch blocks the most recent enqueue for `rank` launched
+    // (0 without a pending hint, or on a Legacy mailbox).
+    [[nodiscard]] int last_prefetch_blocks(int rank) const noexcept;
+
     // True once an exchange's poller gave up waiting for its peer. Sticky: the two ranks' results
     // diverged, so the owner must not trust any later round.
     [[nodiscard]] bool hang_reported() const noexcept;
@@ -108,6 +138,17 @@ private:
     PeerExchangeKernel kernel_      = PeerExchangeKernel::Pipelined;
     int next_slot_                  = 0;
     int devices_[2]                 = {0, 0};
+    std::size_t l2_prefetch_budget_ = 0;
+
+    // Per rank: the hint the next enqueue consumes. Mutable: enqueueing is const (it changes no
+    // transport state), the hint is a one-shot argument of that launch.
+    struct L2Hint {
+        PeerL2Range ranges[kL2PrefetchRanges];
+        int count = 0;
+    };
+
+    mutable L2Hint l2_hint_[2]    = {};
+    mutable int last_prefetch_[2] = {0, 0};
 };
 
 } // namespace ninfer::ops
