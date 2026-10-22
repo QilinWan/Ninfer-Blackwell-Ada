@@ -347,7 +347,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                                        verify_ids, target_positions, rank1->stream);
             }
         }
-        {
+        if (phase == SpeculativePhase::Forward) {
             nvtx::ScopedRange target_range(nvtx::Name::DecodeMtpTarget, nvtx::Category::Mtp,
                                            static_cast<std::uint64_t>(width) * batch_size);
             if (peer) {
@@ -361,12 +361,7 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
                                       verify_view(round, state.execution.replay_records),
                                       envelopes.target_verify);
             }
-            // The Forward graph ends after the target verification; acceptance, the next draft and
-            // the host egress copy belong to the Finish graph. This guard has to stand here: the
-            // tensor-parallel merge left it as an unguarded return after the block, so the Finish
-            // phase returned before target_accept and drafted nothing (observed as zero licensed
-            // counts in every round).
-            if (phase == SpeculativePhase::Forward) { return; }
+            return;
         }
         if (peer) {
             const auto verify_view_rank0 = verify_view(round, state.execution.replay_records);
