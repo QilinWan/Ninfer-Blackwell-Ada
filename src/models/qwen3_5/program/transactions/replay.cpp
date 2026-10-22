@@ -277,10 +277,13 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                 }
                 rope[axis] = static_cast<std::int32_t>(position);
             }
-            const execution::MtpBridgeInput bridge{.previous_hidden = &sequence.tail_hidden,
-                                                   .position =
-                                                       static_cast<std::int32_t>(cursor - 1U),
-                                                   .rope_position = rope};
+            const Tensor peer_previous_hidden =
+                peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
+            const execution::MtpBridgeInput bridge{
+                .previous_hidden      = &sequence.tail_hidden,
+                .peer_previous_hidden = peer_retains_hidden() ? &peer_previous_hidden : nullptr,
+                .position             = static_cast<std::int32_t>(cursor - 1U),
+                .rope_position        = rope};
             if (multimodal) {
                 execution::mtp_bridge_multimodal(context, request.replay->prompt,
                                                  *request.replay->vision, bridge);
@@ -290,8 +293,6 @@ ReplayProgress ProgramImpl::advance_replay(SequenceHandle handle,
                                            sizeof(TokenId), cudaMemcpyHostToDevice, device.stream));
                 // Tensor-parallel width 2: rank 1 bridges from its own retained copy of the
                 // previous target hidden (the same StateImage slot of its mirror pool).
-                const Tensor peer_previous_hidden =
-                    peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
                 execution::mtp_bridge_and_propose(
                     context, token, sequence.tail_hidden,
                     peer_retains_hidden() ? &peer_previous_hidden : nullptr, bridge.position, rope,

@@ -181,8 +181,9 @@ void mtp_bridge_multimodal(PrefillContext& state, const PreparedPromptData& prom
         composed_embedding = &visual_embedding;
     }
 
-    mtp_bridge_and_propose(state, bridge_token, *bridge.previous_hidden, nullptr, bridge.position,
-                           bridge.rope_position, false, composed_embedding);
+    mtp_bridge_and_propose(state, bridge_token, *bridge.previous_hidden,
+                           bridge.peer_previous_hidden, bridge.position, bridge.rope_position,
+                           false, composed_embedding);
 }
 
 void sample_from_hidden(PrefillContext& state, const Tensor& hidden, std::int32_t absolute_position,
@@ -628,9 +629,10 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             const Tensor peer_previous_hidden =
                 peer_retains_hidden() ? peer_tail_hidden(sequence) : Tensor{};
             const execution::MtpBridgeInput bridge{
-                .previous_hidden = &previous_hidden,
-                .position        = checked_i32(staged.base - 1, "MTP bridge position"),
-                .rope_position   = prompt_rope_position(staged.prompt, staged.base - 1),
+                .previous_hidden      = &previous_hidden,
+                .peer_previous_hidden = peer_retains_hidden() ? &peer_previous_hidden : nullptr,
+                .position             = checked_i32(staged.base - 1, "MTP bridge position"),
+                .rope_position        = prompt_rope_position(staged.prompt, staged.base - 1),
             };
             if (staged.vision) {
                 execution::mtp_bridge_multimodal(schedule_state, staged.prompt, *staged.vision,

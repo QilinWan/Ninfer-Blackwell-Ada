@@ -327,8 +327,41 @@ int exercise_speculative(const char* artifact, Mode mode) {
         ++failures;
     }
 
-    // The same backend with a media prompt: the spec round consumes the split MTP head over the
-    // composed prompt embedding, which only rank 0 forms.
+    // Third turn: append a media message to the reused text conversation. The first new token is
+    // a vision token, so the MTP bridge must carry rank 1's retained hidden (the multimodal
+    // bridge); a missing peer hidden used to fail the request with "MTP bridge needs rank 1's
+    // retained hidden exactly at tp 2".
+    ninfer::PromptInput image_followup = conversation();
+    ninfer::ChatMessage first_answer;
+    first_answer.role = ninfer::ChatRole::Assistant;
+    first_answer.parts.push_back(text_part(first.content));
+    image_followup.messages.push_back(std::move(first_answer));
+    ninfer::ChatMessage second_question;
+    second_question.role = ninfer::ChatRole::User;
+    second_question.parts.push_back(text_part("Write that number again, digits only."));
+    image_followup.messages.push_back(std::move(second_question));
+    ninfer::ChatMessage second_answer;
+    second_answer.role = ninfer::ChatRole::Assistant;
+    second_answer.parts.push_back(text_part(second.content));
+    image_followup.messages.push_back(std::move(second_answer));
+    ninfer::ChatMessage image_question;
+    image_question.role = ninfer::ChatRole::User;
+    image_question.parts.push_back(media_part(image_probes().front().image, "followup.ppm"));
+    image_question.parts.push_back(text_part("What color is this image? Answer with one word."));
+    image_followup.messages.push_back(std::move(image_question));
+    const ninfer::GenerationResult image_followup_result =
+        engine.generate(engine.prepare(std::move(image_followup)), greedy(kAnswerTokens, true));
+    std::cout << label << " image follow-up: \"" << image_followup_result.content << "\", reused "
+              << image_followup_result.reused_prompt_tokens << " prompt tokens\n";
+    failures += check_answer(image_followup_result, "red", label + " image follow-up");
+    if (image_followup_result.reused_prompt_tokens == 0 ||
+        image_followup_result.prefix_reuse_path == ninfer::PrefixReusePath::Root) {
+        std::cerr << label << " image follow-up reused no prompt tokens\n";
+        ++failures;
+    }
+
+    // The same backend with a fresh media prompt: the spec round consumes the split MTP head over
+    // the composed prompt embedding, which only rank 0 forms.
     const ninfer::GenerationResult image =
         engine.generate(engine.prepare(image_prompt(image_probes().front().image, "mtp.ppm")),
                         greedy(kAnswerTokens));

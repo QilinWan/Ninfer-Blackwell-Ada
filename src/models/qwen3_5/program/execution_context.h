@@ -184,8 +184,12 @@ prefill_multimodal_chunk(PrefillContext& state, const PreparedPromptData& prompt
                          std::optional<std::uint32_t> split_frontier, bool finalize_at_end);
 
 struct MtpBridgeInput {
-    const Tensor* previous_hidden = nullptr;
-    std::int32_t position         = 0;
+    const Tensor* previous_hidden      = nullptr;
+    // Rank 1's retained copy of the same hidden (tensor-parallel MTP only). The multimodal
+    // bridge needs it for rank 1's half of the split MTP head even though the composed visual
+    // embedding itself is rank 0's alone.
+    const Tensor* peer_previous_hidden = nullptr;
+    std::int32_t position              = 0;
     std::array<std::int32_t, 3> rope_position{};
 };
 
