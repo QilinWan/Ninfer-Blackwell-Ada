@@ -285,13 +285,26 @@ private:
     [[nodiscard]] const MtpParameters& rank_mtp(int rank) const;
     [[nodiscard]] const GdnReplayRecords& rank_replay_records(int rank) const;
     void validate_tensor_parallel_mtp();
+    // `exchange_lane` (default -1: the closing row-parallel all-reduce runs in place as
+    // allreduce_sum(); 0/1: it is begun on that eager split lane of the stream pair's SplitLanes
+    // and completed later by prefill_layers_overlap_tp2, the tp2 prefill two-half schedule).
     void attn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index,
-                      const RankTensors& staging);
+                      const RankTensors& staging, int exchange_lane = -1);
     void gdn_mix_tp2(const RankBlocks& weights, RankTensors& x, int index, Phase phase,
-                     const RankTensors& staging);
-    void mlp_tail_tp2(const RankBlocks& weights, RankTensors& x, const RankTensors& staging);
+                     const RankTensors& staging, int exchange_lane = -1);
+    void mlp_tail_tp2(const RankBlocks& weights, RankTensors& x, const RankTensors& staging,
+                      int exchange_lane = -1);
     template <class Tap>
     void run_layers_tp2(RankTensors& x, Phase phase, const RankTensors& staging, Tap& tap);
+    // The tp2 prefill two-half overlap (NINFER_TP_PREFILL_OVERLAP, default on): the chunk of
+    // `base`.. columns runs as two column halves, block by block, the closing all-reduce of every
+    // block begun on the half's split lane and finished before the half's next block, so one
+    // half's exchange moves while the other half computes. Same ops, operands and bits as the
+    // one-call schedule (every tile boundary is kept; see prefill_overlap_split in text.cpp).
+    template <class Tap>
+    void prefill_layers_overlap_tp2(RankTensors& x, const RankTensors& staging,
+                                    const RankTensors& positions, const RankTensors& rope_positions,
+                                    int base, int split, Tap& tap);
     // Rank 1's calls on peer_feature_sink_, beside the rank 0 tap's (no-ops without a peer sink).
     void peer_tap_begin(const Tensor& x1);
     void peer_tap_capture_layer(int layer, const Tensor& x1);

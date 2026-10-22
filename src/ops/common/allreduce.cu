@@ -199,7 +199,7 @@ PeerEvents::~PeerEvents() {
 
 PeerEvents::PeerEvents(PeerEvents&& other) noexcept
     : inputs_ready_(other.inputs_ready_), pull_done_(other.pull_done_), mailbox_(other.mailbox_),
-      staged_scopes_(other.staged_scopes_) {
+      staged_scopes_(other.staged_scopes_), split_lanes_(std::move(other.split_lanes_)) {
     other.inputs_ready_  = {nullptr, nullptr};
     other.pull_done_     = {nullptr, nullptr};
     other.mailbox_       = nullptr;
@@ -213,6 +213,7 @@ PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
     pull_done_.swap(other.pull_done_);
     std::swap(mailbox_, other.mailbox_);
     std::swap(staged_scopes_, other.staged_scopes_);
+    split_lanes_.swap(other.split_lanes_);
     return *this;
 }
 
@@ -230,6 +231,219 @@ PeerMailbox* detail::captured_mailbox_for(std::size_t bytes, const ExecutionCont
         if (status != cudaStreamCaptureStatusActive) { return nullptr; }
     }
     return capture[0] == capture[1] ? mailbox : nullptr;
+}
+
+namespace {
+// Chunk of a lane's transfer: the peer's host-to-device copy of chunk c overlaps the
+// device-to-host copy of chunk c+1 (the two directions run on the two boards' links).
+constexpr std::size_t kLaneChunkBytes = std::size_t{2} << 20;
+} // namespace
+
+SplitLanes::SplitLanes(const ExecutionContext& ec) {
+    require_two_devices(ec, "SplitLanes: requires an ExecutionContext with two distinct devices");
+    const CurrentDeviceGuard guard;
+    for (int rank = 0; rank < 2; ++rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        devices_[r]  = ec.dev[rank]->device;
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        CUDA_CHECK(cudaStreamCreateWithFlags(&send_[r], cudaStreamNonBlocking));
+        CUDA_CHECK(cudaStreamCreateWithFlags(&receive_[r], cudaStreamNonBlocking));
+        for (Lane& lane : lanes_) {
+            CUDA_CHECK(cudaEventCreateWithFlags(&lane.begun[r], cudaEventDisableTiming));
+            CUDA_CHECK(cudaEventCreateWithFlags(&lane.received[r], cudaEventDisableTiming));
+        }
+    }
+}
+
+SplitLanes::~SplitLanes() {
+    int previous = 0;
+    if (cudaGetDevice(&previous) != cudaSuccess) { previous = -1; }
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        if (devices_[rank] < 0 || cudaSetDevice(devices_[rank]) != cudaSuccess) { continue; }
+        for (cudaStream_t stream : {send_[rank], receive_[rank]}) {
+            if (stream != nullptr) {
+                (void)cudaStreamSynchronize(stream);
+                (void)cudaStreamDestroy(stream);
+            }
+        }
+        for (Lane& lane : lanes_) {
+            for (cudaEvent_t event : {lane.begun[rank], lane.received[rank]}) {
+                if (event != nullptr) { (void)cudaEventDestroy(event); }
+            }
+            for (cudaEvent_t event : lane.chunk_done[rank]) {
+                if (event != nullptr) { (void)cudaEventDestroy(event); }
+            }
+        }
+    }
+    // The peers' host-to-device reads ran on the ranks' own streams: drain both devices before
+    // the buffers go.
+    for (std::size_t rank = 0; rank < 2; ++rank) {
+        if (devices_[rank] >= 0 && cudaSetDevice(devices_[rank]) == cudaSuccess) {
+            (void)cudaDeviceSynchronize();
+        }
+    }
+    for (Lane& lane : lanes_) {
+        for (std::byte* host : lane.host) {
+            if (host != nullptr) { (void)cudaFreeHost(host); }
+        }
+    }
+    if (previous >= 0) { (void)cudaSetDevice(previous); }
+}
+
+bool SplitLanes::serves(const ExecutionContext& ec) const noexcept {
+    return ec.tp == 2 && ec.dev[0].has_value() && ec.dev[1].has_value() &&
+           ec.dev[0]->device == devices_[0] && ec.dev[1]->device == devices_[1];
+}
+
+void SplitLanes::reserve(Lane& lane, std::size_t bytes, std::size_t chunks,
+                         const ExecutionContext& ec) {
+    if (bytes > lane.capacity) {
+        // An earlier call of this lane may still read or write the old buffers: drain both.
+        for (int rank = 0; rank < 2; ++rank) {
+            CurrentDeviceGuard::set(ec.dev[rank]->device);
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
+        for (std::byte*& host : lane.host) {
+            if (host != nullptr) {
+                CUDA_CHECK(cudaFreeHost(host));
+                host = nullptr;
+            }
+        }
+        lane.capacity = 0;
+        for (std::byte*& host : lane.host) {
+            void* p = nullptr;
+            CUDA_CHECK(cudaHostAlloc(&p, bytes, cudaHostAllocPortable));
+            host = static_cast<std::byte*>(p);
+        }
+        lane.capacity = bytes;
+    }
+    for (int rank = 0; rank < 2; ++rank) {
+        auto& events = lane.chunk_done[static_cast<std::size_t>(rank)];
+        if (events.size() >= chunks) { continue; }
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        while (events.size() < chunks) {
+            cudaEvent_t event = nullptr;
+            CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+            events.push_back(event);
+        }
+    }
+}
+
+void SplitLanes::sum_begin(int lane_index, const std::array<Tensor, 2>& buffer,
+                           const std::array<Tensor, 2>& staging, const ExecutionContext& ec) {
+    require(serves(ec), "SplitLanes: serves another device pair");
+    require(lane_index >= 0 && lane_index < kCount, "SplitLanes: sum lane out of range");
+    Lane& lane = lanes_[static_cast<std::size_t>(lane_index)];
+    require(!lane.active, "SplitLanes: sum_begin on an open lane");
+    const std::size_t bytes = buffer[0].bytes();
+    require(bytes > 0 && buffer[1].bytes() == bytes && staging[0].bytes() == bytes &&
+                staging[1].bytes() == bytes,
+            "SplitLanes: sum operands must share one size");
+    const CurrentDeviceGuard guard;
+    const std::size_t chunks = (bytes + kLaneChunkBytes - 1) / kLaneChunkBytes;
+    reserve(lane, bytes, chunks, ec);
+    // Both operands are complete here on the ranks' streams; staging[r] and the lane's host
+    // buffers are free, since the lane's previous sum_finish (earlier on the same streams)
+    // waited for every copy of its call.
+    for (int rank = 0; rank < 2; ++rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        CUDA_CHECK(cudaEventRecord(lane.begun[r], ec.dev[rank]->stream));
+        CUDA_CHECK(cudaStreamWaitEvent(send_[r], lane.begun[r], 0));
+        CUDA_CHECK(cudaStreamWaitEvent(receive_[r], lane.begun[r], 0));
+    }
+    // Leg 1, both ranks: operand -> the lane's host buffer, one event per chunk.
+    for (int rank = 0; rank < 2; ++rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        const auto* source = static_cast<const std::byte*>(buffer[r].data);
+        for (std::size_t c = 0; c < chunks; ++c) {
+            const std::size_t offset = c * kLaneChunkBytes;
+            const std::size_t n      = std::min(kLaneChunkBytes, bytes - offset);
+            CUDA_CHECK(cudaMemcpyAsync(lane.host[r] + offset, source + offset, n,
+                                       cudaMemcpyDeviceToHost, send_[r]));
+            CUDA_CHECK(cudaEventRecord(lane.chunk_done[r][c], send_[r]));
+        }
+    }
+    // Leg 2, both ranks: the peer's host buffer -> own staging on the receive stream, chunk by
+    // chunk behind the peer's events; the lane's completion is recorded right after its last
+    // copy, so a later lane's copies on the same stream do not delay this lane's finish.
+    for (int rank = 0; rank < 2; ++rank) {
+        const auto r    = static_cast<std::size_t>(rank);
+        const auto peer = static_cast<std::size_t>(1 - rank);
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        auto* destination = static_cast<std::byte*>(staging[r].data);
+        for (std::size_t c = 0; c < chunks; ++c) {
+            const std::size_t offset = c * kLaneChunkBytes;
+            const std::size_t n      = std::min(kLaneChunkBytes, bytes - offset);
+            CUDA_CHECK(cudaStreamWaitEvent(receive_[r], lane.chunk_done[peer][c], 0));
+            CUDA_CHECK(cudaMemcpyAsync(destination + offset, lane.host[peer] + offset, n,
+                                       cudaMemcpyHostToDevice, receive_[r]));
+        }
+        CUDA_CHECK(cudaEventRecord(lane.received[r], receive_[r]));
+    }
+    lane.buffer  = buffer;
+    lane.staging = staging;
+    lane.active  = true;
+}
+
+void SplitLanes::sum_finish(int lane_index, const ExecutionContext& ec) {
+    require(serves(ec), "SplitLanes: serves another device pair");
+    require(lane_index >= 0 && lane_index < kCount, "SplitLanes: sum lane out of range");
+    Lane& lane = lanes_[static_cast<std::size_t>(lane_index)];
+    require(lane.active, "SplitLanes: sum_finish without sum_begin");
+    const CurrentDeviceGuard guard;
+    for (int rank = 0; rank < 2; ++rank) {
+        const auto r = static_cast<std::size_t>(rank);
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        const cudaStream_t stream = ec.dev[rank]->stream;
+        // Inbound data complete, and the peer has read rank r's host buffer (its receive copies
+        // follow rank r's device-to-host reads of buffer[r]): buffer[r] may be overwritten and
+        // every buffer of the lane reused.
+        CUDA_CHECK(cudaStreamWaitEvent(stream, lane.received[r], 0));
+        CUDA_CHECK(cudaStreamWaitEvent(stream, lane.received[1 - r], 0));
+        Tensor accumulator = lane.buffer[r];
+        detail::residual_add_launch(lane.staging[r], accumulator, stream);
+    }
+    lane.buffer  = {};
+    lane.staging = {};
+    lane.active  = false;
+}
+
+bool allreduce_sum_split_available(const ExecutionContext& ec, const PeerEvents& events) {
+    if (ec.tp != 2 || !ec.dev[0].has_value() || !ec.dev[1].has_value() || !events.live()) {
+        return false;
+    }
+    const CurrentDeviceGuard guard;
+    for (int rank = 0; rank < 2; ++rank) {
+        CurrentDeviceGuard::set(ec.dev[rank]->device);
+        cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(ec.dev[rank]->stream, &status));
+        if (status != cudaStreamCaptureStatusActive) { continue; }
+        return false;
+    }
+    return true;
+}
+
+void allreduce_sum_begin(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
+                         const ExecutionContext& ec, const PeerEvents& events, int lane) {
+    detail::require_allreduce_sum_arguments(buffer, staging, ec, events);
+    if (lane < 0 || lane >= SplitLanes::kCount) {
+        throw std::invalid_argument("allreduce_sum_begin: sum lane out of range");
+    }
+    if (!allreduce_sum_split_available(ec, events)) {
+        throw std::invalid_argument(
+            "allreduce_sum_begin: needs an eager pair (both ranks' streams not capturing)");
+    }
+    events.ensure_split_lanes(ec).sum_begin(lane, buffer, staging, ec);
+}
+
+void allreduce_sum_finish(const ExecutionContext& ec, const PeerEvents& events, int lane) {
+    SplitLanes* lanes = events.split_lanes();
+    if (lanes == nullptr || !lanes->sum_open(lane)) {
+        throw std::invalid_argument("allreduce_sum_finish: the lane has no open call");
+    }
+    lanes->sum_finish(lane, ec);
 }
 
 void detail::require_allreduce_sum_arguments(const std::array<Tensor, 2>& buffer,

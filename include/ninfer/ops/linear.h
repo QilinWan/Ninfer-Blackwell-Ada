@@ -221,16 +221,22 @@ void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Wei
  * @param[in,out] workspace Per-rank caller-owned transient arena, sized at the shard shape.
  * @param[in] ec Execution context holding two distinct devices.
  * @param[in] events Live cross-device ordering events, as for allreduce_sum().
+ * @param[in] exchange_lane Eager split-phase lane of the closing allreduce_sum: -1 (the default)
+ * runs the whole allreduce_sum() in place; 0..SplitLanes::kCount-1 runs allreduce_sum_begin() on
+ * that lane, which the caller completes with allreduce_sum_finish() (work enqueued on the
+ * ranks' streams in between overlaps the transfer).
  */
 void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
                          LinearPolicy policy, const std::array<WorkspaceArena*, 2>& workspace,
-                         const ExecutionContext& ec, const PeerEvents& events);
+                         const ExecutionContext& ec, const PeerEvents& events,
+                         int exchange_lane = -1);
 
 /// A16-only row-parallel form; it requires no transient workspace.
 /// Model execution passes a policy; this form is the A16 entry the op qualification suites use.
 void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
-                         const ExecutionContext& ec, const PeerEvents& events);
+                         const ExecutionContext& ec, const PeerEvents& events,
+                         int exchange_lane = -1);
 
 } // namespace ninfer::ops

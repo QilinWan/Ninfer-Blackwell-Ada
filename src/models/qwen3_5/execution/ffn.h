@@ -20,11 +20,14 @@ void ffn(const Tensor& hidden, const FfnParameters& parameters, Tensor& residual
 // over half the intermediate width. The MoE FFN has no two-device placement and is rejected.
 [[nodiscard]] std::size_t ffn_split_workspace_bytes(const FfnParameters& parameters,
                                                     std::int32_t first, std::int32_t last);
+// `exchange_lane` (default -1: the in-place allreduce_sum; otherwise the eager split-phase lane
+// the tp2 prefill overlap begins here and completes later) applies to the row-parallel down
+// projection's all-reduce.
 void ffn_split(const std::array<Tensor, 2>& hidden,
                const std::array<const FfnParameters*, 2>& parameters,
                const std::array<Tensor, 2>& residual, const std::array<Tensor, 2>& staging,
                const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& execution,
-               const ops::PeerEvents& events);
+               const ops::PeerEvents& events, int exchange_lane = -1);
 
 // Tensor-parallel form of the MTP post-mixer FFN, `ffn(..., mtp = true)`: the column-parallel
 // gate|up projection gives rank r its [gate_r; up_r] block, which it SiLU-multiplies into its block

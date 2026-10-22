@@ -87,6 +87,8 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
+#include <vector>
 
 namespace ninfer::ops {
 
@@ -101,6 +103,79 @@ class PeerMailbox; // see ops/peer_mailbox.h
 // Call once during setup. cudaDeviceEnablePeerAccess is a context-level operation, not
 // stream-ordered and not graph-capturable; it must never appear in a hot path.
 bool enable_peer_access(const ExecutionContext& ec);
+
+// Split-phase (begin/finish) eager all-reduce lanes: the transport of allreduce_sum_begin() /
+// allreduce_sum_finish(). Up to kCount calls may be open at once, one per lane, on disjoint
+// buffer/staging ranges; calls on a lane alternate begin/finish.
+//
+// A lane moves the same bytes and combines with the same arithmetic as allreduce_sum(): rank r's
+// operand goes device-to-host into the lane's own pinned buffer on a send stream of rank r, and
+// each chunk host-to-device into staging[1-r]'s peer side on rank r's receive stream behind the
+// peer's per-chunk events; finish waits both ranks' streams for the lane's receive completions and
+// runs the same residual_add combine. Because the transfer runs on the lanes' own streams between
+// the two calls, work the caller enqueues on the ranks' streams in between overlaps it.
+//
+// Eager only: begin requires that neither rank's stream is capturing (allreduce_sum_split_
+// available() reports the condition; allreduce_sum_begin throws otherwise). The lanes' pinned
+// buffers are their own, grown on demand (growing synchronizes both devices first).
+class SplitLanes {
+public:
+    static constexpr int kCount = 2;
+
+    // Allocates each rank's send/receive streams and every lane's ordering events on that rank's
+    // device. Throws std::invalid_argument for a context without two distinct devices and
+    // std::runtime_error on allocation failure.
+    explicit SplitLanes(const ExecutionContext& ec);
+    ~SplitLanes();
+
+    SplitLanes(const SplitLanes&)            = delete;
+    SplitLanes& operator=(const SplitLanes&) = delete;
+    SplitLanes(SplitLanes&&)                 = delete;
+    SplitLanes& operator=(SplitLanes&&)      = delete;
+
+    // True when this instance was created for `ec`'s device pair, in rank order.
+    [[nodiscard]] bool serves(const ExecutionContext& ec) const noexcept;
+
+    // Rank `lane`'s half of a split allreduce_sum of `buffer` through `staging` (same shapes and
+    // contract as allreduce_sum). Both operands are complete on the ranks' streams; the lane's own
+    // pinned host buffers and staging are free (the previous sum_finish waited for every copy).
+    // Enqueues the two transfer legs on the lane's streams and records its completion events.
+    // Throws std::logic_error on an open lane, a size mismatch or a foreign device pair.
+    void sum_begin(int lane, const std::array<Tensor, 2>& buffer,
+                   const std::array<Tensor, 2>& staging, const ExecutionContext& ec);
+
+    // Completes the lane's open call: each rank's stream waits for the lane's two receive
+    // completions (its inbound staging, and the peer's finished read of rank r's host buffer, which
+    // is what frees buffer[r]) and combines buffer[r] += staging[r] with the allreduce_sum() body.
+    // Throws std::logic_error without an open call.
+    void sum_finish(int lane, const ExecutionContext& ec);
+
+    // True while `lane` holds a begun call (both ranks' legs in flight or done, finish pending).
+    [[nodiscard]] bool sum_open(int lane) const noexcept {
+        return lane >= 0 && lane < kCount && lanes_[static_cast<std::size_t>(lane)].active;
+    }
+
+private:
+    struct Lane {
+        bool active          = false;
+        std::size_t capacity = 0;
+        std::array<Tensor, 2> buffer, staging;
+        std::array<std::byte*, 2> host{nullptr, nullptr};
+        std::array<cudaEvent_t, 2> begun{nullptr, nullptr};
+        std::array<cudaEvent_t, 2> received{nullptr, nullptr};
+        std::array<std::vector<cudaEvent_t>, 2> chunk_done;
+    };
+
+    // Grows `lane`'s pinned buffers to `bytes` (synchronizing both devices first, since an earlier
+    // call of the lane may still read or write the old buffers) and its per-chunk events to
+    // `chunks`.
+    void reserve(Lane& lane, std::size_t bytes, std::size_t chunks, const ExecutionContext& ec);
+
+    std::array<int, 2> devices_{-1, -1};
+    std::array<cudaStream_t, 2> send_{nullptr, nullptr};
+    std::array<cudaStream_t, 2> receive_{nullptr, nullptr};
+    std::array<Lane, kCount> lanes_{};
+};
 
 // The reusable cross-device ordering events: two per device, created on that device with timing
 // disabled.
@@ -151,6 +226,19 @@ public:
     // Mutable through a const instance: a captured call claims the mailbox's next slot.
     [[nodiscard]] PeerMailbox* mailbox() const noexcept { return mailbox_; }
 
+    // The split-phase lanes (allreduce_sum_begin/finish) of this stream pair: lazily created on
+    // the first allreduce_sum_begin() and owned by the instance (destroyed with it), so the eager
+    // prefill overlap needs no external transport. Like mailbox(), usable through a const
+    // instance: it only names the transport of the calls it serves.
+    [[nodiscard]] SplitLanes* split_lanes() const noexcept { return split_lanes_.get(); }
+
+    // Creates the split-phase lanes on first use and returns them. Never called during a capture:
+    // the only caller is allreduce_sum_begin(), which requires eager (uncaptured) rank streams.
+    [[nodiscard]] SplitLanes& ensure_split_lanes(const ExecutionContext& ec) const {
+        if (split_lanes_ == nullptr) { split_lanes_ = std::make_unique<SplitLanes>(ec); }
+        return *split_lanes_;
+    }
+
     // While a StagedScope of this instance is open, captured calls keep the staged path even with
     // a mailbox attached. A caller opens one around captured collectives that share a round with
     // cross-device copies: under WSL2 such a copy can stall behind a spinning exchange kernel on
@@ -177,6 +265,7 @@ private:
     std::array<cudaEvent_t, 2> pull_done_{nullptr, nullptr};
     PeerMailbox* mailbox_           = nullptr;
     mutable int staged_scopes_      = 0;
+    mutable std::unique_ptr<SplitLanes> split_lanes_; // null until the first allreduce_sum_begin
 };
 
 /**
@@ -201,6 +290,35 @@ private:
  */
 void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
                    const ExecutionContext& ec, const PeerEvents& events);
+
+/**
+ * Split-phase allreduce_sum() on `lane` of the stream pair's eager SplitLanes
+ * (SplitLanes::sum_begin / sum_finish): identical arguments, result and bits as allreduce_sum(),
+ * but the transfer runs on the lanes' own streams between the two calls, so work the caller
+ * enqueues on the ranks' streams in between overlaps it (the tp2 prefill two-half schedule).
+ *
+ *   allreduce_sum_begin(...)  both operands buffer[r] are complete on ec.dev[r]->stream;
+ *   allreduce_sum_finish(...) rank r's stream waits for the lane's two receive completions
+ *                             (its inbound staging; the peer's finished read of rank r's host
+ *                             buffer, which frees buffer[r]) and combines buffer[r] += staging[r]
+ *                             with the same residual_add body.
+ *
+ * Up to SplitLanes::kCount calls may be open at once, one per lane, on disjoint buffer and
+ * staging ranges; calls on a lane alternate begin/finish. Each lane's completion is its own
+ * event, so finishing one lane never waits for a later lane's. After allreduce_sum_finish(),
+ * rank r's stream is ordered after every copy of the lane (the post-condition of
+ * allreduce_sum()), so split and whole calls interleave freely.
+ *
+ * Eager only: allreduce_sum_split_available() tells whether the split form can run (both ranks'
+ * streams not capturing); begin throws otherwise, as does a begin on an already open lane. The
+ * caller completes every begun lane with allreduce_sum_finish() before reading `buffer` or
+ * reusing `staging`, and touches neither in between.
+ */
+[[nodiscard]] bool allreduce_sum_split_available(const ExecutionContext& ec,
+                                                 const PeerEvents& events);
+void allreduce_sum_begin(const std::array<Tensor, 2>& buffer, const std::array<Tensor, 2>& staging,
+                         const ExecutionContext& ec, const PeerEvents& events, int lane);
+void allreduce_sum_finish(const ExecutionContext& ec, const PeerEvents& events, int lane);
 
 namespace detail {
 // The mailbox attached to `events` when a captured exchange of `bytes` would take it: a mailbox

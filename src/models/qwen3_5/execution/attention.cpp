@@ -60,9 +60,10 @@ void attention_output_split(const std::array<Tensor, 2>& attention,
                             const std::array<Tensor, 2>& residual,
                             const std::array<Tensor, 2>& staging,
                             const std::array<WorkspaceArena*, 2>& workspace,
-                            const ExecutionContext& execution, const ops::PeerEvents& events) {
+                            const ExecutionContext& execution, const ops::PeerEvents& events,
+                            int exchange_lane) {
     project_add_row_parallel(attention, {&parameters[0]->output, &parameters[1]->output}, residual,
-                             staging, workspace, execution, events);
+                             staging, workspace, execution, events, exchange_lane);
 }
 
 std::size_t attention_projection_workspace_bytes(const AttentionParameters& parameters,

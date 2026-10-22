@@ -730,6 +730,118 @@ int run_prefetch_case(const ExecutionContext& ec, const ops::PeerEvents& events,
     return failures;
 }
 
+// SPLIT LANES (P5.4). allreduce_sum_begin()/finish() must leave exactly the bits of
+// allreduce_sum() (same bytes through pinned host, same residual_add combine); two lanes may be
+// open at once on disjoint buffer/staging ranges; and begin must refuse a capturing pair.
+int run_split_lane_case(const ExecutionContext& ec, const ops::PeerEvents& events) {
+    constexpr std::int32_t ne0  = 5120;
+    constexpr std::int32_t cols = 48; // a real prefill chunk shape
+    const std::size_t count     = static_cast<std::size_t>(ne0) * cols;
+    const std::size_t bytes     = count * sizeof(std::uint16_t);
+
+    std::vector<float> a(count), b(count);
+    fill_uniform(a, 601u, -8.0f, 8.0f);
+    fill_uniform(b, 602u, -8.0f, 8.0f);
+    round_to_bf16(a);
+    round_to_bf16(b);
+    const auto sum    = allreduce_sum_oracle(a, b);
+    const auto a_bits = encode_bf16(a);
+    const auto b_bits = encode_bf16(b);
+    (void)sum;
+
+    set_device(ec, 0);
+    GuardedDeviceBuffer buffer_0(bytes), staging_0(bytes);
+    buffer_0.copy_from_host(a_bits.data(), bytes);
+    staging_0.fill(0);
+    set_device(ec, 1);
+    GuardedDeviceBuffer buffer_1(bytes), staging_1(bytes);
+    buffer_1.copy_from_host(b_bits.data(), bytes);
+    staging_1.fill(0);
+
+    const std::array<Tensor, 2> buffer{Tensor(buffer_0.data(), DType::BF16, {ne0, cols}),
+                                       Tensor(buffer_1.data(), DType::BF16, {ne0, cols})};
+    const std::array<Tensor, 2> staging{Tensor(staging_0.data(), DType::BF16, {ne0, cols}),
+                                        Tensor(staging_1.data(), DType::BF16, {ne0, cols})};
+
+    int failures = 0;
+    if (!ops::allreduce_sum_split_available(ec, events)) {
+        std::cerr << "split lane: the eager split form is unavailable\n";
+        ++failures;
+    }
+
+    // (1) Whole and split agree bit for bit on the same operands.
+    retire_staging(ec);
+    ops::allreduce_sum(buffer, staging, ec, events);
+    synchronize_both(ec);
+    set_device(ec, 0);
+    const auto whole_bits = from_device<std::uint16_t>(buffer_0.data(), count);
+    set_device(ec, 1);
+    failures += verify_exact("split lane (1) whole device 1 equals device 0",
+                             from_device<std::uint16_t>(buffer_1.data(), count), whole_bits);
+    set_device(ec, 0);
+    buffer_0.copy_from_host(a_bits.data(), bytes);
+    set_device(ec, 1);
+    buffer_1.copy_from_host(b_bits.data(), bytes);
+    retire_staging(ec);
+    ops::allreduce_sum_begin(buffer, staging, ec, events, 0);
+    ops::allreduce_sum_finish(ec, events, 0);
+    synchronize_both(ec);
+    set_device(ec, 0);
+    failures += verify_exact("split lane (1) split equals whole",
+                             from_device<std::uint16_t>(buffer_0.data(), count), whole_bits);
+    set_device(ec, 1);
+    failures += verify_exact("split lane (1) split device 1 equals device 0",
+                             from_device<std::uint16_t>(buffer_1.data(), count), whole_bits);
+
+    // (2) Two lanes open at once on disjoint column halves; each finishes independently.
+    const std::array<Tensor, 2> half_buffer{Tensor(buffer_0.data(), DType::BF16, {ne0, cols / 2}),
+                                            Tensor(buffer_1.data(), DType::BF16, {ne0, cols / 2})};
+    const std::array<Tensor, 2> half_staging{
+        Tensor(staging_0.data(), DType::BF16, {ne0, cols / 2}),
+        Tensor(staging_1.data(), DType::BF16, {ne0, cols / 2})};
+    set_device(ec, 0);
+    buffer_0.copy_from_host(a_bits.data(), bytes);
+    set_device(ec, 1);
+    buffer_1.copy_from_host(b_bits.data(), bytes);
+    retire_staging(ec);
+    ops::allreduce_sum_begin(half_buffer, half_staging, ec, events, 0);
+    const std::array<Tensor, 2> half2_buffer{half_buffer[0].slice(1, cols / 2, cols / 2),
+                                             half_buffer[1].slice(1, cols / 2, cols / 2)};
+    const std::array<Tensor, 2> half2_staging{half_staging[0].slice(1, cols / 2, cols / 2),
+                                              half_staging[1].slice(1, cols / 2, cols / 2)};
+    ops::allreduce_sum_begin(half2_buffer, half2_staging, ec, events, 1);
+    ops::allreduce_sum_finish(ec, events, 0);
+    ops::allreduce_sum_finish(ec, events, 1);
+    synchronize_both(ec);
+    set_device(ec, 0);
+    failures += verify_exact("split lane (2) both halves equal the whole sum",
+                             from_device<std::uint16_t>(buffer_0.data(), count), whole_bits);
+    set_device(ec, 1);
+    failures += verify_exact("split lane (2) device 1 equals device 0",
+                             from_device<std::uint16_t>(buffer_1.data(), count), whole_bits);
+    failures += buffer_0.verify_guards("split lane buffer device 0");
+    failures += staging_0.verify_guards("split lane staging device 0");
+    set_device(ec, 1);
+    failures += buffer_1.verify_guards("split lane buffer device 1");
+    failures += staging_1.verify_guards("split lane staging device 1");
+
+    // (3) begin refuses a capturing pair (the lanes are eager-only).
+    const DecodeGraphPeerBridge bridge(ec.dev[0]->device, ec.dev[1]->device);
+    DecodeGraphDefinition definition;
+    bool threw = false;
+    try {
+        capture_two_devices(ec, bridge, definition, [&] {
+            set_device(ec, 1);
+            ops::allreduce_sum_begin(buffer, staging, ec, events, 0);
+        });
+    } catch (const std::invalid_argument&) { threw = true; }
+    if (!threw) {
+        std::cerr << "split lane (3): begin did not throw on a capturing pair\n";
+        ++failures;
+    }
+    return failures;
+}
+
 // A peer that never arrives: only rank 0 enqueues its half. The poller must give up, report the
 // hang and return before a display watchdog (about 2 s on Windows WDDM) would reset the device.
 int run_mailbox_hang_case(const ExecutionContext& ec, ops::PeerExchangeKernel kernel) {
@@ -849,6 +961,9 @@ int main() {
 
     // L2 prefetch hints on the capture path: bit identity, consume-once, empty-hint no-op.
     failures += run_prefetch_case(ec, mailbox_events, mailbox);
+
+    // Split-phase lanes of the eager all-reduce: bit identity, two open lanes, capture refusal.
+    failures += run_split_lane_case(ec, events);
 
     failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Pipelined);
     failures += run_mailbox_hang_case(ec, ops::PeerExchangeKernel::Legacy);

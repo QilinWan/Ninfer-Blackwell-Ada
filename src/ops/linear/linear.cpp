@@ -223,7 +223,7 @@ void linear_column_parallel(const std::array<Tensor, 2>& x, const std::array<Wei
 void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
                          LinearPolicy policy, const std::array<WorkspaceArena*, 2>& workspace,
-                         const ExecutionContext& ec, const PeerEvents& events) {
+                         const ExecutionContext& ec, const PeerEvents& events, int exchange_lane) {
     std::array<Tensor, 2> destination =
         validate_split(x, w, out, policy, workspace, ec, detail::SplitAxis::Input);
     if (!events.live()) { throw std::invalid_argument("linear row-parallel: events must be live"); }
@@ -231,13 +231,20 @@ void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight
     // Each partial lands in out[r] on rank r's stream; allreduce_sum records its inputs_ready event
     // on that same stream, which orders the peer's read after the partial.
     issue_ranks(x, w, destination, policy, workspace, ec);
-    allreduce_sum(out, staging, ec, events);
+    if (exchange_lane >= 0) {
+        // The tp2 prefill overlap: begun here, completed by the caller's allreduce_sum_finish()
+        // (same bytes, same combine, same bits as the in-place form).
+        allreduce_sum_begin(out, staging, ec, events, exchange_lane);
+    } else {
+        allreduce_sum(out, staging, ec, events);
+    }
 }
 
 void linear_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                          const std::array<Tensor, 2>& out, const std::array<Tensor, 2>& staging,
-                         const ExecutionContext& ec, const PeerEvents& events) {
-    linear_row_parallel(x, w, out, staging, LinearPolicy::A16Only, {nullptr, nullptr}, ec, events);
+                         const ExecutionContext& ec, const PeerEvents& events, int exchange_lane) {
+    linear_row_parallel(x, w, out, staging, LinearPolicy::A16Only, {nullptr, nullptr}, ec, events,
+                        exchange_lane);
 }
 
 } // namespace ninfer::ops

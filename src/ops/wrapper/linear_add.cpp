@@ -320,7 +320,8 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
                              const std::array<Tensor, 2>& residual,
                              const std::array<Tensor, 2>& staging, LinearPolicy policy,
                              const std::array<WorkspaceArena*, 2>& workspace,
-                             const ExecutionContext& ec, const PeerEvents& events) {
+                             const ExecutionContext& ec, const PeerEvents& events,
+                             int exchange_lane) {
     constexpr const char* kOp = "linear_add row-parallel";
     detail::require_split_pair(ec, x, w, detail::SplitAxis::Input, kOp);
     if (!events.live()) {
@@ -357,15 +358,22 @@ void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<We
                                     stream);
         }
     });
-    allreduce_sum(residual, staging, ec, events);
+    if (exchange_lane >= 0) {
+        // The tp2 prefill overlap: the transfer runs on the lane's own streams and the caller
+        // completes the allreduce with allreduce_sum_finish(), overlapping it with the other
+        // half's blocks. Same bytes, same combine, same bits as the in-place form.
+        allreduce_sum_begin(residual, staging, ec, events, exchange_lane);
+    } else {
+        allreduce_sum(residual, staging, ec, events);
+    }
 }
 
 void linear_add_row_parallel(const std::array<Tensor, 2>& x, const std::array<Weight, 2>& w,
                              const std::array<Tensor, 2>& residual,
                              const std::array<Tensor, 2>& staging, const ExecutionContext& ec,
-                             const PeerEvents& events) {
+                             const PeerEvents& events, int exchange_lane) {
     linear_add_row_parallel(x, w, residual, staging, LinearPolicy::A16Only, {nullptr, nullptr}, ec,
-                            events);
+                            events, exchange_lane);
 }
 
 } // namespace ninfer::ops

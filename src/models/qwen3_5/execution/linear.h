@@ -71,12 +71,12 @@ inline void project_add_row_parallel(const std::array<Tensor, 2>& input,
                                      const std::array<Tensor, 2>& staging,
                                      const std::array<WorkspaceArena*, 2>& workspace,
                                      const ExecutionContext& execution,
-                                     const ops::PeerEvents& events) {
+                                     const ops::PeerEvents& events, int exchange_lane = -1) {
     const auto policy = split_policy(p, "row-parallel projection");
     auto scope0       = workspace[0]->scope();
     auto scope1       = workspace[1]->scope();
     ops::linear_add_row_parallel(input, split_weights(p), residual, staging, policy, workspace,
-                                 execution, events);
+                                 execution, events, exchange_lane);
 }
 
 // Input-split projection: one all-reduce, after which both ranks hold the complete w x in
@@ -86,12 +86,13 @@ inline void project_row_parallel(const std::array<Tensor, 2>& input,
                                  const std::array<Tensor, 2>& output,
                                  const std::array<Tensor, 2>& staging,
                                  const std::array<WorkspaceArena*, 2>& workspace,
-                                 const ExecutionContext& execution, const ops::PeerEvents& events) {
+                                 const ExecutionContext& execution, const ops::PeerEvents& events,
+                                 int exchange_lane = -1) {
     const auto policy = split_policy(p, "row-parallel projection");
     auto scope0       = workspace[0]->scope();
     auto scope1       = workspace[1]->scope();
     ops::linear_row_parallel(input, split_weights(p), output, staging, policy, workspace, execution,
-                             events);
+                             events, exchange_lane);
 }
 
 // Output-split gate/up projection with SwiGLU: out[r] is rank r's block of the intermediate

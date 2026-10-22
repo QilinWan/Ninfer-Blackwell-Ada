@@ -127,7 +127,7 @@ void ffn_split(const std::array<Tensor, 2>& hidden,
                const std::array<const FfnParameters*, 2>& parameters,
                const std::array<Tensor, 2>& residual, const std::array<Tensor, 2>& staging,
                const std::array<WorkspaceArena*, 2>& workspace, const ExecutionContext& execution,
-               const ops::PeerEvents& events) {
+               const ops::PeerEvents& events, int exchange_lane) {
     const DenseParameters& p0 = split_dense(*parameters[0]);
     const DenseParameters& p1 = split_dense(*parameters[1]);
     auto scope0               = workspace[0]->scope();
@@ -139,7 +139,7 @@ void ffn_split(const std::array<Tensor, 2>& hidden,
     project_swiglu_column_parallel(hidden, {&p0.gate_up, &p1.gate_up}, activation, workspace,
                                    execution);
     project_add_row_parallel(activation, {&p0.down, &p1.down}, residual, staging, workspace,
-                             execution, events);
+                             execution, events, exchange_lane);
 }
 
 std::size_t mtp_ffn_split_workspace_bytes(const FfnParameters& parameters, std::int32_t first,

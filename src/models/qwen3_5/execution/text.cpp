@@ -44,10 +44,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -203,6 +205,23 @@ mixer_input_prefetch(const std::array<const BlockParameters*, 2>& block, std::si
         }
     }
     return hint;
+}
+
+// Prefill overlap: the width of the first half of a `len`-column text chunk, or 0 to run the
+// chunk as one call. A multiple of 128, so the GDN chunk (16 tokens) and the attention query tiles
+// fall on the same column boundaries as in one call over the chunk; both halves wider than 384
+// columns, so their causal attention takes the same tile family a whole chunk takes.
+// NINFER_TP_PREFILL_OVERLAP=0 turns the overlap off.
+int prefill_overlap_split(int len) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("NINFER_TP_PREFILL_OVERLAP");
+        return value == nullptr || std::string_view(value) != "0";
+    }();
+    constexpr int kAlign   = 128;
+    constexpr int kMinHalf = 384;
+    if (!enabled) { return 0; }
+    const int split = len / 2 / kAlign * kAlign;
+    return split >= kMinHalf && len - split >= kMinHalf ? split : 0;
 }
 
 } // namespace
@@ -1773,7 +1792,7 @@ const GdnReplayRecords& TextContext::rank_replay_records(int rank) const {
 }
 
 void TextContext::attn_mix_tp2(const RankBlocks& w, RankTensors& x, int fidx,
-                               const RankTensors& staging) {
+                               const RankTensors& staging, int exchange_lane) {
     const ExecutionContext& execution = *tp_->execution;
     const AttentionConfig& shard      = *shard_config_->attention;
     const auto ws                     = workspaces();
@@ -1862,11 +1881,11 @@ void TextContext::attn_mix_tp2(const RankBlocks& w, RankTensors& x, int fidx,
     });
 
     attention_output_split({a[0].view({q_width, T}), a[1].view({q_width, T})}, p, x, staging, ws,
-                           execution, *tp_->events);
+                           execution, *tp_->events, exchange_lane);
 }
 
 void TextContext::gdn_mix_tp2(const RankBlocks& w, RankTensors& x, int gidx, Phase ph,
-                              const RankTensors& staging) {
+                              const RankTensors& staging, int exchange_lane) {
     const ExecutionContext& execution = *tp_->execution;
     const GdnConfig& shard            = *shard_config_->gdn;
     const auto ws                     = workspaces();
@@ -2031,10 +2050,11 @@ void TextContext::gdn_mix_tp2(const RankBlocks& w, RankTensors& x, int gidx, Pha
     });
 
     gdn_output_split({on[0].view({value_width, T}), on[1].view({value_width, T})}, p, x, staging,
-                     ws, execution, *tp_->events);
+                     ws, execution, *tp_->events, exchange_lane);
 }
 
-void TextContext::mlp_tail_tp2(const RankBlocks& w, RankTensors& x, const RankTensors& staging) {
+void TextContext::mlp_tail_tp2(const RankBlocks& w, RankTensors& x, const RankTensors& staging,
+                               int exchange_lane) {
     const ExecutionContext& execution = *tp_->execution;
     const auto ws                     = workspaces();
     RankTensors h;
@@ -2046,7 +2066,7 @@ void TextContext::mlp_tail_tp2(const RankBlocks& w, RankTensors& x, const RankTe
         ops::rmsnorm(x[r], w[r]->post_attention_norm, config_.rms_norm_eps, true, h[r],
                      rank_stream(rank));
     });
-    ffn_split(h, {&w[0]->ffn, &w[1]->ffn}, x, staging, ws, execution, *tp_->events);
+    ffn_split(h, {&w[0]->ffn, &w[1]->ffn}, x, staging, ws, execution, *tp_->events, exchange_lane);
 }
 
 template <class Tap>
@@ -2114,6 +2134,141 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
                 "text/layers/" + std::to_string(layer) + (prefill ? " prefill" : " verify") +
                 " tp2 columns=" + std::to_string(x[0].ne[1]) + ": " + error.what());
         }
+    }
+}
+
+// The two halves are exactly two consecutive prefill chunks of `split` and `len - split` tokens,
+// issued block by block in the order mixer A, mixer B, MLP A, MLP B, next layer's mixer A, ...
+// Every block of a half ends in a row-parallel projection whose all-reduce is only begun, on the
+// half's lane of the split exchange, and finished on the ranks' streams just before that half's
+// next block, so one half's exchange moves while the other half's block computes. Half B's mixers
+// read the KV pages and GDN state that half A wrote in the same layer, earlier on the same
+// streams, as the next chunk would; every other op is column-local. Same ops, operands and
+// arithmetic as two chunks: the bits are those of the one-call schedule (the split keeps every
+// tile boundary, prefill_overlap_split). A tap gets a layer's output per half right after that
+// half's closing exchange of the layer has finished, before its next block rewrites the columns:
+// the bytes run_layers_tp2 hands it for the whole chunk, column window by column window.
+template <class Tap>
+void TextContext::prefill_layers_overlap_tp2(RankTensors& x, const RankTensors& staging,
+                                             const RankTensors& positions,
+                                             const RankTensors& rope_positions, int base, int split,
+                                             Tap& tap) {
+    const ExecutionContext& execution = *tp_->execution;
+    const ops::PeerEvents& events     = *tp_->events;
+    const int len                     = x[0].ne[1];
+    if (split <= 0 || split >= len || active_sequence_batch_ != 0) {
+        throw std::logic_error("prefill overlap: invalid half split");
+    }
+
+    struct Half {
+        RankTensors x, staging, positions, rope;
+        ops::CausalAttentionExecutionEnvelope envelope{};
+        std::int32_t source_slot = 0, destination_slot = 0;
+        std::int32_t first = 0;
+        bool open          = false; // its lane holds a begun all-reduce
+        int tapped_layer   = -1;    // the layer whose output that all-reduce completes
+    };
+
+    std::array<Half, 2> halves;
+    for (std::size_t h = 0; h < 2; ++h) {
+        const int first = h == 0 ? 0 : split;
+        const int count = h == 0 ? split : len - split;
+        Half& half      = halves[h];
+        half.first      = first;
+        for (std::size_t r = 0; r < 2; ++r) {
+            half.x[r]         = x[r].slice(1, first, count);
+            half.staging[r]   = staging[r].slice(1, first, count);
+            half.positions[r] = positions[r].slice(0, first, count);
+            half.rope[r]      = rope_positions[r].slice(0, first, count);
+        }
+        const auto visible = static_cast<std::uint32_t>(base + first + count);
+        half.envelope      = {visible, visible};
+        // Half B continues from the state half A published.
+        half.source_slot      = h == 0 ? linear_state_source_slot_ : linear_state_destination_slot_;
+        half.destination_slot = linear_state_destination_slot_;
+    }
+    const auto finish = [&](Half& half, int lane) {
+        if (!half.open) { return; }
+        half.open              = false;
+        const int tapped_layer = half.tapped_layer;
+        half.tapped_layer      = -1;
+        ops::allreduce_sum_finish(execution, events, lane);
+        if constexpr (Tap::enabled) {
+            if (tapped_layer >= 0) {
+                tap.capture_layer_columns(tapped_layer, half.x[0], half.first, ctx_.stream);
+                peer_tap_capture_layer_columns(tapped_layer, half.x[1], half.first);
+            }
+        }
+    };
+    // Runs one block of half `h`: its previous exchange completes first (the block reads and
+    // rewrites its columns), then the block, whose exchange stays open on lane h. `tapped_layer`
+    // >= 0 marks the block that ends that layer.
+    const auto block_of = [&](int h, auto&& body, int tapped_layer = -1) {
+        Half& half = halves[static_cast<std::size_t>(h)];
+        ScopedValue<const Tensor*> cache0(active_cache_positions_, &half.positions[0]);
+        ScopedValue<const Tensor*> rope0(active_rope_positions_, &half.rope[0]);
+        ScopedValue<const Tensor*> cache1(peer_cache_positions_, &half.positions[1]);
+        ScopedValue<const Tensor*> rope1(peer_rope_positions_, &half.rope[1]);
+        ScopedValue<const ops::CausalAttentionExecutionEnvelope*> envelope(
+            active_causal_attention_envelope_, &half.envelope);
+        ScopedValue<std::int32_t> source(linear_state_source_slot_, half.source_slot);
+        ScopedValue<std::int32_t> destination(linear_state_destination_slot_,
+                                              half.destination_slot);
+        auto scope0 = work_.scope();
+        auto scope1 = tp_->work->scope();
+        finish(half, h);
+        body(half);
+        half.open         = true;
+        half.tapped_layer = tapped_layer;
+    };
+    const auto& layers0 = parameters_.text.layers;
+    const auto& layers1 = tp_->parameters->text.layers;
+    std::size_t layer   = 0;
+    try {
+        for (; layer < layers0.size(); ++layer) {
+            const RankBlocks block{&layers0[layer], &layers1[layer]};
+            const bool full    = config_.layer_types[layer] == MixerKind::FullAttention;
+            const auto compact = dimension(config_.compact_layer_indices[layer]);
+            nvtx::ScopedRange layer_range(
+                full ? nvtx::Name::PrefillLayerFull : nvtx::Name::PrefillLayerGdn,
+                full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
+            {
+                nvtx::ScopedRange mixer_range(
+                    full ? nvtx::Name::PrefillAttention : nvtx::Name::PrefillGdn,
+                    full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
+                for (int h = 0; h < 2; ++h) {
+                    block_of(h, [&](Half& half) {
+                        if (full) {
+                            attn_mix_tp2(block, half.x, compact, half.staging, h);
+                        } else {
+                            gdn_mix_tp2(block, half.x, compact, Phase::Prefill, half.staging, h);
+                        }
+                    });
+                }
+            }
+            {
+                nvtx::ScopedRange range(nvtx::Name::PrefillPostMixer, nvtx::Category::PostMixer,
+                                        layer);
+                for (int h = 0; h < 2; ++h) {
+                    block_of(
+                        h, [&](Half& half) { mlp_tail_tp2(block, half.x, half.staging, h); },
+                        static_cast<int>(layer));
+                }
+            }
+        }
+        finish(halves[0], 0);
+        finish(halves[1], 1);
+    } catch (const std::exception& error) {
+        // Leave no lane open for the next call; the request fails either way.
+        for (int h = 0; h < 2; ++h) {
+            halves[static_cast<std::size_t>(h)].tapped_layer = -1;
+            try {
+                finish(halves[static_cast<std::size_t>(h)], h);
+            } catch (...) {}
+        }
+        throw std::runtime_error("text/layers/" + std::to_string(layer) +
+                                 " prefill overlap tp2 columns=" + std::to_string(len) + ": " +
+                                 error.what());
     }
 }
 
@@ -2321,7 +2476,18 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
             tap.begin(x[0]);
             peer_tap_begin(x[1]);
         }
-        run_layers_tp2(x, Phase::Prefill, staging, tap);
+        // A tapped chunk (DFlash2 prefill features) takes its layer outputs half by half; a
+        // multimodal chunk's three-axis RoPE positions are not column-sliceable.
+        bool column_tap = true;
+        if constexpr (Tap::enabled) { column_tap = tap.batch_features == nullptr; }
+        const int overlap_split =
+            column_tap && multimodal == nullptr ? prefill_overlap_split(len) : 0;
+        if (overlap_split > 0 && ops::allreduce_sum_split_available(execution, *tp_->events)) {
+            prefill_layers_overlap_tp2(x, staging, positions, rope_positions, base_i, overlap_split,
+                                       tap);
+        } else {
+            run_layers_tp2(x, Phase::Prefill, staging, tap);
+        }
         if constexpr (requires { tap.capture_positions(positions[0], s); }) {
             tap.capture_positions(positions[0], s);
             peer_tap_capture_positions(positions[1]);

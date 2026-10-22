@@ -266,9 +266,10 @@ void gdn_output_split(const std::array<Tensor, 2>& normalized,
                       const std::array<const GdnParameters*, 2>& parameters,
                       const std::array<Tensor, 2>& residual, const std::array<Tensor, 2>& staging,
                       const std::array<WorkspaceArena*, 2>& workspace,
-                      const ExecutionContext& execution, const ops::PeerEvents& events) {
+                      const ExecutionContext& execution, const ops::PeerEvents& events,
+                      int exchange_lane) {
     project_add_row_parallel(normalized, {&parameters[0]->output, &parameters[1]->output}, residual,
-                             staging, workspace, execution, events);
+                             staging, workspace, execution, events, exchange_lane);
 }
 
 } // namespace ninfer::models::qwen3_5::execution
