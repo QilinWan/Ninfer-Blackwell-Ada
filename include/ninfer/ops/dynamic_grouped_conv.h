@@ -114,4 +114,15 @@ void linear_dynamic_grouped_conv_add(const Tensor& x, const Weight& projection_w
                                      Tensor& residual, WorkspaceArena& workspace,
                                      cudaStream_t stream);
 
+/**
+ * The finish half of the materialized route as a standalone Op (tp 2, the split DFlash2 drafter):
+ * after the row-parallel attention output / MLP down partials are summed by allreduce_sum and
+ * both ranks hold the identical sum, each rank applies the dynamic convolution's finish
+ * (base_kernel rows 2,3 coefficients and the accumulated finish_delta) to its copy of the
+ * residual. Same arithmetic as linear_dynamic_grouped_conv_add's finish stage; no workspace.
+ */
+void dynamic_grouped_conv_finish_add(const Tensor& projected, const Tensor& base_kernel,
+                                     const Tensor& finish_delta, Tensor& residual,
+                                     cudaStream_t stream);
+
 } // namespace ninfer::ops

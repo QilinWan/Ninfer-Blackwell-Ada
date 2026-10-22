@@ -171,3 +171,5 @@ void sliding_window_attention_launch(const Tensor& q, const Tensor& query_k, con
 }
 
 } // namespace ninfer::ops::detail
+
+#include "ops/softmax_attention/sliding_window/tp2/launch_tp2.inc"

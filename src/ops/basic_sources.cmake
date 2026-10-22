@@ -29,6 +29,7 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/launcher/sigmoid_gate_mul.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/silu_and_mul.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/target_logprobs.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/launcher/topk_split.cu"
   "${CMAKE_CURRENT_LIST_DIR}/launcher/vision_pos_embed.cu"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/add_bias.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/argmax.cpp"
@@ -57,3 +58,5 @@ target_sources(ninfer_ops PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/target_logprobs.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/wrapper/vision_pos_embed.cpp"
 )
+
+include("${CMAKE_CURRENT_LIST_DIR}/tp2/sources.cmake")

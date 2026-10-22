@@ -9,11 +9,18 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+// KV heads per layer: 8 here; the two-device shard (tp2/materialize_shard_h4.cu) compiles this
+// source again with 4.
+#ifndef NINFER_CONTEXT_KV_MATERIALIZE_KV_HEADS
+#    define NINFER_CONTEXT_KV_MATERIALIZE_KV_HEADS 8
+#endif
+
 namespace ninfer::ops::detail {
 namespace {
 constexpr int kLayers  = static_cast<int>(kContextKVMaterializeLayers);
-constexpr int kRows    = 1024;
+constexpr int kKvHeads = NINFER_CONTEXT_KV_MATERIALIZE_KV_HEADS;
 constexpr int kHeadDim = 128;
+constexpr int kRows    = kKvHeads * kHeadDim;
 
 __device__ __forceinline__ int context_column(int column, int width, int prefix) {
     return width == prefix ? column : column / prefix * width + column % prefix;
@@ -49,8 +56,9 @@ __device__ __forceinline__ void store_key_head(const float* input, DeviceLayerVi
     float sin0, cos0, sin1, cos1;
     dflash_rope_sincos(positions, column, j, &sin0, &cos0);
     dflash_rope_sincos(positions, column, j + 1, &sin1, &cos1);
-    const auto dst = 128LL * ((positions[column] & 2047) + (long long)layer.padded_capacity *
-                                                               (head + 8 * slots[column / width]));
+    const auto dst =
+        128LL * ((positions[column] & 2047) +
+                 (long long)layer.padded_capacity * (head + kKvHeads * slots[column / width]));
     auto* out      = reinterpret_cast<__nv_bfloat162*>(layer.cache_k + dst);
     out[lane]      = __floats2bfloat162_rn(x0 * cos0 - y0 * sin0, x1 * cos1 - y1 * sin1);
     out[lane + 32] = __floats2bfloat162_rn(y0 * cos0 + x0 * sin0, y1 * cos1 + x1 * sin1);
@@ -286,12 +294,12 @@ __global__ __launch_bounds__(Rows / 16 * ColumnWarps * 32, 1) void context_kv_mm
             const int row      = row_begin + r;
             const float result = storage.scores[local][r];
             if (!value) {
-                key_scratch[row + 1024LL * (packed_column + max_count * batch * layer_index)] =
-                    result;
+                key_scratch[row + static_cast<long long>(kRows) *
+                                      (packed_column + max_count * batch * layer_index)] = result;
             } else {
-                const auto dst     = row % 128 + 128LL * ((positions[column] & 2047) +
+                const auto dst = row % 128 + 128LL * ((positions[column] & 2047) +
                                                       (long long)layer.padded_capacity *
-                                                          (row / 128 + 8 * slots[request]));
+                                                          (row / 128 + kKvHeads * slots[request]));
                 layer.cache_v[dst] = __float2half_rn(__bfloat162float(__float2bfloat16_rn(result)));
             }
         }
@@ -307,7 +315,7 @@ void launch_mma(const Tensor& x, const Tensor& positions, const Tensor& counts, 
         CUDA_CHECK(cudaFuncSetAttribute(context_kv_mma_kernel<Rows, Columns, BlockK, ColumnWarps>,
                                         cudaFuncAttributeMaxDynamicSharedMemorySize, bytes));
     context_kv_mma_kernel<Rows, Columns, BlockK, ColumnWarps>
-        <<<dim3(1024 / Rows, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10),
+        <<<dim3(kRows / Rows, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10),
            Rows / 16 * ColumnWarps * 32, bytes, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const int*>(positions.data),
             static_cast<const int*>(counts.data), static_cast<const int*>(slots.data), layers,
@@ -331,11 +339,12 @@ struct MaterializeProjectionEpilogue {
         const int request = column / width, count = counts[request];
         if (count < min_count || count > max_count || column % width >= count) return;
         if (!value)
-            scratch[row + 1024LL * (packed_column + max_count * batch * layer_index)] = result;
+            scratch[row + static_cast<long long>(kRows) *
+                              (packed_column + max_count * batch * layer_index)] = result;
         else {
             const auto dst     = row % 128 + 128LL * ((positions[column] & 2047) +
-                                                  (long long)layer.padded_capacity *
-                                                      (row / 128 + 8 * slots[request]));
+                                                      (long long)layer.padded_capacity *
+                                                          (row / 128 + kKvHeads * slots[request]));
             layer.cache_v[dst] = __float2half_rn(__bfloat162float(__float2bfloat16_rn(result)));
         }
     }
@@ -379,7 +388,7 @@ __global__ __launch_bounds__(KWarps * 32, 1) void context_kv_grouped_kernel(
     const MaterializeProjectionEpilogue epilogue{layer, positions, counts,    slots,     scratch, l,
                                                  width, batch,     min_count, max_count, value};
     q8_a16_sliced_k_mma<GroupedSchedule<Columns, KWarps>, true>(
-        Q8LinearOperands{x, codes, scales, 1024, 5120, max_count * batch, 5120},
+        Q8LinearOperands{x, codes, scales, kRows, 5120, max_count * batch, 5120},
         LinearBf16Output{nullptr, 0}, epilogue, Q8SlicedKIdentityRows{}, 0,
         ContextPrefixColumns{width, max_count});
 }
@@ -391,8 +400,8 @@ void launch_grouped(const Tensor& x, const Tensor& positions, const Tensor& coun
                     cudaStream_t stream) {
     constexpr auto kernel = context_kv_grouped_kernel<Columns, KWarps>;
     const int shared = core::request_shared_window<GroupedSchedule<Columns, KWarps>::kSharedBytes, kernel>();
-    kernel<<<dim3(64, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10), KWarps * 32,
-             shared, stream>>>(
+    kernel<<<dim3(kRows / 16, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10),
+             KWarps * 32, shared, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), static_cast<const int*>(positions.data),
         static_cast<const int*>(counts.data), static_cast<const int*>(slots.data), layers,
         static_cast<float*>(scratch.data), x.ne[1], x.ne[2], envelope.min_count,
@@ -478,8 +487,8 @@ void context_kv_materialize_launch(
                                   key_scratch, stream);
         break;
     }
-    context_kv_key_post_kernel<<<dim3(envelope.max_count * context.ne[2], kLayers), 256, 0,
-                                 stream>>>(
+    context_kv_key_post_kernel<<<dim3(envelope.max_count * context.ne[2], kLayers), kKvHeads * 32,
+                                 0, stream>>>(
         static_cast<const float*>(key_scratch.data), static_cast<const int*>(positions.data),
         static_cast<const int*>(counts.data), static_cast<const int*>(state_slots.data),
         device_layers, context.ne[2], context.ne[1], envelope.min_count, envelope.max_count);

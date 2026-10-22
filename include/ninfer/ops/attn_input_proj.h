@@ -154,4 +154,16 @@ void attn_input_proj_column_parallel(const std::array<Tensor, 2>& x,
                                      const std::array<Tensor, 2>& k, const std::array<Tensor, 2>& v,
                                      const ExecutionContext& ec);
 
+/**
+ * The DFlash2 drafter's Q8 query|key|value projection over one tensor-parallel rank's heads: the
+ * Q8_G32_FP16 RowSplit shard `[3072,5120]` stacks the rank's rows of the `[6144,5120]` parent's
+ * query (2048 of 4096: 16 of 32 D128 heads), key and value (512 of 1024: 4 of 8 KV heads)
+ * sections. `x` BF16 `[5120,T]`, `q` BF16 `[2048,T]`, `k` and `v` BF16 `[512,T]`, all contiguous;
+ * every other contract is attn_input_proj()'s three-output DFlash2 profile. The launchers are the
+ * DFlash2 kernels with the shard's section output, so each output row equals the parent's row bit
+ * for bit. No workspace.
+ */
+void attn_input_proj_head_block(const Tensor& x, const Weight& query_key_value_weight, Tensor& q,
+                                Tensor& k, Tensor& v, cudaStream_t stream);
+
 } // namespace ninfer::ops

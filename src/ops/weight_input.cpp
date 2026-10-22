@@ -168,9 +168,13 @@ SingleProjectionWeight prepare_attn_input_proj_weights(const WeightInput& query,
                                                        const WeightInput& key,
                                                        const WeightInput& value) {
     const auto& q = matrix(query);
-    require((q == std::vector<std::uint64_t>{4096, 2048} ||
-             q == std::vector<std::uint64_t>{4096, 5120}) &&
-                matrix(key) == std::vector<std::uint64_t>{1024, q[1]} &&
+    // Two-device shard of the DFlash2 drafter: one rank's 16 query and 4 KV heads.
+    const bool shard = q == std::vector<std::uint64_t>{2048, 5120} &&
+                       matrix(key) == std::vector<std::uint64_t>{512, 5120};
+    require(((q == std::vector<std::uint64_t>{4096, 2048} ||
+              q == std::vector<std::uint64_t>{4096, 5120}) &&
+                 matrix(key) == std::vector<std::uint64_t>{1024, q[1]} ||
+             shard) &&
                 matrix(value) == matrix(key),
             "QKV input projection: unsupported logical geometry");
     const std::array inputs{query, key, value};

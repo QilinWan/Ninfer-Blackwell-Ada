@@ -274,3 +274,5 @@ void linear_topk(const Tensor& hidden, const Weight& head, const Tensor& row_to_
 }
 
 } // namespace ninfer::ops
+
+#include "ops/linear_topk/tp2/linear_topk_tp2.inc"

@@ -1222,6 +1222,9 @@ struct LoadSummary {
     // tp 2 MTP with the optimized proposal head: where it proposes, "split by vocabulary" (both
     // ranks, the default) or "rank 0" (NINFER_TP_DRAFT_HEAD=primary); empty otherwise.
     std::string tp_proposal_head;
+    // tp 2 DFlash2: where the drafter runs, "split (...)" (both ranks, NINFER_TP_DRAFTER=split)
+    // or "rank 0" (the shipped placement); empty otherwise.
+    std::string tp_drafter;
     ContextCostSummary context_cost;
 };
 

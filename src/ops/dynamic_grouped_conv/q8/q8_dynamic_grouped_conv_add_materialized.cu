@@ -104,3 +104,5 @@ void q8_dynamic_grouped_conv_add_materialized_launch(Q8DynamicConvAddSchedule sc
     materialized(schedule, x, weight, base, delta, residual, projected, stream);
 }
 } // namespace ninfer::ops::detail
+
+#include "ops/dynamic_grouped_conv/tp2/q8_dynamic_grouped_conv_tp2.inc"
