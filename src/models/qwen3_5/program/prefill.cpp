@@ -116,6 +116,13 @@ PrefillChunkResult prefill_text_chunk(PrefillContext& state, std::span<const Tok
     const std::span<const int> prompt(ids.data(), ids.size());
     if (state.dflash != nullptr) {
         DFlashFeatureSink sink = make_dflash_prefill_sink(state);
+        // The split drafter at tp 2 captures and appends rank 1's context too.
+        std::optional<DFlashFeatureSink> peer_sink;
+        if (state.execution.tp != nullptr && state.execution.tp->dflash != nullptr) {
+            peer_sink = execution::dflash_peer_prefill_sink(*state.execution.tp->dflash,
+                                                            state.dflash_prefill_host_ingress);
+            card.set_peer_feature_sink(&*peer_sink);
+        }
         return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, finalize_at_end,
                                   sink);
     }
@@ -142,6 +149,12 @@ PrefillChunkResult prefill_multimodal_chunk(PrefillContext& state, const Prepare
                                                    : -1);
     if (state.dflash != nullptr) {
         DFlashFeatureSink sink = make_dflash_prefill_sink(state);
+        std::optional<DFlashFeatureSink> peer_sink;
+        if (state.execution.tp != nullptr && state.execution.tp->dflash != nullptr) {
+            peer_sink = execution::dflash_peer_prefill_sink(*state.execution.tp->dflash,
+                                                            state.dflash_prefill_host_ingress);
+            card.set_peer_feature_sink(&*peer_sink);
+        }
         return card.prefill_chunk(prompt, state.text_kv_base, nominal_length, vision,
                                   finalize_at_end, sink);
     }

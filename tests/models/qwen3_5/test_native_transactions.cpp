@@ -1712,7 +1712,7 @@ void shared_capture_alignment(DeviceContext& device, const qwen::execution::Para
     options.context_cache.enabled             = true;
     options.context_cache.device_state_slots  = 2;
     options.context_cache.host_capacity_bytes = 0;
-    auto planner = qwen::detail::make_sequence_planner_impl(parameters, device, options);
+    auto planner = qwen::detail::make_sequence_planner_impl(parameters, nullptr, device, options);
     auto plan    = qwen::detail::finalize_sequence_plan_impl(std::move(planner), 4);
     qwen::detail::ProgramImpl program(parameters, *plan, device, {});
     const auto empty = program.physical_usage().occupied;
@@ -1854,7 +1854,7 @@ void replay_sampling_counts(DeviceContext& device, const qwen::execution::Parame
     options.context_cache.enabled             = false;
     options.context_cache.device_state_slots  = 0;
     options.context_cache.host_capacity_bytes = 0;
-    auto planner = qwen::detail::make_sequence_planner_impl(parameters, device, options);
+    auto planner = qwen::detail::make_sequence_planner_impl(parameters, nullptr, device, options);
     auto plan    = qwen::detail::finalize_sequence_plan_impl(std::move(planner), 2);
     qwen::detail::ProgramImpl program(parameters, *plan, device, {});
 

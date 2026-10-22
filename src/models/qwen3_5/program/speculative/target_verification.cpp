@@ -62,20 +62,18 @@ void target_verify_forward(ExecutionCore& execution, TextContext& card,
     if (frame.replay_records == nullptr || peer.replay_records == nullptr) {
         throw std::logic_error("speculative target verify has no ReplaySSM record storage");
     }
-    // The drafter, its proposals, the gathered logits and acceptance are rank 0's alone.
-    if (peer.feature_sink != nullptr || peer.proposal_q.data != nullptr) {
+    // Proposals, the gathered logits and acceptance are rank 0's alone. The split DFlash2 drafter
+    // captures rank 1's own features beside rank 0's (peer.feature_sink, set_peer_feature_sink).
+    if (peer.proposal_q.data != nullptr ||
+        (peer.feature_sink != nullptr && frame.feature_sink == nullptr)) {
         throw std::logic_error(
-            "tensor-parallel target verify captures features and accepts on rank 0 only");
+            "tensor-parallel target verify accepts on rank 0 only, and captures rank 1's features "
+            "only beside rank 0's");
     }
     card.set_gdn_state_action(GdnStateAction::RecordForReplay, frame.replay_records);
+    card.set_peer_feature_sink(peer.feature_sink);
     const TextContext::RankTensors hidden{frame.target_hidden, peer.target_hidden};
     if (frame.feature_sink != nullptr) {
-        // Feature capture exists only on rank 0: it records rank 0's replicated residual.
-        if (peer.feature_sink != nullptr || peer.proposal_q.data != nullptr) {
-            throw std::logic_error(
-                "tensor-parallel target verify requires the peer frame to carry no feature sink "
-                "and no proposal distribution");
-        }
         card.target_verify_batch(
             {frame.ids, peer.ids}, {frame.cache_positions, peer.cache_positions},
             {frame.rope_positions, peer.rope_positions}, {frame.valid_columns, peer.valid_columns},
@@ -90,6 +88,7 @@ void target_verify_forward(ExecutionCore& execution, TextContext& card,
             {frame.state_source_slots, peer.state_source_slots}, envelope, hidden,
             frame.target_logits, frame.target_tokens);
     }
+    card.set_peer_feature_sink(nullptr);
 }
 
 void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,

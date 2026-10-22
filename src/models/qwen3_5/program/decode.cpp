@@ -245,6 +245,11 @@ void ProgramImpl::enqueue_dflash_context_append(std::span<const std::uint32_t> l
     execution::dflash_append_context(state, features, positions, device_counts,
                                      state_destination_tensor, table_rows,
                                      {minimum_count, maximum_count});
+    // The split drafter at tp 2 catches rank 1's context up from its own pending features.
+    if (peer && peer->drafter) {
+        execution::dflash_append_context_peer(*peer->drafter, *dflash_host_ingress, batch,
+                                              draft_window, {minimum_count, maximum_count});
+    }
 }
 
 void ProgramImpl::validate_licensed_tokens(std::span<const TokenId> tokens) const {

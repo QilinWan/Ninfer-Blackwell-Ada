@@ -266,7 +266,11 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
                 context_cost_hardware_class(device.props.name, device.props.major, device.props.minor),
             .prefill_signature = signature},
         options.context_cost.preset_path);
-    auto planner = models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
+    auto planner =
+        execution != nullptr
+            ? models::qwen3_5::make_sequence_planner(instance->parameters,
+                                                     *instance->peer_parameters, device, options)
+            : models::qwen3_5::make_sequence_planner(instance->parameters, device, options);
     // Every rank reserves the same per-rank layout and addresses the same KV pages, so one page
     // count is resolved against the tightest rank's own free memory.
     std::vector<std::size_t> rank_budgets = rank_free_bytes(device, execution);
@@ -334,6 +338,7 @@ ConstructedModel construct_model_on(EngineOptions& options, DeviceContext& devic
     summary.tp_mailbox_fallback  = instance->program->tp_transport().fallback;
     summary.tp_mailbox_kernel    = instance->program->tp_transport().exchange_kernel;
     summary.tp_proposal_head     = instance->program->tp_transport().proposal_head;
+    summary.tp_drafter           = instance->program->tp_transport().drafter;
     return {std::move(instance), std::move(summary), std::move(context_cost.model)};
 }
 

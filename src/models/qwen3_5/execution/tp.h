@@ -28,6 +28,8 @@ namespace ninfer::models::qwen3_5::execution {
 
 inline constexpr int kTensorParallelWidth = 2;
 
+struct DFlashPeerDrafter; // execution/tp2/draft_split.h
+
 // The logical Text config narrowed to one rank's share: attention query/KV heads, GDN key/value
 // heads, the Dense intermediate width and the vocabulary are divided by `width`; the hidden size,
 // head dimensions, layer schedule and RoPE are unchanged. It names the per-rank extents of the
@@ -112,6 +114,11 @@ struct TpExecution {
     // Rank 1's ReplaySSM records of its GDN heads, written by speculative target verification
     // (MTP and DFlash2); null without a speculative backend.
     const GdnReplayRecords* replay_records = nullptr;
+
+    // --- DFlash2 with the split drafter (load/sharding.h; null otherwise)
+    // ------------------------- Rank 1's drafter operands and state; every DFlash2 call that
+    // appends context, proposes or captures target features drives it beside rank 0's.
+    DFlashPeerDrafter* dflash = nullptr;
 
     // --- MTP (speculative backend Mtp only; null or empty otherwise) ----------------------------
     // Rank 1's MTP KV cache (KV heads / 2); like the text cache, its page pool and execution

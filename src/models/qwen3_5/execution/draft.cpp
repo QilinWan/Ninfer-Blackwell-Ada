@@ -177,10 +177,21 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
             }
             const Tensor local_positions =
                 replace_local_window ? positions.slice(0, local_offset, local_width) : positions;
-            ops::context_kv_materialize(
-                context.view({dimension(target.hidden_size), local_width, batch}), local_positions,
-                local_counts, lanes, layers, {local_envelope.min_count, local_envelope.max_count},
-                state.execution.work, state.execution.device.stream);
+            const Tensor local_context =
+                context.view({dimension(target.hidden_size), local_width, batch});
+            const ops::ContextKVMaterializeExecutionEnvelope materialize{local_envelope.min_count,
+                                                                         local_envelope.max_count};
+            // The split drafter's rank holds four of the eight KV heads (load/sharding.cpp), so it
+            // materializes the head block into its own four-head rings.
+            if (dflash2_drafter_split(state.execution.parameters)) {
+                ops::context_kv_materialize_head_block(
+                    local_context, local_positions, local_counts, lanes, layers, materialize,
+                    state.execution.work, state.execution.device.stream);
+            } else {
+                ops::context_kv_materialize(local_context, local_positions, local_counts, lanes,
+                                            layers, materialize, state.execution.work,
+                                            state.execution.device.stream);
+            }
         } else {
             for (int layer = 0; layer < dimension(config.num_hidden_layers); ++layer) {
                 auto layer_scope = state.execution.work.scope();
@@ -634,18 +645,38 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
         Tensor accepted           = frame.accepted_drafts.slice(0, 0, batch_size);
 
         if (phase == SpeculativePhase::Forward) {
-            state.execution.work.reset();
-            Tensor compact_features = state.execution.work.alloc(
-                DType::BF16,
-                {dimension(state.execution.parameters.draft->feature_projection.weight.k), width,
-                 batch_size});
-            ops::prepare_ragged_prefix(
-                dflash_state(state).pending_features, active_lanes, context_starts, frontiers,
-                compact_features, append_positions, append_counts, state.execution.device.stream);
-            append_context_impl(state, compact_features, append_positions, append_counts,
-                                state_destinations, dflash_rows, envelopes.append);
-
-            propose_batch_impl(state, frame, batch_size, k, envelopes);
+            // The draft phase's own collectives stay on the staged copies while the pinned-host
+            // mailbox carries the target forward below: this phase interleaves cross-device copies
+            // with its layer sums, and under WSL2 such a copy stalls behind the peer's spinning
+            // exchange kernel (issue #1). A full DFlash2 round hung the mailbox; see
+            // ProgramImpl::degrade_peer_mailbox().
+            std::optional<ops::PeerEvents::StagedScope> staged_draft;
+            if (tp != nullptr && tp->staged_draft_collectives) {
+                staged_draft.emplace(*tp->events);
+            }
+            if (tp != nullptr && tp->dflash != nullptr) {
+                // The split drafter (tp 2): both ranks append and propose (execution/tp2/).
+                dflash2_draft_round_tp2(state, batch_size, k, envelopes);
+            } else {
+                state.execution.work.reset();
+                Tensor compact_features = state.execution.work.alloc(
+                    DType::BF16,
+                    {dimension(state.execution.parameters.draft->feature_projection.weight.k),
+                     width, batch_size});
+                ops::prepare_ragged_prefix(dflash_state(state).pending_features, active_lanes,
+                                           context_starts, frontiers, compact_features,
+                                           append_positions, append_counts,
+                                           state.execution.device.stream);
+                append_context_impl(state, compact_features, append_positions, append_counts,
+                                    state_destinations, dflash_rows, envelopes.append);
+                propose_batch_impl(state, frame, batch_size, k, envelopes);
+            }
+            // Tensor-parallel width 2: the selecting rank's drafts (and, with the selector on
+            // rank 1, their distributions) reach rank 0 here. The host-side drafts copy and its
+            // completion event must follow the share: with a selector on rank 1, rank 0's
+            // draft_tokens is written by the pull, not by rank 0's proposal.
+            if (tp != nullptr) { dflash2_share_drafts_tp2(state, batch_size); }
+            staged_draft.reset();
             const auto draft_count = static_cast<std::size_t>(k) * batch_size;
             if (state.host_drafts.size() < draft_count) {
                 throw std::logic_error("DFlash host draft buffer is too small");
@@ -660,26 +691,6 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
             }
             ops::speculative_prepare_verify_inputs(anchors, drafts, frontiers, extents, verify_ids,
                                                    target_positions, stream);
-            if (tp != nullptr) {
-                // The pull is ordered after the proposal on rank 0's stream by a cross-device
-                // event, as the collectives' transfers are; nothing writes rank 0's drafts again
-                // this round. Rank 1 derives its verification inputs from the pulled drafts.
-                const ops::PeerEvents& events = *tp->events;
-                CUDA_CHECK(cudaEventRecord(events.inputs_ready(0), stream));
-                const detail::ScopedCurrentDevice scope(rank1->device);
-                CUDA_CHECK(cudaStreamWaitEvent(rank1->stream, events.inputs_ready(0), 0));
-                qwen3_5::DFlashDecodeState& peer = *state.peer_frame;
-                Tensor peer_drafts               = peer.draft_tokens.slice(1, 0, batch_size);
-                Tensor peer_verify_ids           = peer.verify_ids.slice(1, 0, batch_size);
-                Tensor peer_positions            = peer.verify_positions.slice(1, 0, batch_size);
-                CUDA_CHECK(cudaMemcpyAsync(peer_drafts.data, drafts.data, drafts.bytes(),
-                                           cudaMemcpyDeviceToDevice, rank1->stream));
-                ops::speculative_prepare_verify_inputs(
-                    peer.anchors.slice(0, 0, batch_size), peer_drafts,
-                    peer.execution_frontiers.slice(0, 0, batch_size),
-                    peer.proposal_extents.slice(0, 0, batch_size), peer_verify_ids, peer_positions,
-                    rank1->stream);
-            }
         }
 
 
@@ -692,6 +703,21 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                          &state.text_cache, nullptr, state.execution.tp);
         DFlashFeatureSink sink =
             batch_feature_sink_impl(state, active_lanes, valid_columns, width, batch_size);
+        // The split drafter captures rank 1's own features from its copy of the residual. The sink
+        // stores pointers to its batch controls, so they outlive it (named tensors, not the
+        // temporaries of the slice calls).
+        Tensor peer_lanes = state.peer_frame != nullptr
+                                ? state.peer_frame->active_lanes.slice(0, 0, batch_size)
+                                : Tensor{};
+        Tensor peer_valid_columns =
+            state.peer_frame != nullptr
+                ? state.peer_frame->target_valid_columns.slice(0, 0, batch_size)
+                : Tensor{};
+        std::optional<DFlashFeatureSink> peer_sink;
+        if (tp != nullptr && tp->dflash != nullptr && state.peer_frame != nullptr) {
+            peer_sink = dflash_peer_batch_sink(*tp->dflash, peer_lanes, peer_valid_columns, width,
+                                               batch_size);
+        }
         {
             nvtx::ScopedRange target_range(nvtx::Name::DecodeDFlashTarget, nvtx::Category::DFlash,
                                            static_cast<std::uint64_t>(width) * batch_size);
@@ -723,12 +749,14 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                 .sampling        = frame.sampling,
                 .feature_sink    = &sink,
             };
-            // Tensor-parallel width 2: rank 1 verifies with its own view, which carries no feature
-            // sink and no proposal distribution (the drafter and the acceptance are rank 0's).
+            // Tensor-parallel width 2: rank 1 verifies with its own view, which carries no
+            // proposal distribution (the drafter and the acceptance are rank 0's); with the split
+            // drafter it captures its target features into its own pending sink.
             const TargetVerifyFrameView peer_verify =
-                tp != nullptr ? dflash_verify_view(*state.peer_frame, batch_size,
-                                                   tp->replay_records, false, nullptr)
-                              : TargetVerifyFrameView{};
+                tp != nullptr
+                    ? dflash_verify_view(*state.peer_frame, batch_size, tp->replay_records, false,
+                                         peer_sink ? &*peer_sink : nullptr)
+                    : TargetVerifyFrameView{};
             if (phase == SpeculativePhase::Forward) {
                 if (tp != nullptr) {
                     target_verify_forward(state.execution, card, verify, peer_verify,
@@ -825,3 +853,6 @@ void dflash_decode_batch(DFlashBatchContext& state, std::int32_t batch_size, std
 }
 
 } // namespace ninfer::models::qwen3_5::execution
+
+#include "models/qwen3_5/execution/tp2/draft_peer.inc"
+#include "models/qwen3_5/execution/tp2/draft_tp2.inc"

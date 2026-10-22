@@ -212,6 +212,30 @@ void DFlashFeatureSink::capture_layer(int layer, const Tensor& value, cudaStream
     captured_mask |= 1U << index;
 }
 
+void DFlashFeatureSink::capture_layer_columns(int layer, const Tensor& value, std::int32_t first,
+                                              cudaStream_t stream) {
+    const auto it = std::find(layers.begin(), layers.end(), layer);
+    if (it == layers.end()) { return; }
+    const std::size_t index = static_cast<std::size_t>(it - layers.begin());
+    if (layers.size() > 32 || batch_features != nullptr || features == nullptr ||
+        active_tokens <= 0 || active_tokens > features->ne[1] || value.dtype != DType::BF16 ||
+        value.ne[0] * static_cast<std::int32_t>(layers.size()) != features->ne[0] || first < 0 ||
+        value.ne[1] <= 0 || value.ne[1] > active_tokens - first) {
+        throw std::logic_error("DFlash feature column capture shape is invalid");
+    }
+    const std::size_t element_bytes = dtype_size(DType::BF16);
+    const std::size_t width_bytes   = static_cast<std::size_t>(value.ne[0]) * element_bytes;
+    const std::size_t source_pitch  = static_cast<std::size_t>(value.nb[1]);
+    const std::size_t target_pitch  = static_cast<std::size_t>(features->nb[1]);
+    auto* target = static_cast<std::byte*>(features->data) +
+                   static_cast<std::size_t>(first) * target_pitch + index * width_bytes;
+    CUDA_CHECK(cudaMemcpy2DAsync(target, target_pitch, value.data, source_pitch, width_bytes,
+                                 static_cast<std::size_t>(value.ne[1]), cudaMemcpyDeviceToDevice,
+                                 stream));
+    // The layer counts as published once the window that closes the chunk is in.
+    if (first + value.ne[1] == active_tokens) { captured_mask |= 1U << index; }
+}
+
 void DFlashFeatureSink::capture_positions(const Tensor& source, cudaStream_t stream) {
     const std::uint32_t complete_mask = layers.size() == 32 ? ~0U : ((1U << layers.size()) - 1U);
     if (captured_mask != complete_mask) {
@@ -1567,6 +1591,35 @@ std::array<WorkspaceArena*, kTensorParallelWidth> TextContext::workspaces() cons
     return {&work_, tp_->work};
 }
 
+void TextContext::peer_tap_begin(const Tensor& x1) {
+    if (peer_feature_sink_ != nullptr) { peer_feature_sink_->begin(x1); }
+}
+
+void TextContext::peer_tap_capture_layer(int layer, const Tensor& x1) {
+    if (peer_feature_sink_ == nullptr) { return; }
+    const ScopedCurrentDevice rank1(tp_->execution->dev[1]->device);
+    peer_feature_sink_->capture_layer(layer, x1, rank_stream(1));
+}
+
+void TextContext::peer_tap_capture_layer_columns(int layer, const Tensor& x1, std::int32_t first) {
+    if (peer_feature_sink_ == nullptr) { return; }
+    const ScopedCurrentDevice rank1(tp_->execution->dev[1]->device);
+    peer_feature_sink_->capture_layer_columns(layer, x1, first, rank_stream(1));
+}
+
+void TextContext::peer_tap_capture_positions(const Tensor& positions1) {
+    if (peer_feature_sink_ == nullptr) { return; }
+    const ScopedCurrentDevice rank1(tp_->execution->dev[1]->device);
+    peer_feature_sink_->capture_positions(positions1, rank_stream(1));
+}
+
+void TextContext::peer_tap_consume_prefill_chunk(std::int32_t tokens, bool rewrite_checkpoint) {
+    if (peer_feature_sink_ == nullptr) { return; }
+    const ScopedCurrentDevice rank1(tp_->execution->dev[1]->device);
+    tp_->work->reset();
+    peer_feature_sink_->consume_prefill_chunk(tokens, rewrite_checkpoint);
+}
+
 cudaStream_t TextContext::rank_stream(int rank) const noexcept {
     return rank == 0 ? ctx_.stream : tp_->execution->dev[1]->stream;
 }
@@ -1991,6 +2044,7 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
             }
             if constexpr (Tap::enabled) {
                 tap.capture_layer(static_cast<int>(layer), x[0], ctx_.stream);
+                peer_tap_capture_layer(static_cast<int>(layer), x[1]);
             }
         } catch (const std::exception& error) {
             throw std::runtime_error(
@@ -2200,10 +2254,14 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
         const ops::CausalAttentionExecutionEnvelope chunk_envelope{visible, visible};
         ScopedEnvelope scoped_envelope(active_causal_attention_envelope_, chunk_envelope);
 
-        if constexpr (Tap::enabled) { tap.begin(x[0]); }
+        if constexpr (Tap::enabled) {
+            tap.begin(x[0]);
+            peer_tap_begin(x[1]);
+        }
         run_layers_tp2(x, Phase::Prefill, staging, tap);
         if constexpr (requires { tap.capture_positions(positions[0], s); }) {
             tap.capture_positions(positions[0], s);
+            peer_tap_capture_positions(positions[1]);
         }
 
         // Rank 0 keeps the whole normalized chunk (prefill_hidden and the rewrite checkpoint read
@@ -2367,6 +2425,7 @@ PrefillChunkResult TextContext::prefill_impl_tp2(std::span<const int> ids,
     if constexpr (requires { tap.consume_prefill_chunk(len, false); }) {
         work_.reset();
         tap.consume_prefill_chunk(len, split_rel > 0 && len == split_rel);
+        peer_tap_consume_prefill_chunk(len, split_rel > 0 && len == split_rel);
     }
 
     prefill_split_frontier_ = -1;
@@ -2475,11 +2534,16 @@ void TextContext::target_verify_batch_tp2_impl(
                            rank_stream(rank));
         });
         // A DFlash feature tap reads rank 0's residual after each layer's all-reduce, which holds
-        // the complete hidden state, and scatters it into rank 0's pending features.
-        if constexpr (Tap::enabled) { tap.begin(x[0]); }
+        // the complete hidden state, and scatters it into rank 0's pending features. With the
+        // split drafter, the peer sink scatters rank 1's copy into rank 1's pending features.
+        if constexpr (Tap::enabled) {
+            tap.begin(x[0]);
+            peer_tap_begin(x[1]);
+        }
         run_layers_tp2(x, Phase::Verify, staging, tap);
         if constexpr (requires { tap.capture_positions(cache_positions[0], ctx_.stream); }) {
             tap.capture_positions(cache_positions[0], ctx_.stream);
+            peer_tap_capture_positions(cache_positions[1]);
         }
 
         RankTensors flat_hidden;

@@ -34,7 +34,16 @@ namespace ninfer::models::qwen3_5::loading {
 //            run on rank 0 only, so rank 1 holds none of them. Under MTP, proposal/head instead
 //            splits by vocabulary Rows when indexed with at most ops::kArgmaxSplitMaxRowsPerRank
 //            rows per rank ([131072,5120] -> [65536,5120]); proposal/token_ids stays PrimaryOnly.
-//            NINFER_TP_DRAFT_HEAD=primary keeps that head PrimaryOnly too.
+//            NINFER_TP_DRAFT_HEAD=primary keeps that head PrimaryOnly too. Under DFlash2 with
+//            NINFER_TP_DRAFTER=split, proposal/head splits into ops::kLinearTopKSplitRows blocks
+//            and proposal/token_ids splits with it (the split top sixteen keys carry global IDs).
+//   At tp 2 with NINFER_TP_DRAFTER=split (opt-in; the default keeps rank 0 whole), the DFlash2
+//            drafter splits (split_dflash2_drafter in sharding.cpp): draft-block query/key/value
+//            Rows by heads, output Columns, mlp gate/up Rows, mlp down Columns; the conv kernels,
+//            per-head norms, feature projection, context norm and final norm are Replicated; the
+//            candidate selector is SingleDevice(1) (PrimaryOnly with Vision on rank 1,
+//            NINFER_TP_DRAFT_HEAD=primary or NINFER_TP_SELECTOR=primary). The proposal head and
+//            its token IDs follow the drafter split (ops::linear_topk_split blocks).
 //
 // MTP and a masked draft share text/token_embedding and the selected output head by WeightId,
 // so they see that parameter's per-rank view: MTP runs on both ranks and gathers the

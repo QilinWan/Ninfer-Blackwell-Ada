@@ -98,6 +98,9 @@ private:
 
     friend SequencePlanner make_sequence_planner(const execution::Parameters&, DeviceContext&,
                                                  const EngineOptions&);
+    friend SequencePlanner make_sequence_planner(const execution::Parameters&,
+                                                 const execution::Parameters&, DeviceContext&,
+                                                 const EngineOptions&);
 };
 
 class RequestBasePlan {
@@ -411,6 +414,9 @@ struct TpTransportStatus {
     // Under MTP with the optimized proposal head: "split by vocabulary" or "rank 0"
     // (NINFER_TP_DRAFT_HEAD=primary); empty otherwise.
     std::string proposal_head;
+    // tp 2 DFlash2: where the drafter runs, "split (...)" (both ranks) or "rank 0"
+    // (the shipped placement, NINFER_TP_DRAFTER unset/primary); empty otherwise.
+    std::string drafter;
 };
 
 class Program {
@@ -522,6 +528,13 @@ private:
 
 [[nodiscard]] SequencePlanner make_sequence_planner(const execution::Parameters&, DeviceContext&,
                                                     const EngineOptions&);
+// Tensor-parallel width 2, with Parameters(model, 0) and Parameters(model, 1) of one two-device
+// Model: rank 1's Parameters supply the split DFlash2 drafter's plan side (the candidate selector
+// placement, load/sharding.h).
+[[nodiscard]] SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
+                                                    const execution::Parameters& peer_parameters,
+                                                    DeviceContext& device,
+                                                    const EngineOptions& options);
 [[nodiscard]] std::unique_ptr<Program> create_program(const execution::Parameters&, SequencePlan&&,
                                                       DeviceContext&, const StartupObserver&);
 

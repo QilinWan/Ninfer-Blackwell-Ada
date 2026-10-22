@@ -61,6 +61,11 @@ struct DFlashFeatureSink {
 
     void begin(const Tensor& value);
     void capture_layer(int layer, const Tensor& value, cudaStream_t stream);
+    // A prefill chunk's layer output for the column window [first, first + value.ne[1]) only (the
+    // TP2 prefill overlap captures each half once its exchange has finished). The same bytes, at
+    // the same place, as capture_layer copies for those columns.
+    void capture_layer_columns(int layer, const Tensor& value, std::int32_t first,
+                               cudaStream_t stream);
     void capture_positions(const Tensor& source, cudaStream_t stream);
     void consume_prefill_chunk(std::int32_t tokens, bool rewrite_checkpoint);
 };
@@ -112,6 +117,11 @@ public:
     void set_prefill_split_frontier(std::int64_t position) noexcept {
         prefill_split_frontier_ = position;
     }
+
+    // The split DFlash2 drafter's rank 1 feature sink (tp 2 with the split drafter): beside the
+    // prefill chunk's rank-0 sink, the tp2 schedule captures rank 1's features from rank 1's copy
+    // of the residual. Null without the split drafter.
+    void set_peer_feature_sink(DFlashFeatureSink* sink) noexcept { peer_feature_sink_ = sink; }
 
     // `peer_output` is rank 1's StateImage column at tensor-parallel width 2 under MTP, the only
     // backend whose rank 1 reads a retained hidden (the MTP bridge); null otherwise.
@@ -282,6 +292,12 @@ private:
     void mlp_tail_tp2(const RankBlocks& weights, RankTensors& x, const RankTensors& staging);
     template <class Tap>
     void run_layers_tp2(RankTensors& x, Phase phase, const RankTensors& staging, Tap& tap);
+    // Rank 1's calls on peer_feature_sink_, beside the rank 0 tap's (no-ops without a peer sink).
+    void peer_tap_begin(const Tensor& x1);
+    void peer_tap_capture_layer(int layer, const Tensor& x1);
+    void peer_tap_capture_layer_columns(int layer, const Tensor& x1, std::int32_t first);
+    void peer_tap_capture_positions(const Tensor& positions1);
+    void peer_tap_consume_prefill_chunk(std::int32_t tokens, bool rewrite_checkpoint);
     template <class Tap>
     void target_verify_batch_tp2_impl(const RankTensors& ids, const RankTensors& cache_positions,
                                       const RankTensors& rope_positions,
@@ -416,6 +432,8 @@ private:
     std::int64_t prefill_split_frontier_           = -1;
     Tensor* rewrite_checkpoint_hidden_output_      = nullptr;
     Tensor* peer_rewrite_checkpoint_hidden_output_ = nullptr;
+    // The split DFlash2 drafter's rank 1 feature sink (set_peer_feature_sink); null otherwise.
+    DFlashFeatureSink* peer_feature_sink_          = nullptr;
     std::uint32_t mtp_proposal_extent_             = 0;
 
     const Weight* embed_                        = nullptr;

@@ -324,12 +324,17 @@ void ProgramImpl::publish_capture(ContextTransaction& tx) {
         state.state = {.read = *tx.reserved_state, .write = *tx.reserved_state};
     } else {
         ++tx.operations.state_forks;
-        (void)state_store->begin_fork(source_state, *tx.reserved_state);
+        const auto selectors = state_store->begin_fork(source_state, *tx.reserved_state);
         state.state = {
             .read         = source_state,
             .write        = *tx.reserved_state,
             .fork_pending = true,
         };
+        // The split drafter's rank-local rings fork with the StateImage slots they ride on; the
+        // mirror branch of copy_dflash_local carries them to rank 1 (state/state_image.cpp).
+        if (is_masked_draft_backend(speculative_backend)) {
+            copy_local_for_context(tx, selectors.source, selectors.destination);
+        }
     }
     tx.reserved_state.reset();
     refresh_history_requirements(state.kv);

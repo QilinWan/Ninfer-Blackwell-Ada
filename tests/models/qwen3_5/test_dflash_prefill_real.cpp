@@ -131,7 +131,7 @@ void run(const char* artifact, SpeculativeBackend backend) {
     options.speculative.backend               = backend;
     options.speculative.draft_tokens          = 3;
     options.speculative.proposal_head         = ProposalHead::Full;
-    auto planner = qwen::detail::make_sequence_planner_impl(parameters, device, options);
+    auto planner = qwen::detail::make_sequence_planner_impl(parameters, nullptr, device, options);
     auto plan    = qwen::detail::finalize_sequence_plan_impl(std::move(planner), 2 * pages);
     qwen::detail::ProgramImpl program(parameters, *plan, device, {});
 

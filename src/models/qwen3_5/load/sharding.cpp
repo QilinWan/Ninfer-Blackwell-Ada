@@ -2,6 +2,7 @@
 
 #include "artifact/reader.h"
 #include "ninfer/ops/argmax.h"
+#include "ninfer/ops/linear_topk.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -137,10 +138,14 @@ std::uint64_t row_elements(const artifact::Shape& shape) {
     return shape.size() > 1 ? weight_element_count(std::span(shape).subspan(1)) : 1;
 }
 
-// Sorts, rejects overlaps and joins adjacent ranges.
+// Sorts, rejects overlaps and joins adjacent ranges. Parameters that share a parent's rows (the
+// DFlash2 drafter's context key/value and key/value, one fused Q|K|V object in the artifact)
+// demand the same range twice: an exact duplicate is one range.
 void normalize(std::vector<SliceRange>& ranges, const std::string& id) {
-    std::sort(ranges.begin(), ranges.end(),
-              [](const SliceRange& a, const SliceRange& b) { return a.begin < b.begin; });
+    std::sort(ranges.begin(), ranges.end(), [](const SliceRange& a, const SliceRange& b) {
+        return a.begin != b.begin ? a.begin < b.begin : a.count < b.count;
+    });
+    ranges.erase(std::unique(ranges.begin(), ranges.end()), ranges.end());
     std::vector<SliceRange> out;
     for (const auto& range : ranges) {
         if (!out.empty() && out.back().begin + out.back().count > range.begin) {
@@ -198,17 +203,126 @@ bool proposal_head_primary_requested() {
     return value != nullptr && std::string_view(value) == "primary";
 }
 
-// MTP proposes on both ranks, so its optimized head splits by vocabulary rows when it is indexed
-// (fewer rows than the vocabulary, every row a candidate) and each rank's block fits the split
-// argmax. DFlash2's rank-0 drafter ranks candidates over the whole head (linear_topk), which stays
-// PrimaryOnly, as do the proposal token IDs: rank 0 maps the selected row.
+// NINFER_TP_DRAFTER=split opts the DFlash2 drafter and its vocabulary-split proposal head (with
+// its token IDs) into the two-rank split placement. The default (no environment, or
+// NINFER_TP_DRAFTER=primary) keeps every drafter weight and its proposal head whole on rank 0:
+// this tree's shipped placement, and the placement the reference implementation made its default
+// (docs/df2-split/api-diff.md §5). Flip the default after the P4 gates.
+bool drafter_split_requested() {
+    const char* value = std::getenv("NINFER_TP_DRAFTER");
+    return value != nullptr && std::string_view(value) == "split";
+}
+
+// The DFlash2 drafter at tp 2: a draft block's attention heads and MLP rows split like a Text
+// block's, with the query, key and value heads of each rank in contiguous blocks; the convolution
+// kernels, the norms and the feature projection are replicated (every rank computes the same
+// context and conv coefficients from its own copy of the replicated residual); the candidate
+// selector sits on one rank (selector_rank()).
+bool split_dflash2_drafter(const Config& config, const LoadOptions& options) {
+    return options.dflash2() && options.tp > 1 && drafter_split_requested() && config.draft &&
+           config.draft->dflash2 && config.draft->full_layer_count() == 0;
+}
+
+// NINFER_TP_SELECTOR=primary keeps the split drafter's candidate selector on rank 0, the placement
+// before it moved to rank 1, for A/B runs on one binary.
+bool selector_primary_requested() {
+    const char* value = std::getenv("NINFER_TP_SELECTOR");
+    return value != nullptr && std::string_view(value) == "primary";
+}
+
+// The rank of the split drafter's candidate selector (hidden projection and codebooks, 257 MB for
+// Qwen3.8-27B): rank 1, which holds no Vision tower and so has the more free memory after the
+// weights, leaving rank 0 (the one that bounds the KV capacity) that much more context. Rank 0 with
+// the Vision tower on rank 1, with the proposal head whole on rank 0
+// (NINFER_TP_DRAFT_HEAD=primary), or with NINFER_TP_SELECTOR=primary. The split round ranks the
+// candidates of both proposal head blocks, and the selecting rank sends the drafts and their
+// distributions to the other.
+int selector_rank(const LoadOptions& options) {
+    const bool vision_on_rank1 = options.vision && options.vision_rank == 1;
+    return vision_on_rank1 || proposal_head_primary_requested() || selector_primary_requested() ? 0
+                                                                                                : 1;
+}
+
+LogicalShard draft_block_shard(std::string_view name, std::string_view leaf,
+                               const artifact::Shape& shape, const DraftConfig& draft, int tp) {
+    if (leaf == "input_norm" || leaf == "post_attention_norm" || leaf == "attention/query_norm" ||
+        leaf == "attention/key_norm" || leaf.starts_with("attention_conv/") ||
+        leaf.starts_with("mlp_conv/")) {
+        return whole(ShardAxis::Replicated);
+    }
+    const auto& a = draft.attention;
+    if (leaf == "attention/query") {
+        return even(name, ShardAxis::Rows, leading(name, shape), a.num_attention_heads, tp);
+    }
+    if (leaf == "attention/key" || leaf == "attention/value" || leaf == "attention/context_key" ||
+        leaf == "attention/context_value") {
+        return even(name, ShardAxis::Rows, leading(name, shape), a.num_key_value_heads, tp);
+    }
+    if (leaf == "attention/output") {
+        return even(name, ShardAxis::Columns, trailing(name, shape), a.num_attention_heads, tp);
+    }
+    if (leaf == "mlp/gate" || leaf == "mlp/up") {
+        const auto rows = leading(name, shape);
+        return even(name, ShardAxis::Rows, rows, rows, tp);
+    }
+    if (leaf == "mlp/down") {
+        const auto columns = trailing(name, shape);
+        return even(name, ShardAxis::Columns, columns, columns, tp);
+    }
+    reject(name, "has no DFlash2 drafter placement for this parameter");
+}
+
+LogicalShard drafter_shard(std::string_view name, const artifact::Shape& shape,
+                           const Config& config, const LoadOptions& options) {
+    const int tp                      = options.tp;
+    constexpr std::string_view layers = "dflash2/layers/";
+    if (name.starts_with(layers)) {
+        const auto slash = name.find('/', layers.size());
+        if (slash != std::string_view::npos) {
+            return draft_block_shard(name, name.substr(slash + 1), shape, *config.draft, tp);
+        }
+    }
+    if (name == "dflash2/feature_projection" || name == "dflash2/context_norm" ||
+        name == "dflash2/final_norm") {
+        return whole(ShardAxis::Replicated);
+    }
+    if (in_component(name, "dflash2/candidate_selector")) {
+        return selector_rank(options) == 0 ? whole(ShardAxis::PrimaryOnly)
+                                           : whole(ShardAxis::SingleDevice, 1);
+    }
+    reject(name, "has no DFlash2 drafter placement for this parameter");
+}
+
+// The optimized head splits by vocabulary rows when it is indexed (fewer rows than the vocabulary,
+// every row a candidate) and each rank's block has a registered split route. MTP proposes on both
+// ranks through the split argmax (at most ops::kArgmaxSplitMaxRowsPerRank rows per rank); its
+// token IDs stay PrimaryOnly, rank 0 mapping the selected row. DFlash2 ranks candidates through
+// the vocabulary-split top sixteen (ops::linear_topk_split, [65536,5120] blocks), whose keys
+// carry global token IDs: its token IDs split with the head's rows, under the same opt-in
+// environment as the drafter (drafter_split_requested).
+bool split_proposal_rows(std::uint64_t rows, const Config& config, const LoadOptions& options) {
+    if (proposal_head_primary_requested() || rows == config.text.vocab_size) { return false; }
+    const auto tp = static_cast<std::uint64_t>(options.tp);
+    if (rows % tp != 0) { return false; }
+    if (options.mtp()) {
+        return rows / tp <= static_cast<std::uint64_t>(ops::kArgmaxSplitMaxRowsPerRank);
+    }
+    if (options.dflash2()) {
+        return drafter_split_requested() &&
+               rows / tp == static_cast<std::uint64_t>(ops::kLinearTopKSplitRows);
+    }
+    return false;
+}
+
 bool split_proposal_head(const artifact::Shape& shape, const Config& config,
                          const LoadOptions& options) {
-    if (!options.mtp() || shape.size() != 2 || proposal_head_primary_requested()) { return false; }
-    const auto rows = shape.front();
-    const auto tp   = static_cast<std::uint64_t>(options.tp);
-    return rows != config.text.vocab_size && rows % tp == 0 &&
-           rows / tp <= static_cast<std::uint64_t>(ops::kArgmaxSplitMaxRowsPerRank);
+    return shape.size() == 2 && split_proposal_rows(shape.front(), config, options);
+}
+
+bool split_proposal_token_ids(const artifact::Shape& shape, const Config& config,
+                              const LoadOptions& options) {
+    return options.dflash2() && shape.size() == 1 &&
+           split_proposal_rows(shape.front(), config, options);
 }
 
 // logical_shard() for options that validate_tensor_parallel_ranks() accepted.
@@ -222,9 +336,13 @@ LogicalShard shard_rule(std::string_view name, const artifact::Shape& shape, con
     if (in_component(name, "vision")) {
         return whole(ShardAxis::SingleDevice, options.vision_rank);
     }
-    if (name == "proposal/head" && split_proposal_head(shape, config, options)) {
+    if ((name == "proposal/head" && split_proposal_head(shape, config, options)) ||
+        (name == "proposal/token_ids" && split_proposal_token_ids(shape, config, options))) {
         const auto rows = leading(name, shape);
         return even(name, ShardAxis::Rows, rows, rows, tp);
+    }
+    if (in_component(name, "dflash2") && split_dflash2_drafter(config, options)) {
+        return drafter_shard(name, shape, config, options);
     }
     if (in_component(name, "dflash") || in_component(name, "dflash2") ||
         in_component(name, "proposal")) {

@@ -302,7 +302,15 @@ const TpTransportStatus& Program::tp_transport() const noexcept { return impl_->
 
 SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
                                       DeviceContext& device, const EngineOptions& options) {
-    return SequencePlanner(detail::make_sequence_planner_impl(parameters, device, options));
+    return SequencePlanner(
+        detail::make_sequence_planner_impl(parameters, nullptr, device, options));
+}
+
+SequencePlanner make_sequence_planner(const execution::Parameters& parameters,
+                                      const execution::Parameters& peer_parameters,
+                                      DeviceContext& device, const EngineOptions& options) {
+    return SequencePlanner(
+        detail::make_sequence_planner_impl(parameters, &peer_parameters, device, options));
 }
 
 std::unique_ptr<Program> create_program(const execution::Parameters& parameters,

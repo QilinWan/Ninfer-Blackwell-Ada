@@ -3,6 +3,7 @@
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/mtp.h"
 #include "models/qwen3_5/execution/tp.h"
+#include "models/qwen3_5/execution/tp2/draft_split.h"
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/planning/startup.h"
@@ -118,7 +119,8 @@ TensorLayout add_tensor(LayoutBuilder& builder, DType dtype,
 
 // Rank `rank_index`'s persistent layout. At tp 2 the ranks differ only in the masked drafter's
 // state (its context, pending and prefill features and the DFlash local slots of each StateImage):
-// the drafter runs on rank 0 alone, so rank 1 holds none of it.
+// the split DFlash2 drafter keeps its state on both ranks, each ring holding the rank's KV heads
+// (execution/tp2/draft_split.h); the unsplit drafter is rank 0's alone.
 PersistentLayout persistent_layout(const SequencePlanImpl& plan, int rank_index) {
     const auto& parameters = *plan.parameters;
     const auto& config     = parameters.model.config().text;
@@ -126,7 +128,9 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan, int rank_index)
     // state keeps the complete vocabulary: rank 0 gathers the complete logits and samples there.
     // Rank 1's round state has the same layout, so its logits frames are allocated but unused.
     const TextConfig rank = execution::shard_text_config(config, plan.tp);
-    const bool drafter    = plan.features.masked_draft() && rank_index == 0;
+    const bool split_drafter =
+        plan.tp != 1 && plan.parameters != nullptr && execution::dflash2_drafter_split(parameters);
+    const bool drafter = plan.features.masked_draft() && (rank_index == 0 || split_drafter);
 
     if (!plan.context_cache.device_state_slots) {
         throw std::logic_error("Qwen3.5 context cache options are not normalized");
@@ -183,7 +187,8 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan, int rank_index)
             state_image_spec.dflash_local = qwen3_5::DFlashLocalStateSpec{
                 .layers   = draft->local_layer_count(),
                 .capacity = draft->sliding_window.value_or(0),
-                .kv_heads = dimension(draft->attention.num_key_value_heads),
+                .kv_heads =
+                    dimension(draft->attention.num_key_value_heads) / (split_drafter ? plan.tp : 1),
                 .head_dim = dimension(draft->attention.head_dim),
             };
         }
@@ -346,8 +351,12 @@ std::size_t dflash_context_workspace(const SequencePlanImpl& plan, std::int32_t 
         (void)workspace::dflash_context(layout, config, draft, local_width * batch);
         reserve_linear(layout, parameters.draft->feature_projection, local_width * batch,
                        local_width * batch);
-        reserve_scratch(layout, ops::context_kv_materialize_workspace_capacity_bytes(
-                                    batch, local_width, local_width));
+        reserve_scratch(
+            layout, execution::dflash2_drafter_split(parameters)
+                        ? ops::context_kv_materialize_head_block_workspace_capacity_bytes(
+                              batch, local_width, local_width)
+                        : ops::context_kv_materialize_workspace_capacity_bytes(batch, local_width,
+                                                                               local_width));
         return layout.peak_bytes(1);
     }
     (void)workspace::dflash_context(layout, config, draft, tokens);
@@ -462,6 +471,89 @@ std::size_t dflash_proposal_workspace(const SequencePlanImpl& plan, std::int32_t
         reserve_matrix(layout, DType::BF16, dimension(config.vocab_size), drafts * batch);
     }
     reserve_linear(layout, head, drafts * batch, drafts * batch);
+    return layout.peak_bytes(1);
+}
+
+// One rank's proposal of the split drafter over `batch` rows of `width` masked-block columns, in
+// the allocation order of execution/tp2/draft_tp2.inc (propose_dflash2_batch_tp2). Both ranks run
+// the same layers at their shard shapes and rank with their head blocks; the selecting rank (rank
+// 1 by default, load/sharding.h) also projects and selects, so the plan includes that step and
+// bounds both ranks.
+std::size_t dflash_proposal_workspace_split(const SequencePlanImpl& plan, std::int32_t width,
+                                            std::int32_t batch) {
+    const auto& parameters     = *plan.parameters;
+    const auto& config         = parameters.model.config().text;
+    const auto& draft          = *parameters.model.config().draft;
+    const auto drafts          = static_cast<std::int32_t>(plan.draft_window);
+    const std::int32_t hidden  = dimension(config.hidden_size);
+    const std::int32_t columns = width * batch;
+    const std::int32_t mask    = drafts * batch;
+    const ops::AttentionHeadGeometry heads{128, 16, 4};
+    WorkspaceLayoutBuilder layout;
+    reserve_matrix(layout, DType::BF16, hidden, columns); // residual
+    reserve_matrix(layout, DType::BF16, hidden, columns); // all-reduce staging
+    const auto prepare = [&] {
+        (void)workspace::dflash2_branch(layout, config, draft, width, batch);
+        reserve_scratch(layout, ops::rmsnorm_dynamic_grouped_conv_prepare_workspace_capacity_bytes(
+                                    width, width, batch, batch));
+    };
+    for (const auto& block : parameters.draft->layers) {
+        {
+            auto attention = layout.scope();
+            prepare();
+            reserve_matrix(layout, DType::BF16, 128 * heads.query_heads, columns);
+            reserve_matrix(layout, DType::BF16, 128 * heads.kv_heads, columns);
+            reserve_matrix(layout, DType::BF16, 128 * heads.kv_heads, columns);
+            reserve_matrix(layout, DType::BF16, 128 * heads.query_heads, columns);
+            reserve_scratch(layout,
+                            ops::sliding_window_attention_head_block_workspace_capacity_bytes(
+                                heads, dimension(draft.sliding_window.value_or(0)),
+                                {0, plan.capacity}, width, width, batch));
+            reserve_matrix(layout, DType::BF16, hidden, columns);
+            reserve_linear(layout, block.output, columns, columns);
+        }
+        {
+            auto mlp = layout.scope();
+            prepare();
+            const auto& gate_up = block.mlp.gate_up;
+            if (execution::dflash2_split_mlp_fused(gate_up)) {
+                reserve_matrix(layout, DType::BF16, gate_up.weight.n / 2, columns);
+                reserve_scratch(layout, ops::linear_swiglu_workspace_capacity_bytes(
+                                            gate_up.weight.qtype, gate_up.weight.n,
+                                            gate_up.weight.k, gate_up.policy, columns, columns));
+            } else {
+                reserve_matrix(layout, DType::BF16, gate_up.weight.n, columns);
+                reserve_linear(layout, gate_up, columns, columns);
+                reserve_matrix(layout, DType::BF16, gate_up.weight.n / 2, columns);
+            }
+            reserve_matrix(layout, DType::BF16, hidden, columns);
+            reserve_linear(layout, block.mlp.down, columns, columns);
+        }
+    }
+    reserve_matrix(layout, DType::BF16, hidden, mask);
+    reserve_matrix(layout, DType::FP32, dimension(draft.dflash2->selector_top_k), mask);
+    if (plan.proposal_head == ProposalHead::Optimized && parameters.proposal &&
+        parameters.proposal->split()) {
+        reserve_scratch(layout, execution::dflash2_candidates_split_workspace_bytes(
+                                    *parameters.proposal, hidden, mask, false));
+    } else {
+        const auto& head = plan.proposal_head == ProposalHead::Optimized
+                               ? parameters.proposal->head
+                               : parameters.draft->output_head;
+        reserve_scratch(layout, ops::linear_topk_workspace_capacity_bytes(
+                                    head.weight.qtype, head.weight.n, head.weight.k, mask, mask));
+    }
+    // The selecting rank's projection (rank 1's with the candidate selector there).
+    const execution::Parameters& selecting =
+        parameters.draft->selector || plan.peer_parameters == nullptr ? parameters
+                                                                      : *plan.peer_parameters;
+    if (!selecting.draft || !selecting.draft->selector) {
+        throw std::logic_error("tensor-parallel DFlash2 planning found no candidate selector");
+    }
+    reserve_matrix(layout, DType::BF16, dimension(draft.dflash2->selector_rank), mask);
+    reserve_linear(layout, selecting.draft->selector->hidden_projection, mask, mask);
+    reserve_scratch(layout, ops::candidate_selector_path_workspace_capacity_bytes(drafts, drafts,
+                                                                                  batch, batch));
     return layout.peak_bytes(1);
 }
 
@@ -801,7 +893,9 @@ WorkspacePlan build_tensor_parallel_workspace_plan(const SequencePlanImpl& plan)
             out.dflash_round = std::max({out.dflash_round, verification(batch),
                                          dflash_accept_workspace(plan, batch),
                                          dflash_context_workspace(plan, verify, batch, true),
-                                         dflash_proposal_workspace(plan, verify, batch)});
+                                         execution::dflash2_drafter_split(parameters)
+                                             ? dflash_proposal_workspace_split(plan, verify, batch)
+                                             : dflash_proposal_workspace(plan, verify, batch)});
         }
     }
     // Phases both ranks run are shared; the causal score tile is not.  Take each rank's maximum
@@ -1308,6 +1402,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     }
     auto impl                  = std::make_unique<SequencePlanImpl>();
     impl->parameters           = inputs.parameters;
+    impl->peer_parameters      = inputs.peer_parameters;
     impl->capacity             = inputs.capacity;
     impl->main_page_groups     = main_page_groups;
     impl->kv_capacity          = static_cast<std::uint32_t>(checked_i32(
@@ -1435,11 +1530,13 @@ std::size_t bound_rank_sequence_bytes(std::size_t rank0_persistent_bytes,
 }
 
 std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
-make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
+make_sequence_planner_impl(const execution::Parameters& parameters,
+                           const execution::Parameters* peer_parameters, DeviceContext& device,
                            const EngineOptions& options) {
     validate_target_options(parameters, device, options);
     SequencePlanningInputs inputs{
         .parameters           = &parameters,
+        .peer_parameters      = peer_parameters,
         .capacity             = options.max_context,
         .max_concurrency      = options.max_concurrency,
         .prefill_chunk        = std::min(options.prefill_chunk, options.max_context),

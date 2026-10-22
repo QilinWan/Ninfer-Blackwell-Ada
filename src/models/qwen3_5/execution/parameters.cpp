@@ -295,7 +295,10 @@ public:
                     return result;
                 }));
         }
-        if (w.selector) {
+        // The split drafter's selector is held by one rank (load/sharding.h: SingleDevice(1) by
+        // default); the other rank's DraftParameters carries none, and the round reads it through
+        // the selecting rank's Parameters.
+        if (w.selector && resident(w.selector->hidden_projection)) {
             out.selector = SelectorParameters{linear(w.selector->hidden_projection),
                                               tensor(w.selector->predecessor_codebook),
                                               tensor(w.selector->successor_codebook)};

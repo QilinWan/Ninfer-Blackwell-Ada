@@ -1,5 +1,6 @@
 #pragma once
 #include "models/qwen3_5/program/internal.h"
+#include "models/qwen3_5/execution/tp2/draft_split.h"
 
 #include "core/arena.h"
 #include "core/device.h"
@@ -402,6 +403,11 @@ public:
         Tensor score_hidden;
         // Views rank 1's ordinary decode frame; empty under a speculative backend.
         execution::OrdinaryPeerFrame ordinary;
+        // Rank 1's copy of the drafter's persistent state (rings of its four KV heads, prefill and
+        // pending target features) and its operands view; only with the split drafter, whose
+        // state this names (execution/tp2/draft_split.h). The planner lays out `dflash` (P3.6).
+        std::optional<execution::DFlashPeerDrafter> drafter;
+        std::optional<DFlashPersistentState> dflash;
     };
 
     ExecutionContext* execution_context          = nullptr;

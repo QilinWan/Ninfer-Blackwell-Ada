@@ -2,6 +2,7 @@
 #include "models/qwen3_5/program/context_work.h"
 #include "models/qwen3_5/program/execution_context.h"
 #include "models/qwen3_5/execution/linear.h"
+#include "models/qwen3_5/execution/tp2/draft_split.h"
 #include "models/qwen3_5/execution/workspace.h"
 #include "core/startup.h"
 #include "core/device.h"
@@ -39,8 +40,9 @@ ZeroFill tensor_parallel_zero_fill(const SequencePlanImpl& plan) noexcept {
 } // namespace
 
 const PersistentLayout& ProgramImpl::PeerRuntime::layout(const SequencePlanImpl& plan) {
-    if (!plan.peer_persistent || plan.peer_persistent->dflash ||
-        plan.peer_persistent->state_images.dflash_local) {
+    // Rank 1 holds drafter state only for the split DFlash2 drafter, and then all of it.
+    if (!plan.peer_persistent || plan.peer_persistent->dflash.has_value() !=
+                                     plan.peer_persistent->state_images.dflash_local.has_value()) {
         throw std::logic_error("tensor-parallel plan has no rank 1 persistent layout");
     }
     return *plan.peer_persistent;
@@ -69,6 +71,12 @@ ProgramImpl::PeerRuntime::PeerRuntime(DeviceContext& peer_device, const Sequence
     io             = qwen3_5::RoundState(backing, own.round);
     prefill_hidden = own.prefill_hidden.bind(backing);
     if (own.score_hidden) { score_hidden = own.score_hidden->bind(backing); }
+    // The split drafter's rank 1 state: the planner lays out `own.dflash` and enables the rank 1
+    // StateImage dflash slot (P3.6). Until then a plan with rank 1 drafter storage is rejected
+    // below, and rank 1 holds only its DFlash2 verification state.
+    if (own.dflash && state_images->dflash_local()) {
+        dflash.emplace(backing, *own.dflash, *state_images->dflash_local());
+    }
     // A scoring Program decodes nothing: its round state has no decode frame.
     if (static_cast<int>(io.ordinary.has_value()) + static_cast<int>(io.mtp_decode.has_value()) +
             static_cast<int>(io.dflash_decode.has_value()) !=
@@ -171,6 +179,13 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             proposal_head == ProposalHead::Optimized) {
             tp_transport_status.proposal_head =
                 peer_parameters->proposal ? "split by vocabulary" : "rank 0";
+        }
+        if (speculative_backend == SpeculativeBackend::DFlash2) {
+            tp_transport_status.drafter =
+                !execution::dflash2_drafter_split(*peer_parameters) ? "rank 0"
+                : execution::dflash2_selector_rank(parameters) == 1
+                    ? "split (16/4 attention heads, MLP halves per rank; selector on rank 1)"
+                    : "split (16/4 attention heads, MLP halves per rank; selector on rank 0)";
         }
         {
             // cudaMalloc is neither stream-ordered nor capturable: rank 1's storage is allocated
@@ -327,11 +342,28 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             throw std::logic_error("tensor-parallel rank 1 has no MTP storage");
         }
         // Rank 1 verifies DFlash2 proposals in its own copy of the decode frame and records its
-        // GDN heads for the commit fold; it holds none of the drafter's state.
+        // GDN heads for the commit fold. With the split drafter it also holds its half of the
+        // drafter and all of the drafter's state (rings of its four KV heads, prefill and pending
+        // features); the split placement is decided by rank 1's Parameters (load/sharding.h).
+        const bool split_drafter = is_masked_draft_backend(speculative_backend) &&
+                                   execution::dflash2_drafter_split(*peer_parameters);
         if (is_masked_draft_backend(speculative_backend) &&
             (!peer->io.dflash_decode || !peer->replay_records ||
-             peer->state_images->dflash_local() != nullptr)) {
+             peer->dflash.has_value() != split_drafter ||
+             (peer->state_images->dflash_local() != nullptr) != split_drafter ||
+             execution::dflash2_drafter_split(parameters) != split_drafter)) {
             throw std::logic_error("tensor-parallel rank 1 has no DFlash2 verification storage");
+        }
+        if (split_drafter) {
+            if (!peer->io.dflash_prefill) {
+                throw std::logic_error("tensor-parallel rank 1 has no DFlash2 prefill controls");
+            }
+            peer->drafter.emplace(execution::DFlashPeerDrafter{
+                .execution = {peer->device, *peer_parameters, peer->work,
+                              peer->state_images->linear(), &*peer->replay_records, peer->io,
+                              peer->prefill_hidden, prefill_chunk, proposal_head},
+                .dflash    = *peer->dflash,
+            });
         }
         tp_execution.emplace(execution::TpExecution{
             .execution            = execution_context,
@@ -343,6 +375,7 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
             .text_kv_table_row    = peer->io.text_kv_table_row,
             .ordinary             = peer->io.ordinary ? &peer->ordinary : nullptr,
             .replay_records       = speculative ? &*peer->replay_records : nullptr,
+            .dflash               = peer->drafter ? &*peer->drafter : nullptr,
             .mtp_cache            = mtp ? peer->decoder->mtp_cache() : nullptr,
             .mtp_kv               = {},
             .backend_kv_table_row = mtp ? peer->io.backend_kv_table_row : Tensor{},

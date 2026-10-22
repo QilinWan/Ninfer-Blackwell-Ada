@@ -85,6 +85,9 @@ struct WorkspacePlan {
 
 struct SequencePlanningInputs {
     const execution::Parameters* parameters = nullptr;
+    // At tp 2: Parameters(model, 1), the rank 1 shard views the split DFlash2 drafter plans its
+    // side against (the candidate selector placement, load/sharding.h); null at tp 1.
+    const execution::Parameters* peer_parameters = nullptr;
     std::uint32_t capacity                  = 0;
     std::uint32_t max_concurrency           = 1;
     std::uint32_t prefill_chunk             = 0;
@@ -108,6 +111,7 @@ struct SequencePlanningInputs {
 
 struct SequencePlanImpl {
     const execution::Parameters* parameters = nullptr;
+    const execution::Parameters* peer_parameters = nullptr;
     std::uint32_t capacity                  = 0;
     std::uint32_t kv_capacity               = 0;
     std::uint32_t main_page_groups          = 0;
@@ -144,7 +148,8 @@ struct SequencePlannerImpl {
 };
 
 [[nodiscard]] std::unique_ptr<qwen3_5::detail::SequencePlannerImpl>
-make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContext& device,
+make_sequence_planner_impl(const execution::Parameters& parameters,
+                           const execution::Parameters* peer_parameters, DeviceContext& device,
                            const EngineOptions& options);
 [[nodiscard]] std::unique_ptr<SequencePlanImpl>
 finalize_sequence_plan_impl(std::unique_ptr<qwen3_5::detail::SequencePlannerImpl> planner,

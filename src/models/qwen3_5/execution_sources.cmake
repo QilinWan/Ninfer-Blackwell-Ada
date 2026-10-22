@@ -8,5 +8,6 @@ target_sources(ninfer_model_runtime PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/execution/tp.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/execution/vision.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/execution/draft.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/execution/tp2/draft_split.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/execution/visual_scatter.cpp"
 )
