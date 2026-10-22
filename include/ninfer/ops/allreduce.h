@@ -203,6 +203,14 @@ void allreduce_sum(const std::array<Tensor, 2>& buffer, const std::array<Tensor,
                    const ExecutionContext& ec, const PeerEvents& events);
 
 namespace detail {
+// The mailbox attached to `events` when a captured exchange of `bytes` would take it: a mailbox
+// that serves `ec` is attached, no StagedScope is open, `bytes` is whole 16-byte vectors within
+// one slot, and both ranks' streams are capturing into the same capture. Null otherwise. Leaves
+// the current device changed (the caller restores it). The forward code uses it to name the
+// prefetch hint for the next captured exchange (tp2/exchange_prefetch).
+[[nodiscard]] PeerMailbox* captured_mailbox_for(std::size_t bytes, const ExecutionContext& ec,
+                                                const PeerEvents& events);
+
 // allreduce_sum()'s argument checks alone; allreduce_sum() runs them itself. A row-parallel form
 // calls this before issuing either rank's partial, so a call rejected for its all-reduce
 // arguments enqueues nothing.

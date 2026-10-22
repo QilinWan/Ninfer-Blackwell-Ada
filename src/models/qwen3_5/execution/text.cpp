@@ -4,6 +4,7 @@
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/ffn.h"
 #include "models/qwen3_5/execution/mtp.h"
+#include "models/qwen3_5/execution/tp2/exchange_prefetch.h"
 #include "models/qwen3_5/execution/workspace.h"
 
 #include "core/device_scope.h"
@@ -161,6 +162,47 @@ void for_each_rank(const ExecutionContext& execution, Body&& body) {
         ScopedCurrentDevice::select(execution.dev[static_cast<std::size_t>(rank)]->device);
         body(rank);
     }
+}
+
+// L2 prefetch hints of the decode exchanges (tp2/exchange_prefetch.h). The mixer's all-reduce is
+// followed by the post-attention norm and the paired gate|up GEMM of the same layer.
+std::array<ExchangePrefetch, 2>
+ffn_input_prefetch(const std::array<const BlockParameters*, 2>& block, std::size_t bytes) {
+    std::array<ExchangePrefetch, 2> hint;
+    for (std::size_t r = 0; r < 2; ++r) {
+        if (const auto* dense = std::get_if<DenseParameters>(&block[r]->ffn)) {
+            append_prefetch_paired_prefix(dense->gate_up.weight, bytes, hint[r]);
+        }
+    }
+    return hint;
+}
+
+// The FFN's all-reduce is followed by the next layer's input norm and input projection: Q|K|G|V
+// for attention; for GDN the small BF16 A|B gating projection (whole) and then Q|K|V|Z.
+std::array<ExchangePrefetch, 2>
+mixer_input_prefetch(const std::array<const BlockParameters*, 2>& block, std::size_t bytes) {
+    std::array<ExchangePrefetch, 2> hint;
+    for (std::size_t r = 0; r < 2; ++r) {
+        if (const auto* attention = std::get_if<AttentionParameters>(&block[r]->mixer)) {
+            if (const Weight* w = single_projection(attention->projection)) {
+                append_prefetch_prefix(*w, bytes, hint[r]);
+            }
+        } else if (const auto* gdn = std::get_if<GdnParameters>(&block[r]->mixer)) {
+            std::size_t left = bytes;
+            if (const Weight* control = single_projection(gdn->control)) {
+                const std::size_t whole =
+                    prefetch_row_bytes(*control) * static_cast<std::size_t>(control->n);
+                if (whole != 0 && whole <= bytes / 2) {
+                    append_prefetch_rows(*control, 0, control->n, hint[r]);
+                    left -= whole;
+                }
+            }
+            if (const Weight* w = single_projection(gdn->projection)) {
+                append_prefetch_prefix(*w, left, hint[r]);
+            }
+        }
+    }
+    return hint;
 }
 
 } // namespace
@@ -2016,6 +2058,10 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
         const RankBlocks block{&layers0[layer], &layers1[layer]};
         const bool full    = config_.layer_types[layer] == MixerKind::FullAttention;
         const auto compact = dimension(config_.compact_layer_indices[layer]);
+        // Captured decode only (0 otherwise): each of the layer's two all-reduces prefetches the
+        // weights the GEMM after it streams; the last layer's, the output head's.
+        const std::size_t prefetch =
+            exchange_prefetch_budget(*tp_->events, *tp_->execution, x[0].bytes());
         nvtx::ScopedRange layer_range(
             full ? (prefill ? nvtx::Name::PrefillLayerFull : nvtx::Name::VerifyLayerFull)
                  : (prefill ? nvtx::Name::PrefillLayerGdn : nvtx::Name::VerifyLayerGdn),
@@ -2028,6 +2074,10 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
                     full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
                 auto scope0 = work_.scope();
                 auto scope1 = tp_->work->scope();
+                if (prefetch != 0) {
+                    stage_exchange_prefetch(*tp_->events, *tp_->execution, x[0].bytes(),
+                                            ffn_input_prefetch(block, prefetch));
+                }
                 if (full) {
                     attn_mix_tp2(block, x, compact, staging);
                 } else {
@@ -2040,6 +2090,19 @@ void TextContext::run_layers_tp2(RankTensors& x, Phase ph, const RankTensors& st
                                         nvtx::Category::PostMixer, layer);
                 auto scope0 = work_.scope();
                 auto scope1 = tp_->work->scope();
+                if (prefetch != 0) {
+                    std::array<ExchangePrefetch, 2> hint;
+                    if (layer + 1 < layers0.size()) {
+                        hint = mixer_input_prefetch({&layers0[layer + 1], &layers1[layer + 1]},
+                                                    prefetch);
+                    } else {
+                        append_prefetch_prefix(parameters_.text.output_head.weight, prefetch,
+                                               hint[0]);
+                        append_prefetch_prefix(tp_->parameters->text.output_head.weight, prefetch,
+                                               hint[1]);
+                    }
+                    stage_exchange_prefetch(*tp_->events, *tp_->execution, x[0].bytes(), hint);
+                }
                 mlp_tail_tp2(block, x, staging);
             }
             if constexpr (Tap::enabled) {

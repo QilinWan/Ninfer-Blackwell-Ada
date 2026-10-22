@@ -105,19 +105,10 @@ private:
 // the current device changed; the caller holds a CurrentDeviceGuard.
 PeerMailbox* captured_mailbox(const std::array<Tensor, 2>& buffer, std::size_t bytes,
                               const ExecutionContext& ec, const PeerEvents& events) {
-    PeerMailbox* mailbox = events.mailbox();
-    if (mailbox == nullptr || events.staged_only() || !mailbox->serves(ec)) { return nullptr; }
-    if ((bytes % 16) != 0 || bytes > mailbox->slot_bytes()) { return nullptr; }
-    unsigned long long capture[2] = {0, 0};
     for (int rank = 0; rank < 2; ++rank) {
         if ((reinterpret_cast<std::uintptr_t>(buffer[rank].data) % 16) != 0) { return nullptr; }
-        const DeviceContext& local = *ec.dev[rank];
-        CurrentDeviceGuard::set(local.device);
-        cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
-        CUDA_CHECK(cudaStreamGetCaptureInfo(local.stream, &status, &capture[rank]));
-        if (status != cudaStreamCaptureStatusActive) { return nullptr; }
     }
-    return capture[0] == capture[1] ? mailbox : nullptr;
+    return detail::captured_mailbox_for(bytes, ec, events);
 }
 
 #ifndef NDEBUG
@@ -223,6 +214,22 @@ PeerEvents& PeerEvents::operator=(PeerEvents&& other) noexcept {
     std::swap(mailbox_, other.mailbox_);
     std::swap(staged_scopes_, other.staged_scopes_);
     return *this;
+}
+
+PeerMailbox* detail::captured_mailbox_for(std::size_t bytes, const ExecutionContext& ec,
+                                          const PeerEvents& events) {
+    PeerMailbox* mailbox = events.mailbox();
+    if (mailbox == nullptr || events.staged_only() || !mailbox->serves(ec)) { return nullptr; }
+    if ((bytes % 16) != 0 || bytes > mailbox->slot_bytes()) { return nullptr; }
+    unsigned long long capture[2] = {0, 0};
+    for (int rank = 0; rank < 2; ++rank) {
+        const DeviceContext& local = *ec.dev[rank];
+        CurrentDeviceGuard::set(local.device);
+        cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamGetCaptureInfo(local.stream, &status, &capture[rank]));
+        if (status != cudaStreamCaptureStatusActive) { return nullptr; }
+    }
+    return capture[0] == capture[1] ? mailbox : nullptr;
 }
 
 void detail::require_allreduce_sum_arguments(const std::array<Tensor, 2>& buffer,

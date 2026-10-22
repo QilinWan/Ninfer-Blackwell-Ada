@@ -211,6 +211,15 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
                             : ops::PeerExchangeKernel::Pipelined;
                     peer_mailbox.emplace(*execution_context, slot_bytes, 2, kernel);
                     peer_events->attach_mailbox(&*peer_mailbox);
+                    // L2 prefetch budget of one captured decode exchange (P5.2): how many bytes
+                    // of the weight the following GEMM streams the exchange's own blocks pull
+                    // into L2 while it waits on PCIe. NINFER_TP_EXCHANGE_PREFETCH_KIB overrides
+                    // the conservative default (128 KiB, pending board-level measurement); 0
+                    // disables the hints. NINFER_TP_PREFETCH=0 disables them from the forward.
+                    const char* prefetch_env = std::getenv("NINFER_TP_EXCHANGE_PREFETCH_KIB");
+                    const std::size_t prefetch_kib =
+                        prefetch_env != nullptr ? std::strtoul(prefetch_env, nullptr, 10) : 128;
+                    peer_mailbox->set_l2_prefetch_budget(prefetch_kib * 1024);
                     tp_transport_status.exchange_kernel = ops::peer_exchange_kernel_name(kernel);
                     probe_peer_mailbox();
                 } else {
